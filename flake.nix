@@ -29,6 +29,10 @@
               # Setting LD_LIBRARY_PATH makes the dynamic library loader aware of libraries without using RPATH for lookup.
               LD_LIBRARY_PATH = lib.makeLibraryPath pkgs.pythonManylinuxPackages.manylinux1;
             };
+            
+            shellHook = ''
+              unset PYTHONPATH
+            '';
           };
         }
       );
