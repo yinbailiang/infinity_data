@@ -1,0 +1,95 @@
+# ============================================================
+# 综合测试：覆盖语言各项语法特性
+# ============================================================
+
+# -- 模板定义 -------------------------------------------------
+
+@Server {
+    host: str = "0.0.0.0"
+    port: <int, range(1, 65535)> = 80
+    features {
+        caching: <?> = exist
+        compression: bool = true
+    }
+    tags: <list, each(str)> = ["web"]
+}
+
+@Database {
+    host: str = "localhost"
+    port: int = 5432
+    name: str = "mydb"
+    pool_size: <int, range(1, 100)> = 10
+}
+
+# -- 应用配置 -------------------------------------------------
+
+MyApp {
+    # 简单字段 + 类型推断
+    version = "2.0.0"
+    debug = false
+    max_retries = 3
+
+    # 带约束的类型标注
+    timeout: <int, range(1, 300)> = 30
+    log_level: <str, in("debug", "info", "warn", "error")> = "info"
+    ratio: float = 0.75
+
+    # 存在性标记（裸 key）
+    experimental_features
+    maintenance_mode
+
+    # 可空字段
+    description: str? = null
+    backup_host: str? = "fallback.example.com"
+
+    # 嵌套对象
+    database {
+        adapter = "postgresql"
+        host = "db.internal"
+        port = 5432
+        credentials {
+            username = "admin"
+            password = "secret123"
+        }
+    }
+
+    # 对象数组
+    servers [
+        {
+            name = "api-01"
+            ip = "10.0.0.1"
+            weight = 100
+        }
+        {
+            name = "api-02"
+            ip = "10.0.0.2"
+            weight = 80
+        }
+    ]
+
+    # 模板实例化
+    api Server(port=443, host="api.example.com")
+    db Database(pool_size=20)
+
+    # 嵌套对象中使用模板调用
+    cache {
+        redis Server(host="redis.internal", port=6379)
+        ttl_seconds = 3600
+    }
+
+    # 多行字符串数组
+    allowed_origins [
+        "https://app.example.com"
+        "https://admin.example.com"
+        "http://localhost:3000"
+    ]
+
+    # 混合类型数组
+    mixed_values [
+        42
+        3.14
+        "hello"
+        true
+        null
+    ]
+}
