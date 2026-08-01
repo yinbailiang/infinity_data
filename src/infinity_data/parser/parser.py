@@ -2,35 +2,8 @@
 
 from __future__ import annotations
 
-from infinity_data.tokenizer.models import (
-    CommaToken,
-    EofToken,
-    EqualsToken,
-    FalseToken,
-    FloatToken,
-    FromToken,
-    IdentifierToken,
-    ImportToken,
-    IntegerToken,
-    LbraceToken,
-    LbracketToken,
-    LparenToken,
-    NewlineToken,
-    NullToken,
-    RbraceToken,
-    RbracketToken,
-    RparenToken,
-    StringToken,
-    Token,
-    TokenType,
-    TrueToken,
-    ExistToken,
-    AtToken,
-    ColonToken,
-    LangleToken,
-    RangleToken,
-    QuestionToken,
-)
+from typing import TypeVar
+
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
@@ -48,6 +21,37 @@ from infinity_data.parser.models import (
     TypeAnnotation,
     Value,
 )
+from infinity_data.tokenizer.models import (
+    ColonToken,
+    CommaToken,
+    EofToken,
+    EqualsToken,
+    ExistToken,
+    FalseToken,
+    FloatToken,
+    FromToken,
+    IdentifierToken,
+    ImportToken,
+    IntegerToken,
+    LangleToken,
+    LbraceToken,
+    LbracketToken,
+    LparenToken,
+    NewlineToken,
+    NullToken,
+    QuestionToken,
+    RangleToken,
+    RbraceToken,
+    RbracketToken,
+    RparenToken,
+    StringToken,
+    TildeToken,
+    Token,
+    TokenType,
+    TrueToken,
+)
+
+_TToken = TypeVar("_TToken", bound=Token)
 
 
 class Parser:
@@ -76,7 +80,7 @@ class Parser:
 
         tok = self._peek()
 
-        if isinstance(tok, AtToken):
+        if isinstance(tok, TildeToken):
             return self._parse_template_def()
         if isinstance(tok, FromToken):
             return self._parse_import()
@@ -107,16 +111,14 @@ class Parser:
     # ── 模板定义 ─────────────────────────────────────────
 
     def _parse_template_def(self) -> TemplateDef:
-        self._expect_type(AtToken)  # @
+        self._expect_type(TildeToken)  # ~
         name_tok = self._expect_type(IdentifierToken)
         self._expect_type(LbraceToken)  # {
         self._skip_newlines()
 
         body: list[Statement] = []
         while not self._check(TokenType.RBRACE) and not self._is_done():
-            stmt = self._parse_field()
-            if stmt is not None:
-                body.append(stmt)
+            body.append(self._parse_field())
             self._skip_newlines()
 
         self._expect_type(RbraceToken)  # }
@@ -308,9 +310,7 @@ class Parser:
 
         obj = ObjectValue()
         while not self._check(TokenType.RBRACE) and not self._is_done():
-            stmt = self._parse_field()
-            if stmt is not None:
-                obj.fields.append(stmt)
+            obj.fields.append(self._parse_field())
             self._skip_newlines()
 
         self._expect_type(RbraceToken)
@@ -333,11 +333,17 @@ class Parser:
     def _parse_template_call(self, name_tok: IdentifierToken) -> TemplateCallValue:
         """解析 Name(args...) 形式的模板调用。"""
         self._expect_type(LparenToken)
+        self._skip_newlines()
 
         positional: list[Value] = []
         named: dict[str, Value] = {}
 
         while not self._check(TokenType.RPAREN) and not self._is_done():
+            self._skip_newlines()
+
+            if self._check(TokenType.RPAREN) or self._is_done():
+                break
+
             # 先解析一个值
             if isinstance(self._peek(), IdentifierToken):
                 saved = self._pos
@@ -353,8 +359,8 @@ class Parser:
             else:
                 positional.append(self._parse_value())
 
-            if isinstance(self._peek(), CommaToken):
-                self._advance()
+            # 跳过逗号和换行
+            self._skip_separators()
 
         self._expect_type(RparenToken)
         return TemplateCallValue(
@@ -395,11 +401,12 @@ class Parser:
         while isinstance(self._peek(), (CommaToken, NewlineToken)):
             self._advance()
 
-    def _expect_type(self, token_cls: type) -> Token:
+    def _expect_type(self, token_cls: type[_TToken]) -> _TToken:
         tok = self._peek()
         if not isinstance(tok, token_cls):
             raise SyntaxError(
                 f"期望 {token_cls.__name__}，实际为 {tok.type.name} "
                 f"({tok.source.file}:{tok.source.line}:{tok.source.col})"
             )
-        return self._advance()
+        self._pos += 1
+        return tok

@@ -10,15 +10,28 @@ class LineCounter:
         self._index: int = 0
         self._line: int = 1
         self._col: int = 1
+        self._last_was_cr: bool = False
 
     def step(self, ch: str) -> None:
-        """根据当前消费的字符推进 index/line/col。"""
+        """根据当前消费的字符推进 index/line/col。
+
+        支持 \\n (LF) 和 \\r\\n (CRLF) 两种换行语义：
+        - \\r\\n 视为一次换行
+        - 单独的 \\r 也视为换行（兼容旧式 Mac 风格）
+        """
         self._index += 1
         if ch == "\n":
+            if not self._last_was_cr:
+                self._line += 1
+            self._col = 1
+            self._last_was_cr = False
+        elif ch == "\r":
             self._line += 1
             self._col = 1
+            self._last_was_cr = True
         else:
             self._col += 1
+            self._last_was_cr = False
 
     @property
     def index(self) -> int:

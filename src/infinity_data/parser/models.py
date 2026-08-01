@@ -10,7 +10,7 @@ from infinity_data.tokenizer.models import SourceInfo
 @dataclass
 class Document:
     """顶层文档，包含一组语句。"""
-    statements: list[Statement] = field(default_factory=list)
+    statements: list[Statement] = field(default_factory=lambda:[])
 
 
 # ── 语句 ────────────────────────────────────────────────
@@ -29,7 +29,7 @@ class TemplateDef:
     """模板定义：@Name { ... }"""
     name: str
     source: SourceInfo
-    body: list[Statement] = field(default_factory=list)
+    body: list[Statement] = field(default_factory=lambda:[])
 
 
 @dataclass
@@ -48,7 +48,7 @@ class Field:
 class ConstraintCall:
     """约束函数调用，如 each(str)、range(1, 10)"""
     name: str
-    arguments: list[Constraint] = field(default_factory=list)
+    arguments: list[Constraint] = field(default_factory=lambda:[])
 
 
 @dataclass
@@ -70,7 +70,7 @@ type Constraint = ConstraintIdent | ConstraintCall | ConstraintLiteral
 @dataclass
 class TypeAnnotation:
     """类型标注，如 int, str?, <int, range(1,10)>"""
-    constraints: list[Constraint] = field(default_factory=list)
+    constraints: list[Constraint] = field(default_factory=lambda:[])
     nullable: bool = False
 
 
@@ -87,13 +87,13 @@ class LiteralValue:
 @dataclass
 class ObjectValue:
     """对象值 { ... }"""
-    fields: list[Field] = field(default_factory=list)
+    fields: list[Field] = field(default_factory=lambda:[])
 
 
 @dataclass
 class ArrayValue:
     """数组值 [ ... ]"""
-    elements: list[Value] = field(default_factory=list)
+    elements: list[Value] = field(default_factory=lambda:[])
 
 
 @dataclass
@@ -101,8 +101,8 @@ class TemplateCallValue:
     """模板调用：Name(args...)"""
     template_name: str
     source: SourceInfo
-    positional_args: list[Value] = field(default_factory=list)
-    named_args: dict[str, Value] = field(default_factory=dict)
+    positional_args: list[Value] = field(default_factory=lambda:[])
+    named_args: dict[str, Value] = field(default_factory=lambda:{})
 
 
 # ── 联合类型 ────────────────────────────────────────────

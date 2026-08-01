@@ -1,12 +1,9 @@
-
-
 from __future__ import annotations
 
-from collections.abc import AsyncIterable
 import json
+from collections.abc import AsyncIterable
 
 from infinity_data.tokenizer.models import (
-    AtToken,
     ColonToken,
     CommaToken,
     EofToken,
@@ -33,7 +30,9 @@ from infinity_data.tokenizer.models import (
     RparenToken,
     SourceInfo,
     StringToken,
+    TildeToken,
     Token,
+    TokenizeErrorCollector,
     TokenType,
     TrueToken,
 )
@@ -51,13 +50,17 @@ _KEYWORDS: dict[str, TokenType] = {
 
 
 class RawTokenizer:
-    """将 infd/inft 源码转为 Token 流（异步）。"""
+    """将 infd/inft 源码转为 Token 流"""
 
     def __init__(
-        self, source: AsyncIterable[str], file_path: str = "unknown"
+        self,
+        source: AsyncIterable[str],
+        file_path: str = "unknown",
+        error_collector: TokenizeErrorCollector | None = None,
     ) -> None:
         self._file_path: str = file_path
         self._stream: CharStream = CharStream(source)
+        self._errors: TokenizeErrorCollector = error_collector or TokenizeErrorCollector()
 
     # ── 异步迭代器协议 ────────────────────────────────────
 
@@ -72,56 +75,68 @@ class RawTokenizer:
 
     # ── 公开接口 ──────────────────────────────────────────
 
+    @property
+    def error_collector(self) -> TokenizeErrorCollector:
+        """返回错误收集器，供外部查询本阶段是否有错误。"""
+        return self._errors
+
     async def next(self) -> RawToken:
-        """异步返回下一个 token，文件末尾始终返回 EOF token。"""
-        await self._skip_whitespace_and_comments()
+        """异步返回下一个 token，文件末尾始终返回 EOF token。
 
-        if await self._stream.eof():
-            return self._make_token(TokenType.EOF, "")
+        遇到无法识别的字符时记录错误并跳过，继续尝试生成有效 token。
+        """
+        while True:
+            await self._skip_whitespace_and_comments()
 
-        ch = await self._stream.current()
-        assert ch is not None
+            if await self._stream.eof():
+                return self._make_token(TokenType.EOF, "")
 
-        # 单字符 token
-        single_char_map: dict[str, TokenType] = {
-            "{": TokenType.LBRACE,
-            "}": TokenType.RBRACE,
-            "[": TokenType.LBRACKET,
-            "]": TokenType.RBRACKET,
-            "(": TokenType.LPAREN,
-            ")": TokenType.RPAREN,
-            "<": TokenType.LANGLE,
-            ">": TokenType.RANGLE,
-            "=": TokenType.EQUALS,
-            ":": TokenType.COLON,
-            ",": TokenType.COMMA,
-            "@": TokenType.AT,
-            "!": TokenType.EXCLAMATION,
-            "?": TokenType.QUESTION,
-        }
-        if ch in single_char_map:
-            return await self._single_char(single_char_map[ch])
+            ch = await self._stream.current()
+            assert ch is not None
 
-        # 换行
-        if ch == "\n":
-            return await self._handle_newline()
+            # 单字符 token
+            single_char_map: dict[str, TokenType] = {
+                "{": TokenType.LBRACE,
+                "}": TokenType.RBRACE,
+                "[": TokenType.LBRACKET,
+                "]": TokenType.RBRACKET,
+                "(": TokenType.LPAREN,
+                ")": TokenType.RPAREN,
+                "<": TokenType.LANGLE,
+                ">": TokenType.RANGLE,
+                "=": TokenType.EQUALS,
+                ":": TokenType.COLON,
+                ",": TokenType.COMMA,
+                "~": TokenType.TILDE,
+                "!": TokenType.EXCLAMATION,
+                "?": TokenType.QUESTION,
+            }
+            if ch in single_char_map:
+                return await self._single_char(single_char_map[ch])
 
-        # 字符串
-        if ch == '"':
-            return await self._read_string()
+            # 换行
+            if ch == "\n":
+                return await self._handle_newline()
 
-        # 数字
-        if ch.isdigit():
-            return await self._read_number()
+            # 字符串
+            if ch == '"':
+                return await self._read_string()
 
-        # 标识符 / 关键字
-        if ch.isalpha() or ch == "_":
-            return await self._read_identifier_or_keyword()
+            # 数字（支持：正负号、前置小数点、科学计数法）
+            if ch.isdigit() or ch in "+-.":
+                return await self._read_number()
 
-        raise ValueError(
-            f"[{self._file_path}:{self._line}:{self._col}] "
-            f"未预期的字符: {ch!r}"
-        )
+            # 标识符 / 关键字
+            if ch.isalpha() or ch == "_":
+                return await self._read_identifier_or_keyword()
+
+            # 无法识别的字符 → 记录错误，跳过，继续
+            self._errors.add(
+                f"未预期的字符: {ch!r}",
+                self._current_source_info(),
+            )
+            await self._stream.advance()
+            # 继续循环，尝试下一个字符
 
     # ── 内部辅助方法 ──────────────────────────────────────
 
@@ -132,6 +147,16 @@ class RawTokenizer:
     @property
     def _col(self) -> int:
         return self._stream.col
+
+    def _current_source_info(self) -> SourceInfo:
+        """构造当前位置的 SourceInfo。"""
+        return SourceInfo(
+            file=self._file_path,
+            line=self._stream.line,
+            col=self._stream.col,
+            start=self._stream.index,
+            end=self._stream.index,
+        )
 
     def _make_token(
         self, token_type: TokenType, raw: str, start_index: int | None = None
@@ -151,10 +176,13 @@ class RawTokenizer:
         )
 
     async def _skip_whitespace_and_comments(self) -> None:
-        """跳过空格、制表符、回车及注释（# 到行尾）。"""
+        """跳过空白字符（除换行外）及注释（# 到行尾）。
+        """
         while not await self._stream.eof():
             ch = await self._stream.current()
-            if ch in (" ", "\t", "\r"):
+            # 跳过除换行外的所有 Unicode 空白字符
+            assert ch is not None
+            if ch != "\n" and ch.isspace():
                 await self._stream.advance()
                 continue
             if ch == "#":
@@ -179,70 +207,179 @@ class RawTokenizer:
         return self._make_token(TokenType.NEWLINE, "\n", start_index=start)
 
     async def _read_string(self) -> RawToken:
-        """读取引号包裹的字符串，支持转义。"""
+        """读取引号包裹的字符串，支持转义。
+
+        容错：
+        - 未转义换行：记录错误，结束当前字符串（不消费换行符）。
+        - 转义符后 EOF：记录错误，结束当前字符串。
+        - 未闭合字符串（EOF）：记录错误，返回已读取的内容。
+        """
         start = self._stream.index
-        raw_parts: list[str] = [await self._stream.advance()]
+        raw_parts: list[str] = [await self._stream.advance()]  # 消费 '"'
 
         while not await self._stream.eof():
             ch = await self._stream.current()
             assert ch is not None
 
             if ch == "\\":
-                # 转义：吃掉反斜杠和下一个字符
+                # 转义：吃掉反斜杠
                 raw_parts.append(await self._stream.advance())
-                if not await self._stream.eof():
-                    raw_parts.append(await self._stream.advance())
+                if await self._stream.eof():
+                    # 转义符后 EOF
+                    self._errors.add(
+                        "字符串中的转义符 '\\' 后缺少字符（遇到文件末尾）",
+                        self._current_source_info(),
+                    )
+                    return self._make_token(
+                        TokenType.STRING, "".join(raw_parts), start_index=start
+                    )
+                # 吃掉被转义的字符
+                raw_parts.append(await self._stream.advance())
                 continue
 
-            raw_parts.append(ch)
-
             if ch == '"':
-                await self._stream.advance()  # 跳过结束引号
+                # 正常闭合
+                raw_parts.append(ch)
+                await self._stream.advance()
                 return self._make_token(
                     TokenType.STRING, "".join(raw_parts), start_index=start
                 )
 
             if ch == "\n":
-                raise ValueError(
-                    f"[{self._file_path}:{self._line}:{self._col}] "
-                    "字符串字面量中不允许未转义的换行"
+                # 未转义换行 → 记录错误，结束字符串（不消费换行符）
+                self._errors.add(
+                    "字符串字面量中不允许未转义的换行",
+                    self._current_source_info(),
+                )
+                return self._make_token(
+                    TokenType.STRING, "".join(raw_parts), start_index=start
                 )
 
+            # 普通字符
+            raw_parts.append(ch)
             await self._stream.advance()
 
-        raise ValueError(
-            f"[{self._file_path}:{self._line}:{self._col}] 未闭合的字符串字面量"
+        # EOF 但字符串未闭合
+        self._errors.add(
+            "未闭合的字符串字面量（遇到文件末尾）",
+            self._current_source_info(),
+        )
+        return self._make_token(
+            TokenType.STRING, "".join(raw_parts), start_index=start
         )
 
     async def _read_number(self) -> RawToken:
-        """读取整数或浮点数。"""
+        """读取数字字面量。
+
+        支持的格式（有序）：
+            [+|-] 整数部分 [. 小数部分] [e|E [+|-] 指数]
+
+        示例：42  -80  +3.14  .5  1e10  2.5e-3  -1.5E+2
+
+        容错：
+        - 只有符号或点号没有数字时记录错误
+        - '.' 后没有数字时记录错误
+        - 'e'/'E' 后没有指数时记录错误
+        """
         start = self._stream.index
         raw_parts: list[str] = []
         is_float = False
 
-        while not await self._stream.eof():
-            ch = await self._stream.current()
-            if ch is not None and ch.isdigit():
-                raw_parts.append(ch)
-                await self._stream.advance()
-            elif ch == "." and not is_float:
-                await self._stream.advance()
-                if not await self._stream.eof():
-                    next_ch = await self._stream.current()
-                    if next_ch is not None and next_ch.isdigit():
-                        is_float = True
-                        raw_parts.append(".")
-                        raw_parts.append(next_ch)
-                        await self._stream.advance()
-                    else:
-                        break
+        # ── 1. 可选正负号 ──
+        ch = await self._stream.current()
+        if ch is not None and ch in "+-":
+            raw_parts.append(ch)
+            await self._stream.advance()
+
+        # ── 2. 整数部分 ──
+        ch = await self._stream.current()
+        if ch is not None and ch.isdigit():
+            raw_parts.append(ch)
+            await self._stream.advance()
+            while not await self._stream.eof():
+                ch = await self._stream.current()
+                if ch is not None and ch.isdigit():
+                    raw_parts.append(ch)
+                    await self._stream.advance()
                 else:
                     break
-            else:
-                break
 
+        # ── 3. 可选小数部分 ──
+        ch = await self._stream.current()
+        if ch == ".":
+            await self._stream.advance()  # 消费 '.'
+            raw_parts.append(".")
+            if await self._stream.eof():
+                self._errors.add(
+                    "数字字面量中 '.' 后缺少数字（遇到文件末尾）",
+                    self._current_source_info(),
+                )
+            else:
+                next_ch = await self._stream.current()
+                if next_ch is not None and next_ch.isdigit():
+                    is_float = True
+                    raw_parts.append(next_ch)
+                    await self._stream.advance()
+                    while not await self._stream.eof():
+                        ch = await self._stream.current()
+                        if ch is not None and ch.isdigit():
+                            raw_parts.append(ch)
+                            await self._stream.advance()
+                        else:
+                            break
+                else:
+                    self._errors.add(
+                        f"数字字面量中 '.' 后缺少数字，遇到了 {next_ch!r}",
+                        self._current_source_info(),
+                    )
+
+        # ── 4. 可选指数部分 ──
+        ch = await self._stream.current()
+        if ch is not None and ch in "eE":
+            raw_parts.append(ch)
+            await self._stream.advance()  # 消费 'e' 或 'E'
+            is_float = True
+
+            # 可选指数正负号
+            if not await self._stream.eof():
+                ch = await self._stream.current()
+                if ch is not None and ch in "+-":
+                    raw_parts.append(ch)
+                    await self._stream.advance()
+
+            # 指数必须有至少一位数字
+            if await self._stream.eof():
+                self._errors.add(
+                    "科学计数法中 'e' 后缺少指数（遇到文件末尾）",
+                    self._current_source_info(),
+                )
+            else:
+                ch = await self._stream.current()
+                if ch is not None and ch.isdigit():
+                    raw_parts.append(ch)
+                    await self._stream.advance()
+                    while not await self._stream.eof():
+                        ch = await self._stream.current()
+                        if ch is not None and ch.isdigit():
+                            raw_parts.append(ch)
+                            await self._stream.advance()
+                        else:
+                            break
+                else:
+                    self._errors.add(
+                        f"科学计数法中 'e' 后缺少指数，遇到了 {ch!r}",
+                        self._current_source_info(),
+                    )
+
+        # ── 5. 确保至少有一位数字（拒绝孤立的 +/-/. 或 +e 之类）──
         raw = "".join(raw_parts)
-        token_type = TokenType.FLOAT if is_float else TokenType.INTEGER
+        if not any(c.isdigit() for c in raw):
+            self._errors.add(
+                f"无效的数字字面量: {raw!r}（缺少数字）",
+                self._current_source_info(),
+            )
+
+        token_type: TokenType = TokenType.FLOAT if is_float else TokenType.INTEGER
         return self._make_token(token_type, raw, start_index=start)
 
     async def _read_identifier_or_keyword(self) -> RawToken:
@@ -276,7 +413,7 @@ _TOKEN_CLASS_MAP: dict[TokenType, type[Token]] = {
     TokenType.EQUALS: EqualsToken,
     TokenType.COLON: ColonToken,
     TokenType.COMMA: CommaToken,
-    TokenType.AT: AtToken,
+    TokenType.TILDE: TildeToken,
     TokenType.EXCLAMATION: ExclamationToken,
     TokenType.QUESTION: QuestionToken,
     TokenType.TRUE: TrueToken,
@@ -296,11 +433,20 @@ def _unescape_string(raw: str) -> str:
 
 
 class FinalTokenizer:
-    """将 RawToken 流转换为最终 Token 流（异步迭代器）。"""
+    """将 RawToken 流转换为最终 Token 流（异步迭代器）。
 
-    def __init__(self, source: AsyncIterable[RawToken]) -> None:
+    跨阶段快速失败：如果传入的 ErrorCollector 中已有错误，
+    则直接产生空 token 流，不再进行转换。
+    """
+
+    def __init__(
+        self,
+        source: AsyncIterable[RawToken],
+        error_collector: TokenizeErrorCollector | None = None,
+    ) -> None:
         self._source = source
         self._iter: AsyncIterable[RawToken] | None = None
+        self._errors: TokenizeErrorCollector | None = error_collector
 
     def __aiter__(self) -> FinalTokenizer:
         self._iter = self._source.__aiter__()
@@ -308,6 +454,11 @@ class FinalTokenizer:
 
     async def __anext__(self) -> Token:
         assert self._iter is not None
+
+        # 跨阶段快速失败：前一阶段有错误时，不产生任何 token
+        if self._errors is not None and self._errors.has_errors:
+            raise StopAsyncIteration
+
         try:
             raw: RawToken = await self._iter.__anext__()  # type: ignore
             assert isinstance(raw, RawToken)

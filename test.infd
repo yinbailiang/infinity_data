@@ -4,7 +4,7 @@
 
 # -- 模板定义 -------------------------------------------------
 
-@Server {
+~Server {
     host: str = "0.0.0.0"
     port: <int, range(1, 65535)> = 80
     features {
@@ -14,7 +14,7 @@
     tags: <list, each(str)> = ["web"]
 }
 
-@Database {
+~Database {
     host: str = "localhost"
     port: int = 5432
     name: str = "mydb"
@@ -68,7 +68,15 @@ MyApp {
     ]
 
     # 模板实例化
-    api Server(port=443, host="api.example.com")
+    api Server(
+        port = 443
+        host = "api.example.com"
+        features = {
+            caching=null
+            compression=true
+        }
+    )
+    other Server()
     db Database(pool_size=20)
 
     # 嵌套对象中使用模板调用

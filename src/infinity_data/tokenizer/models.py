@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+
 class TokenType(Enum):
     # 结构定界符
     LBRACE = "{"
@@ -16,7 +17,7 @@ class TokenType(Enum):
     EQUALS = "="
     COLON = ":"
     COMMA = ","
-    AT = "@"
+    TILDE = "~"
     EXCLAMATION = "!"
     QUESTION = "?"
 
@@ -56,6 +57,7 @@ class RawToken:
     type: TokenType
     raw: str
     source: SourceInfo
+
 
 @dataclass
 class Token:
@@ -107,8 +109,8 @@ class CommaToken(Token):
     type: TokenType = TokenType.COMMA
 
 @dataclass
-class AtToken(Token):
-    type: TokenType = TokenType.AT
+class TildeToken(Token):
+    type: TokenType = TokenType.TILDE
 
 @dataclass
 class ExclamationToken(Token):
@@ -169,3 +171,39 @@ class NewlineToken(Token):
 @dataclass
 class EofToken(Token):
     type: TokenType = TokenType.EOF
+
+
+# ── 词法分析错误模型 ────────────────────────────────────
+
+
+@dataclass
+class TokenizeError:
+    """词法分析阶段错误，包含错误信息和源码位置。"""
+    message: str
+    source: SourceInfo
+
+
+class TokenizeErrorCollector:
+    """跨阶段错误收集器。
+
+    支持：
+    - 单阶段内收集多条错误（不因第一条错误而中断）
+    - 跨阶段快速失败（前一阶段有错误时，后一阶段直接跳过）
+    """
+
+    def __init__(self) -> None:
+        self._errors: list[TokenizeError] = []
+
+    def add(self, message: str, source: SourceInfo) -> None:
+        """记录一条错误。"""
+        self._errors.append(TokenizeError(message=message, source=source))
+
+    @property
+    def has_errors(self) -> bool:
+        """是否已收集到任何错误。"""
+        return len(self._errors) > 0
+
+    @property
+    def errors(self) -> tuple[TokenizeError, ...]:
+        """返回所有已收集的错误（不可变）。"""
+        return tuple(self._errors)

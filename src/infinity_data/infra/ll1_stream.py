@@ -44,12 +44,13 @@ class LL1Stream(Generic[T]):
         item = self._current
         if item is None and self._exhausted:
             raise IndexError("无法在 EOF 之后继续推进流")
-        self._on_advance(item)  # type: ignore[arg-type]
+        assert item is not None
+        self._on_advance(item)
         await self._pre_read()
-        return item  # type: ignore[return-value]
+        return item
 
     def _on_advance(self, item: T) -> None:
-        """子类可重写：在消费元素时执行额外逻辑（如位置跟踪）。"""
+        """子类可重写：在消费元素时执行额外逻辑。"""
 
     # ── 内部 ──────────────────────────────────────────────
 
