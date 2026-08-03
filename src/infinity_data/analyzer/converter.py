@@ -1,18 +1,17 @@
 """降维器：StandardAst → 纯 Python dict / list。
 
-将携带类型、约束、来源信息的标准 AST 降维为纯数据，
-可用于序列化为 JSON / YAML / Nix 表达式等目标格式。
+基于 neo_desg.md 重新设计：
+- noexist 字段不出现在输出中
+- nan, +inf, -inf 正确处理
+- null 字段保留键（值为 None）
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from infinity_data.analyzer.models import StdArray, StdLiteral, StdObject, StdValue
-
-
-EXIST_MARKER = {"__exist__": True}
-"""exist 字段降维时的标记值。"""
 
 
 def reduce_to_dict(obj: StdObject, *, keep_null: bool = True) -> dict[str, Any]:
@@ -25,6 +24,10 @@ def reduce_to_dict(obj: StdObject, *, keep_null: bool = True) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for field in obj.fields:
         if field.value is None:
+            continue
+
+        # noexist 字段：不出现在结果中
+        if isinstance(field.value, StdLiteral) and field.value.kind == "noexist":
             continue
 
         # null 字段：默认保留键（值为 None），keep_null=False 时跳过
@@ -53,7 +56,6 @@ def reduce_value(val: StdValue, *, keep_null: bool = True) -> Any:
 
 # ── 内部 ────────────────────────────────────────────────
 
-
 def _reduce_value(val: StdValue, *, keep_null: bool) -> Any:
     match val:
         case StdLiteral(kind=k, value=v):
@@ -62,8 +64,14 @@ def _reduce_value(val: StdValue, *, keep_null: bool) -> Any:
                     return v
                 case "null":
                     return None
-                case "exist":
-                    return dict(EXIST_MARKER)  # {"__exist__": true}
+                case "noexist":
+                    return None  # 不应到达这里（在 reduce_to_dict 中已过滤）
+                case "nan":
+                    return float("nan")
+                case "+inf":
+                    return float("inf")
+                case "-inf":
+                    return float("-inf")
                 case _:
                     return v
         case StdObject():
@@ -71,3 +79,4 @@ def _reduce_value(val: StdValue, *, keep_null: bool) -> Any:
         case StdArray():
             return reduce_to_list(val, keep_null=keep_null)
     return None
+

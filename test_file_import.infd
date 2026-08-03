@@ -1,0 +1,7 @@
+!file "test_config.json" as json import .server.host as srv_host, .server.port as srv_port, .server.features as srv_features
+
+config {
+    host = $srv_host
+    port = $srv_port
+    features = $srv_features
+}

@@ -7,8 +7,8 @@
 ~Server {
     host: str = "0.0.0.0"
     port: <int, range(1, 65535)> = 80
-    features {
-        caching: <?> = exist
+    features: dict {
+        caching: <?> = noexist
         compression: bool = true
     }
     tags: <list, each(str)> = ["web"]

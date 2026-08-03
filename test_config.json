@@ -1,0 +1,7 @@
+{
+    "server": {
+        "host": "prod.example.com",
+        "port": 443,
+        "features": ["http2", "tls1.3"]
+    }
+}

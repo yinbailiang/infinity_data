@@ -1,0 +1,10 @@
+# 测试 !env import
+!env import USER as system_user
+!env import HOME
+
+# 测试 $ 引用 + 类型转换
+app {
+    user = $system_user
+    home = $HOME
+}
+

@@ -1,12 +1,10 @@
 """StandardAst 模型 —— 语义分析后的完全展开、校验、无歧义的 AST。
 
-StandardAst 与 RawAst 的本质区别：
-- 无导入语句（已解析）
-- 无模板定义 / 模板调用（已展开）
-- 无裸 key（已展开为 key: <?> = exist）
-- 所有字段类型已确定
-- 所有约束已执行
-- 所有默认值已填充
+基于 neo_desg.md 重新设计：
+- 三态可空: noexist, null, value
+- 新的字面量: nan, +inf, -inf
+- object 作为通用超类型
+- 模板即约束的展开结果
 """
 
 from __future__ import annotations
@@ -16,18 +14,27 @@ from typing import Any
 
 from infinity_data.tokenizer.models import SourceInfo
 
-# ── 值 ──────────────────────────────────────────────────
 
+# ═══════════════════════════════════════════════════════════
+# 值
+# ═══════════════════════════════════════════════════════════
 
 @dataclass
 class StdLiteral:
-    """标准字面量值。kind 和 Python 值的对应：
-    - "str"   → str
-    - "int"   → int
-    - "float" → float
-    - "bool"  → bool
-    - "null"  → None
-    - "exist" → ... 
+    """标准字面量值。
+
+    kind 和 Python 值的对应:
+    - "str"    → str
+    - "mlstr"  → str (多行字符串)
+    - "int"    → int
+    - "float"  → float
+    - "bool"   → bool
+    - "null"   → None
+    - "noexist"→ 不存在（键不出现在解析结果中）
+    - "nan"    → float('nan')
+    - "+inf"   → float('inf')
+    - "-inf"   → float('-inf')
+    - "object" → Any (通用超类型)
     """
     kind: str
     value: Any
@@ -48,8 +55,9 @@ class StdObject:
 type StdValue = StdLiteral | StdObject | StdArray
 
 
-# ── 字段 ────────────────────────────────────────────────
-
+# ═══════════════════════════════════════════════════════════
+# 字段
+# ═══════════════════════════════════════════════════════════
 
 @dataclass
 class StdField:
@@ -59,9 +67,9 @@ class StdField:
     source: SourceInfo | None = None
 
     @property
-    def is_exist(self) -> bool:
-        """是否为存在标记字段（值域 exist）。"""
-        return isinstance(self.value, StdLiteral) and self.value.kind == "exist"
+    def is_noexist(self) -> bool:
+        """是否为 noexist 标记（键不出现在结果中）。"""
+        return isinstance(self.value, StdLiteral) and self.value.kind == "noexist"
 
     @property
     def is_null(self) -> bool:
@@ -69,8 +77,9 @@ class StdField:
         return isinstance(self.value, StdLiteral) and self.value.kind == "null"
 
 
-# ── 文档 ────────────────────────────────────────────────
-
+# ═══════════════════════════════════════════════════════════
+# 文档
+# ═══════════════════════════════════════════════════════════
 
 @dataclass
 class StdDocument:
@@ -83,8 +92,9 @@ class StdDocument:
         return any(d.level == "error" for d in self.diagnostics)
 
 
-# ── 诊断 ────────────────────────────────────────────────
-
+# ═══════════════════════════════════════════════════════════
+# 诊断
+# ═══════════════════════════════════════════════════════════
 
 @dataclass
 class Diagnostic:
@@ -93,3 +103,4 @@ class Diagnostic:
     message: str
     source: SourceInfo | None = None
     path: str = ""  # 字段路径，如 "MyApp.database.port"
+
