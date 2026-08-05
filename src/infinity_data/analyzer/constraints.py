@@ -17,7 +17,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import Any, Callable
 
 from infinity_data.analyzer.models import Diagnostic, StdArray, StdLiteral, StdObject, StdValue
-from infinity_data.tokenizer.models import SourceInfo
+from infinity_data.tokenizer.models.raw_tokens import SourceInfo
 
 
 # ═══════════════════════════════════════════════════════════

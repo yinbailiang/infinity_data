@@ -41,7 +41,7 @@ from infinity_data.parser.models import (
     Field,
     FileImportStmt,
     LiteralValue,
-    ObjectValue,
+    DictValue,
     TemplateCallValue,
     TemplateDef,
     TemplateField,
@@ -49,7 +49,7 @@ from infinity_data.parser.models import (
     TypeAnnotation,
     Value,
 )
-from infinity_data.tokenizer.models import SourceInfo
+from infinity_data.tokenizer.models.raw_tokens import SourceInfo
 
 
 class SemanticAnalyzer:
@@ -361,7 +361,7 @@ class SemanticAnalyzer:
                 return self._convert_literal(k, r)
             case DollarValue(name=n, type_cast=tc):
                 return self._resolve_dollar(n, tc, path)
-            case ObjectValue(fields=fs):
+            case DictValue(fields=fs):
                 std_fields: list[StdField] = []
                 for f in fs:
                     child_path = f"{path}.{f.name}" if path else f.name

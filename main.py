@@ -30,7 +30,7 @@ from infinity_data.parser.models import (
     Field,
     FileImportStmt,
     LiteralValue,
-    ObjectValue,
+    DictValue,
     Statement,
     TemplateCallValue,
     TemplateDef,
@@ -39,13 +39,18 @@ from infinity_data.parser.models import (
     Value,
 )
 from infinity_data.parser.parser import Parser
-from infinity_data.tokenizer.models import (
-    TokenizeErrorCollector,
+from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
-    Token,
-    TokenizeError,
 )
-from infinity_data.tokenizer.tokenizer import FinalTokenizer, RawTokenizer
+from infinity_data.tokenizer.models.tokens import (
+    Token,
+)
+from infinity_data.tokenizer.errors import (
+    TokenizeError,
+    TokenizeErrorCollector,
+)
+from infinity_data.tokenizer.tokenizer import RawTokenizer
+from infinity_data.tokenizer.finalizer import FinalTokenizer
 
 
 async def _chars_from_file(path: str) -> AsyncIterable[str]:
@@ -104,7 +109,7 @@ def _format_value(val: Value, indent: int = 0) -> str:
         case DollarValue(name=n, type_cast=tc):
             cast = f" as {tc}" if tc else ""
             return f"${n}{cast}"
-        case ObjectValue(fields=fs):
+        case DictValue(fields=fs):
             lines = ["{"]
             for f in fs:
                 lines.append(f"  {prefix}{_format_field(f, indent + 1)}")

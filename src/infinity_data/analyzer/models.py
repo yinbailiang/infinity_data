@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from infinity_data.tokenizer.models import SourceInfo
+from infinity_data.tokenizer.models.raw_tokens import SourceInfo
 
 
 # ═══════════════════════════════════════════════════════════

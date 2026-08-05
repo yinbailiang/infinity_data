@@ -1,32 +1,34 @@
 """递归下降语法分析器，将 Token 流转换为 RawAst。
-
-基于 neo_desg.md 重新设计，支持：
-- !env import NAME [as ALIAS]
-- !file "path" as <format> import .path [as alias], ...
-- !from "path" import Name, ...
-- $name [as type] 导入空间引用
-- 模板必填字段 vs 可选字段
-- 多行字符串、特殊浮点字面量
 """
 
 from __future__ import annotations
 
 from typing import TypeVar
 
+from infinity_data.parser.errors import (
+    EmptyTokenListError,
+    InvalidImportKeywordError,
+    ParseErrorCollector,
+    TemplateArgOrderError,
+    UnexpectedTokenError,
+)
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
     ConstraintCall,
     ConstraintIdent,
     ConstraintLiteral,
+    DictValue,
     Document,
     DollarValue,
     EnvImportStmt,
     Field,
     FileImportItem,
     FileImportStmt,
+    JsonPathIndex,
+    JsonPathKey,
+    JsonPathSegment,
     LiteralValue,
-    ObjectValue,
     Statement,
     TemplateCallValue,
     TemplateDef,
@@ -35,16 +37,18 @@ from infinity_data.parser.models import (
     TypeAnnotation,
     Value,
 )
-from infinity_data.tokenizer.models import (
+from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceInfo, SourceRange
+from infinity_data.tokenizer.models.tokens import (
     AsToken,
+    BoolToken,
     ColonToken,
     CommaToken,
     DollarToken,
+    DotToken,
     EnvToken,
     EofToken,
     EqualsToken,
     ExclamationToken,
-    FalseToken,
     FileToken,
     FloatToken,
     FromToken,
@@ -55,13 +59,9 @@ from infinity_data.tokenizer.models import (
     LbraceToken,
     LbracketToken,
     LparenToken,
-    MultilineStringToken,
-    NanToken,
-    NegInfToken,
     NewlineToken,
     NoexistToken,
     NullToken,
-    PosInfToken,
     QuestionToken,
     RangleToken,
     RbraceToken,
@@ -70,22 +70,39 @@ from infinity_data.tokenizer.models import (
     StringToken,
     TildeToken,
     Token,
-    TokenType,
-    TrueToken,
 )
 
 _TToken = TypeVar("_TToken", bound=Token)
 
-
 class Parser:
     """递归下降解析器。"""
 
-    def __init__(self, tokens: list[Token]) -> None:
-        self._tokens = tokens
+    def __init__(
+        self,
+        tokens: list[Token],
+        error_collector: ParseErrorCollector | None = None,
+    ) -> None:
+        self._tokens: list[Token] = tokens
         self._pos = 0
+        self._errors: ParseErrorCollector = error_collector or ParseErrorCollector()
+
+    @property
+    def error_collector(self) -> ParseErrorCollector:
+        return self._errors
+
+    # ═══════════════════════════════════════════════════════
+    # 公开入口
+    # ═══════════════════════════════════════════════════════
 
     def parse(self) -> Document:
-        doc = Document()
+        if not self._tokens:
+            dummy = SourceRange(
+                start=SourceInfo(file_path="", line=0, col=0, index=0),
+                end=SourceInfo(file_path="", line=0, col=0, index=0),
+            )
+            self._errors.add(EmptyTokenListError(source=dummy))
+            return Document(source=dummy)
+        doc = Document(source=SourceRange(start=self._tokens[0].raw.source.start, end=self._tokens[-1].raw.source.end))
         while not self._is_done():
             stmt = self._parse_statement()
             if stmt is not None:
@@ -100,25 +117,19 @@ class Parser:
         """解析一条顶层语句。"""
         self._skip_newlines()
 
-        if self._check(TokenType.EOF):
+        if self._check(RawTokenType.EOF):
             return None
 
-        tok = self._peek()
-
-        # ── 导入语句 ──
-        if isinstance(tok, ExclamationToken):
-            return self._parse_any_import()
-
-        # ── 模板定义 ──
-        if isinstance(tok, TildeToken):
-            return self._parse_template_def()
-
-        # ── 字段定义 ──
-        if isinstance(tok, IdentifierToken):
-            return self._parse_field()
-
-        self._advance()  # skip unexpected
-        return None
+        match self._peek():
+            case ExclamationToken():
+                return self._parse_any_import()
+            case TildeToken():
+                return self._parse_template_def()
+            case IdentifierToken():
+                return self._parse_field()
+            case _:
+                self._advance()  # skip unexpected
+                return None
 
     # ═══════════════════════════════════════════════════════
     # 导入语句
@@ -126,24 +137,31 @@ class Parser:
 
     def _parse_any_import(self) -> Statement:
         """解析 !env / !file / !from 导入语句。"""
-        self._expect_type(ExclamationToken)  # !
+        excl_tok = self._expect_type(ExclamationToken)
 
-        tok = self._peek()
+        match self._peek():
+            case EnvToken():
+                return self._parse_env_import(excl_tok)
+            case FileToken():
+                return self._parse_file_import(excl_tok)
+            case FromToken():
+                return self._parse_template_import(excl_tok)
+            case tok:
+                self._advance()
+                self._errors.add(InvalidImportKeywordError(
+                    source=self._single_span(tok),
+                    actual=tok.raw.type.name,
+                ))
+                self._skip_newlines()
+                # 错误恢复：返回一个空字段作为占位
+                return Field(
+                    source=self._single_span(excl_tok),
+                    name="<import-error>",
+                )
 
-        if isinstance(tok, EnvToken):
-            return self._parse_env_import()
-        if isinstance(tok, FileToken):
-            return self._parse_file_import()
-        if isinstance(tok, FromToken):
-            return self._parse_template_import()
-
-        # 错误回退
-        self._advance()
-        raise SyntaxError(f"! 后期望 env/file/from")
-
-    def _parse_env_import(self) -> EnvImportStmt:
+    def _parse_env_import(self, excl_tok: ExclamationToken) -> EnvImportStmt:
         """!env import NAME [as NEW_NAME]"""
-        env_tok = self._expect_type(EnvToken)
+        self._expect_type(EnvToken)
         self._expect_type(ImportToken)
         name_tok = self._expect_type(IdentifierToken)
 
@@ -153,11 +171,15 @@ class Parser:
             alias = self._expect_type(IdentifierToken).name
 
         self._skip_newlines()
-        return EnvImportStmt(name=name_tok.name, alias=alias, source=env_tok.source)
+        return EnvImportStmt(
+            source=self._span_from(excl_tok),
+            name=name_tok.name,
+            alias=alias,
+        )
 
-    def _parse_file_import(self) -> FileImportStmt:
+    def _parse_file_import(self, excl_tok: ExclamationToken) -> FileImportStmt:
         """!file "path" [as <format>] import .path.to.key [as alias], ..."""
-        file_tok = self._expect_type(FileToken)
+        self._expect_type(FileToken)
         path_tok = self._expect_type(StringToken)
 
         # 可选 as <format>
@@ -178,10 +200,10 @@ class Parser:
 
         self._skip_newlines()
         return FileImportStmt(
+            source=self._span_from(excl_tok),
             file_path=path_tok.value,
             format=fmt,
             imports=items,
-            source=file_tok.source,
         )
 
     def _parse_file_import_item(self) -> FileImportItem:
@@ -189,94 +211,84 @@ class Parser:
 
         路径语法: "." ( "." identifier | "[" integer "]" | "." string )*
         """
-        source: SourceInfo | None = None
-        tok = self._peek()
-        if isinstance(tok, Token):
-            source = tok.source
-
+        first = self._peek()
         json_path = self._parse_json_path()
 
         alias = None
         if isinstance(self._peek(), AsToken):
             self._advance()
-            alias_tok = self._expect_type(IdentifierToken)
-            alias = alias_tok.name
-            source = alias_tok.source
+            alias = self._expect_type(IdentifierToken).name
 
-        return FileImportItem(json_path=json_path, alias=alias, source=source)
+        self._skip_newlines()
+        return FileImportItem(
+            source=self._span_from(first),
+            json_path=json_path,
+            alias=alias,
+        )
 
-    def _parse_json_path(self) -> str:
-        """解析 JSON 路径。
+    def _parse_json_path(self) -> list[JsonPathSegment]:
+        """解析 JSON 路径为结构化段列表。
 
-        Token 序列示例（. 是 IDENTIFIER(".")）:
-            .server.host  →  [.] [server] [.] [host]
-            .a.b[0]."c"   →  [.] [a] [.] [b] [[] [0] []] [.] ["c"]
-            .              →  [.]
+        Token 序列示例:
+            .server.host  →  [DOT] [server] [DOT] [host]
+            .a.b[0]."c"   →  [DOT] [a] [DOT] [b] [[] [0] []] [DOT] ["c"]
+            .              →  [DOT]
 
         语法: "." identifier ( "." identifier | "[" integer "]" | "." string )*
+        返回: 路径段列表；空列表表示导入整个文件（仅 .）
         """
-        parts: list[str] = []
+        segments: list[JsonPathSegment] = []
 
         # 路径必须以 . 起始
         tok = self._peek()
-        if not (isinstance(tok, IdentifierToken) and tok.name == "."):
-            return "."
-        parts.append(".")
+        if not isinstance(tok, DotToken):
+            return []
         self._advance()
 
         # 第一个段：必须是标识符（首 key 名）
         tok = self._peek()
-        if isinstance(tok, IdentifierToken) and tok.name != ".":
-            parts.append(tok.name)
+        if isinstance(tok, IdentifierToken):
+            segments.append(JsonPathKey(source=self._single_span(tok), key=tok.name))
             self._advance()
         else:
             # 只有 . → 导入整个文件
-            return "."
+            return []
 
         # 后续段：".key" 或 "[index]"
         while not self._is_done():
-            tok = self._peek()
+            match self._peek():
+                case DotToken():
+                    self._advance()
+                    match self._peek():
+                        case IdentifierToken(name=name) as id_tok:
+                            segments.append(JsonPathKey(source=self._single_span(id_tok), key=name))
+                            self._advance()
+                        case StringToken(value=value) as str_tok:
+                            segments.append(JsonPathKey(source=self._single_span(str_tok), key=value))
+                            self._advance()
+                        case _:
+                            break
 
-            if isinstance(tok, IdentifierToken) and tok.name == ".":
-                # .identifier 或 ."string"
-                self._advance()
-                next_tok = self._peek()
-                if isinstance(next_tok, IdentifierToken) and next_tok.name != ".":
-                    parts.append(".")
-                    parts.append(next_tok.name)
-                    self._advance()
-                elif isinstance(next_tok, StringToken):
-                    parts.append(".")
-                    parts.append(f'"{next_tok.value}"')
-                    self._advance()
-                else:
+                case LbracketToken():
+                    lbracket = self._advance()
+                    match self._peek():
+                        case IntegerToken(value=value):
+                            self._advance()
+                            if isinstance(self._peek(), RbracketToken):
+                                self._advance()
+                            segments.append(JsonPathIndex(source=self._span_from(lbracket), index=value))
+                        case _:
+                            break
+
+                case _:
                     break
 
-            elif isinstance(tok, LbracketToken):
-                # [integer]
-                self._advance()
-                idx_tok = self._peek()
-                if isinstance(idx_tok, IntegerToken):
-                    parts.append(f"[{idx_tok.value}]")
-                    self._advance()
-                    if isinstance(self._peek(), RbracketToken):
-                        self._advance()
-                else:
-                    break
+        return segments
 
-            else:
-                # 非路径 token（as / , / newline）→ 结束
-                break
-
-        return "".join(parts)
-
-    def _parse_template_import(self) -> TemplateImportStmt:
+    def _parse_template_import(self, excl_tok: ExclamationToken) -> TemplateImportStmt:
         """!from "path" import Name1, Name2, ..."""
-        from_tok = self._expect_type(FromToken)
-
-        # 路径必须是字符串（引号包裹）
+        self._expect_type(FromToken)
         path_tok = self._expect_type(StringToken)
-
         self._expect_type(ImportToken)
 
         names: list[str] = []
@@ -287,9 +299,9 @@ class Parser:
 
         self._skip_newlines()
         return TemplateImportStmt(
+            source=self._span_from(excl_tok),
             from_path=path_tok.value,
             names=names,
-            source=from_tok.source,
         )
 
     # ═══════════════════════════════════════════════════════
@@ -298,23 +310,29 @@ class Parser:
 
     def _parse_template_def(self) -> TemplateDef:
         """~Name { template_fields... }"""
-        self._expect_type(TildeToken)  # ~
+        first = self._peek()
+        self._expect_type(TildeToken)
         name_tok = self._expect_type(IdentifierToken)
         self._expect_type(LbraceToken)
         self._skip_newlines()
 
         fields: list[TemplateField] = []
-        while not self._check(TokenType.RBRACE) and not self._is_done():
+        while not self._check(RawTokenType.RBRACE) and not self._is_done():
             fields.append(self._parse_template_field())
             self._skip_newlines()
 
         self._expect_type(RbraceToken)
         self._skip_newlines()
 
-        return TemplateDef(name=name_tok.name, fields=fields, source=name_tok.source)
+        return TemplateDef(
+            source=self._span_from(first),
+            name=name_tok.name,
+            fields=fields,
+        )
 
     def _parse_template_field(self) -> TemplateField:
         """解析模板内部字段：必须有类型标注，默认值可选。"""
+        first = self._peek()
         name_tok = self._expect_type(IdentifierToken)
 
         # 类型标注（模板字段必须）
@@ -326,15 +344,13 @@ class Parser:
         if isinstance(self._peek(), EqualsToken):
             self._advance()
             default_value = self._parse_value()
-        elif isinstance(self._peek(), LbraceToken):
-            default_value = self._parse_object()
-        elif isinstance(self._peek(), LbracketToken):
-            default_value = self._parse_array()
+        elif self._starts_value(self._peek()):
+            default_value = self._parse_value()
 
         self._skip_newlines()
         return TemplateField(
+            source=self._span_from(first),
             name=name_tok.name,
-            source=name_tok.source,
             type_annotation=type_annotation,
             default_value=default_value,
         )
@@ -346,9 +362,9 @@ class Parser:
     def _parse_field(self) -> Field:
         """解析普通字段：name[: type] [= value]
 
-        支持省略等号的情况：name { ... }, name [ ... ], name Template(...)
-        也支持 $name 直接作为值。
+        支持省略等号：name { ... }, name [ ... ], name Template(...)
         """
+        first = self._peek()
         name_tok = self._expect_type(IdentifierToken)
 
         # 类型标注 name: <...> 或 name: type 或 name: type?
@@ -363,30 +379,25 @@ class Parser:
         if isinstance(tok, EqualsToken):
             self._advance()
             value = self._parse_value()
-        elif isinstance(tok, IdentifierToken):
-            # 标识符在值位置 → 必定是省略等号的模板调用（无回溯）
-            # 因为不存在"标识符字面量"这个概念，所以 id id 不可能是下一个字段
-            ident = self._expect_type(IdentifierToken)
-            value = self._parse_template_call(ident)
         elif self._starts_value(tok):
             value = self._parse_value()
 
         self._skip_newlines()
         return Field(
+            source=self._span_from(first),
             name=name_tok.name,
             type_annotation=type_annotation,
             value=value,
-            source=name_tok.source,
         )
 
     @staticmethod
     def _starts_value(tok: Token) -> bool:
         """判断 token 是否可以起始一个值。"""
+        # FloatToken 覆盖所有浮点值（含 NaN / ±Inf）
         return isinstance(tok, (
-            StringToken, MultilineStringToken,
+            StringToken,
             IntegerToken, FloatToken,
-            TrueToken, FalseToken, NullToken, NoexistToken,
-            NanToken, PosInfToken, NegInfToken,
+            BoolToken, NullToken, NoexistToken,
             LbraceToken, LbracketToken,
             IdentifierToken, DollarToken,
         ))
@@ -404,85 +415,85 @@ class Parser:
         - <constraint, constraint, ...> → all(constraint, ...)
         - <any(...)>, <one(...)>, <not(...)>, <all(...)>
         """
-        constraints: list[Constraint] = []
-        nullable = False
+        first = self._peek()
 
-        tok = self._peek()
-
-        if isinstance(tok, LangleToken):
-            # <constraint, constraint, ...>
-            self._advance()
-            while not self._check(TokenType.RANGLE) and not self._is_done():
-                constraints.append(self._parse_constraint())
-                if isinstance(self._peek(), CommaToken):
-                    self._advance()
-            self._expect_type(RangleToken)
-        elif isinstance(tok, IdentifierToken):
-            self._advance()
-            name = tok.name
-            # 检查 ? 后缀
-            if isinstance(self._peek(), QuestionToken):
+        match first:
+            case LangleToken():
                 self._advance()
-                nullable = True
-            constraints.append(ConstraintIdent(name=name))
-        elif isinstance(tok, QuestionToken):
-            self._advance()
-            constraints.append(ConstraintIdent(name="?"))
+                constraints: list[Constraint] = []
+                while not self._check(RawTokenType.RANGLE) and not self._is_done():
+                    constraints.append(self._parse_constraint())
+                    if isinstance(self._peek(), CommaToken):
+                        self._advance()
+                self._expect_type(RangleToken)
+                return TypeAnnotation(source=self._span_from(first), constraints=constraints)
 
-        return TypeAnnotation(constraints=constraints, nullable=nullable)
+            case IdentifierToken(name=name):
+                self._advance()
+                nullable = False
+                if isinstance(self._peek(), QuestionToken):
+                    self._advance()
+                    nullable = True
+                return TypeAnnotation(
+                    source=self._span_from(first),
+                    constraints=[ConstraintIdent(source=self._single_span(first), name=name)],
+                    nullable=nullable,
+                )
+
+            case QuestionToken():
+                self._advance()
+                return TypeAnnotation(
+                    source=self._span_from(first),
+                    constraints=[ConstraintIdent(source=self._single_span(first), name="?")],
+                )
+
+            case _:
+                self._advance()
+                return TypeAnnotation(source=self._span_from(first))
 
     def _parse_constraint(self) -> Constraint:
         """解析单个约束：标识符、函数调用或字面量。"""
         tok = self._peek()
 
-        if isinstance(tok, IdentifierToken):
-            name_tok = self._expect_type(IdentifierToken)
-            if isinstance(self._peek(), LparenToken):
-                return self._parse_constraint_call(name_tok.name)
-            return ConstraintIdent(name=name_tok.name)
+        match tok:
+            case IdentifierToken() as name_tok:
+                self._advance()
+                if isinstance(self._peek(), LparenToken):
+                    return self._parse_constraint_call(name_tok)
+                return ConstraintIdent(source=self._single_span(name_tok), name=name_tok.name)
 
-        if isinstance(tok, QuestionToken):
-            self._advance()
-            return ConstraintIdent(name="?")
+            case QuestionToken():
+                self._advance()
+                return ConstraintIdent(source=self._single_span(tok), name="?")
 
-        # 字面量参数
-        if isinstance(tok, (StringToken, IntegerToken, FloatToken,
-                            TrueToken, FalseToken, NullToken)):
-            return self._parse_constraint_literal()
+            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken():
+                return self._parse_constraint_literal()
 
-        self._advance()
-        return ConstraintIdent(name="?")
+            case _:
+                self._advance()
+                return ConstraintIdent(source=self._single_span(tok), name="?")
 
-    def _parse_constraint_call(self, name: str) -> ConstraintCall:
+    def _parse_constraint_call(self, name_tok: IdentifierToken) -> ConstraintCall:
         """解析约束函数调用: name(arg, arg, ...)。"""
         self._expect_type(LparenToken)
         args: list[Constraint] = []
-        while not self._check(TokenType.RPAREN) and not self._is_done():
+        while not self._check(RawTokenType.RPAREN) and not self._is_done():
             args.append(self._parse_constraint())
             if isinstance(self._peek(), CommaToken):
                 self._advance()
         self._expect_type(RparenToken)
-        return ConstraintCall(name=name, arguments=args)
+        return ConstraintCall(
+            source=self._span_from(name_tok),
+            name=name_tok.name,
+            arguments=args,
+        )
 
     def _parse_constraint_literal(self) -> ConstraintLiteral:
-        """解析约束中的字面量参数。"""
+        """解析约束中的字面量参数，包装为 ConstraintLiteral。"""
         tok = self._peek()
         self._advance()
-
-        if isinstance(tok, StringToken):
-            return ConstraintLiteral(kind="str", raw=tok.value)
-        if isinstance(tok, IntegerToken):
-            return ConstraintLiteral(kind="int", raw=str(tok.value))
-        if isinstance(tok, FloatToken):
-            return ConstraintLiteral(kind="float", raw=str(tok.value))
-        if isinstance(tok, TrueToken):
-            return ConstraintLiteral(kind="true", raw="true")
-        if isinstance(tok, FalseToken):
-            return ConstraintLiteral(kind="false", raw="false")
-        if isinstance(tok, NullToken):
-            return ConstraintLiteral(kind="null", raw="null")
-
-        return ConstraintLiteral(kind="?", raw="?")
+        lit = self._wrap_literal(tok)
+        return ConstraintLiteral(source=lit.source, value=lit)
 
     # ═══════════════════════════════════════════════════════
     # 值
@@ -490,61 +501,35 @@ class Parser:
 
     def _parse_value(self) -> Value:
         """解析任意值。"""
-        tok = self._peek()
+        match self._peek():
+            # ── $ 导入空间引用 ──
+            case DollarToken():
+                return self._parse_dollar_value()
 
-        # ── $ 导入空间引用 ──
-        if isinstance(tok, DollarToken):
-            return self._parse_dollar_value()
+            # ── 字面量（FloatToken 覆盖所有浮点值，含 NaN / ±Inf）──
+            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | NoexistToken() as tok:
+                self._advance()
+                return self._wrap_literal(tok)
 
-        # ── 字面量 ──
-        if isinstance(tok, StringToken):
-            self._advance()
-            return LiteralValue(kind="str", raw=tok.value)
-        if isinstance(tok, MultilineStringToken):
-            self._advance()
-            return LiteralValue(kind="mlstr", raw=tok.value)
-        if isinstance(tok, IntegerToken):
-            self._advance()
-            return LiteralValue(kind="int", raw=str(tok.value))
-        if isinstance(tok, FloatToken):
-            self._advance()
-            return LiteralValue(kind="float", raw=str(tok.value))
-        if isinstance(tok, TrueToken):
-            self._advance()
-            return LiteralValue(kind="true", raw="true")
-        if isinstance(tok, FalseToken):
-            self._advance()
-            return LiteralValue(kind="false", raw="false")
-        if isinstance(tok, NullToken):
-            self._advance()
-            return LiteralValue(kind="null", raw="null")
-        if isinstance(tok, NoexistToken):
-            self._advance()
-            return LiteralValue(kind="noexist", raw="noexist")
-        if isinstance(tok, NanToken):
-            self._advance()
-            return LiteralValue(kind="nan", raw="nan")
-        if isinstance(tok, PosInfToken):
-            self._advance()
-            return LiteralValue(kind="+inf", raw="+inf")
-        if isinstance(tok, NegInfToken):
-            self._advance()
-            return LiteralValue(kind="-inf", raw="-inf")
+            # ── 复合值 ──
+            case LbraceToken():
+                return self._parse_object()
+            case LbracketToken():
+                return self._parse_array()
 
-        # ── 复合值 ──
-        if isinstance(tok, LbraceToken):
-            return self._parse_object()
-        if isinstance(tok, LbracketToken):
-            return self._parse_array()
+            # ── 标识符 → 模板调用 ──
+            case IdentifierToken():
+                ident = self._expect_type(IdentifierToken)
+                return self._parse_template_call(ident)
 
-        # ── 标识符 → 模板调用 ──
-        # 严格 LL(1): 不存在"标识符字面量"值类型，id 在值位置必定是模板调用
-        if isinstance(tok, IdentifierToken):
-            ident = self._expect_type(IdentifierToken)
-            return self._parse_template_call(ident)
+            case tok:
+                self._advance()
+                # 错误回退：返回 null 占位
+                return LiteralValue(source=self._single_span(tok), value=NullToken(raw=tok.raw))
 
-        self._advance()
-        return LiteralValue(kind="error", raw="")
+    def _wrap_literal(self, tok: Token) -> LiteralValue:
+        """将字面量 Token 包装为 LiteralValue。"""
+        return LiteralValue(source=self._single_span(tok), value=tok)  # type: ignore[arg-type]
 
     def _parse_dollar_value(self) -> DollarValue:
         """$name [as type] 导入空间引用。"""
@@ -556,41 +541,43 @@ class Parser:
             self._advance()
             cast_tok = self._peek()
             if isinstance(cast_tok, IdentifierToken):
-                type_cast = cast_tok.name
+                name = cast_tok.name
+                if name in ("int", "float", "bool", "str"):
+                    type_cast = name
                 self._advance()
 
         return DollarValue(
+            source=self._span_from(dollar_tok),
             name=name_tok.name,
-            source=dollar_tok.source,
             type_cast=type_cast,
         )
 
-    def _parse_object(self) -> ObjectValue:
+    def _parse_object(self) -> DictValue:
         """{ field, ... }"""
-        self._expect_type(LbraceToken)
+        lbrace_tok = self._expect_type(LbraceToken)
         self._skip_newlines()
 
-        obj = ObjectValue()
-        while not self._check(TokenType.RBRACE) and not self._is_done():
-            obj.fields.append(self._parse_field())
+        fields: list[Field] = []
+        while not self._check(RawTokenType.RBRACE) and not self._is_done():
+            fields.append(self._parse_field())
             self._skip_newlines()
 
         self._expect_type(RbraceToken)
-        return obj
+        return DictValue(source=self._span_from(lbrace_tok), fields=fields)
 
     def _parse_array(self) -> ArrayValue:
         """[ value, ... ] 换行等价于逗号。"""
-        self._expect_type(LbracketToken)
+        lbracket_tok = self._expect_type(LbracketToken)
         self._skip_newlines()
 
-        arr = ArrayValue()
-        while not self._check(TokenType.RBRACKET) and not self._is_done():
+        elements: list[Value] = []
+        while not self._check(RawTokenType.RBRACKET) and not self._is_done():
             val = self._parse_value()
-            arr.elements.append(val)
+            elements.append(val)
             self._skip_separators()
 
         self._expect_type(RbracketToken)
-        return arr
+        return ArrayValue(source=self._span_from(lbracket_tok), elements=elements)
 
     def _parse_template_call(self, name_tok: IdentifierToken) -> TemplateCallValue:
         """Name(pos_args..., named_arg=value, ...)"""
@@ -601,9 +588,9 @@ class Parser:
         named: dict[str, Value] = {}
         saw_named = False
 
-        while not self._check(TokenType.RPAREN) and not self._is_done():
+        while not self._check(RawTokenType.RPAREN) and not self._is_done():
             self._skip_newlines()
-            if self._check(TokenType.RPAREN) or self._is_done():
+            if self._check(RawTokenType.RPAREN) or self._is_done():
                 break
 
             # 命名参数检测: name=value
@@ -620,42 +607,46 @@ class Parser:
                 self._pos = saved
 
             if saw_named:
-                # 位置参数不能出现在命名参数之后
-                raise SyntaxError(f"位置参数不能出现在命名参数之后 ({name_tok.source.file}:{name_tok.source.line})")
+                self._errors.add(TemplateArgOrderError(source=self._single_span(name_tok)))
+                # 错误恢复：仍消费该值作为位置参数（宽松模式）
 
             positional.append(self._parse_value())
             self._skip_separators()
 
         self._expect_type(RparenToken)
         return TemplateCallValue(
+            source=self._span_from(name_tok),
             template_name=name_tok.name,
             positional_args=positional,
             named_args=named,
-            source=name_tok.source,
         )
 
     # ═══════════════════════════════════════════════════════
     # 辅助方法
     # ═══════════════════════════════════════════════════════
 
+    def _span_from(self, first: Token) -> SourceRange:
+        """计算从 first 到当前已消费的最后一个 token 的 SourceRange。"""
+        last = self._tokens[self._pos - 1] if self._pos > 0 else first
+        return SourceRange(start=first.raw.source.start, end=last.raw.source.end)
+
+    @staticmethod
+    def _single_span(tok: Token) -> SourceRange:
+        """单个 token 的 SourceRange。"""
+        return tok.raw.source
+
     def _peek(self) -> Token:
-        if self._pos >= len(self._tokens):
-            return EofToken(
-                source=self._tokens[-1].source if self._tokens
-                else SourceInfo(file="", line=0, col=0, start=0, end=0),
-                type=TokenType.EOF,
-            )
-        return self._tokens[self._pos]
+        return self._tokens[min(self._pos, len(self._tokens) - 1)]
 
     def _advance(self) -> Token:
         tok = self._peek()
         self._pos += 1
         return tok
 
-    def _check(self, token_type: TokenType) -> bool:
+    def _check(self, token_type: RawTokenType) -> bool:
         if self._pos >= len(self._tokens):
-            return token_type is TokenType.EOF
-        return self._tokens[self._pos].type is token_type  # type: ignore[union-attr]
+            return token_type is RawTokenType.EOF
+        return self._tokens[self._pos].raw.type is token_type
 
     def _is_done(self) -> bool:
         return self._pos >= len(self._tokens) or isinstance(self._tokens[self._pos], EofToken)
@@ -672,9 +663,16 @@ class Parser:
     def _expect_type(self, token_cls: type[_TToken]) -> _TToken:
         tok = self._peek()
         if not isinstance(tok, token_cls):
-            raise SyntaxError(
-                f"期望 {token_cls.__name__}，实际为 {tok.type.name} "
-                f"({tok.source.file}:{tok.source.line}:{tok.source.col})"
-            )
+            self._errors.add(UnexpectedTokenError(
+                source=self._single_span(tok),
+                expected=token_cls.__name__,
+                actual=tok.raw.type.name,
+            ))
+            # 错误恢复：跳过意外 token，尝试继续
+            self._advance()
+            if self._is_done():
+                # 到达末尾：返回最后消费的 token（类型不匹配但至少不崩溃）
+                return tok  # type: ignore[return-value]
+            return self._peek()  # type: ignore[return-value]
         self._pos += 1
         return tok
