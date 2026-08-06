@@ -14,7 +14,6 @@ from typing import Any
 
 from infinity_data.tokenizer.models.raw_tokens import SourceInfo
 
-
 # ═══════════════════════════════════════════════════════════
 # 值
 # ═══════════════════════════════════════════════════════════

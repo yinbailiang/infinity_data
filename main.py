@@ -143,13 +143,11 @@ def _format_field(field: Field | TemplateField, indent: int = 0) -> str:
     """格式化字段定义。"""
     parts = [field.name]
 
-    if field.type_annotation:
-        ta = field.type_annotation
+    if field.constraints:
+        ta = field.constraints
         cs = ", ".join(_format_constraint(c) for c in ta.constraints)
         if cs:
             parts.append(f": <{cs}>")
-        if ta.nullable:
-            parts.append("?")
     elif isinstance(field, TemplateField):
         # 模板字段必须有类型标注
         parts.append(": <?>")

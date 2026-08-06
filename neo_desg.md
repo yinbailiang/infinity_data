@@ -39,18 +39,32 @@
 - `object?`, `int?`, `str?`, `bool?`, ...
 
 内置一般约束:
-- `range(ge, le)`
-- `size(ge, le)`
-- `each(constraint)`
-- `in([choice, ...])`
-- `ip`, `ip4`, `ip6`
-- `regex("re")`
+- `range(ge, le)` 数值范围，ge/le 可省略一端
+- `size(ge, le)` 集合大小或字符串长度
+- `each(constraint)` list 每个元素均满足约束则满足，dict 每个键值均满足则满足
+- `in([choice, ...])` 值必须在给定选项中
+- `ip`, `ip4`, `ip6` IP 地址格式
+- `regex("re")` 正则匹配
+- `email` 邮箱格式
+- `url` URL 格式
+- `uuid` UUID 格式
+- `hostname` 主机名格式
+- `positive` 正数 (> 0)
+- `negative` 负数 (< 0)
+- `nonnegative` 非负数 (>= 0)
+- `eq(value)` 等于指定值
+- `unique` 集合元素不重复
+
+字典约束:
+- `has(key)` dict 包含指定键则满足
+- `field(name, constraint)` 对某个field进行约束，如果field不存在或者约束失败，则不满足
 
 逻辑约束:
 - `not(constraint)` 内部约束不满足则满足
 - `any(constraint_a, constraint_b, ...)` 内部约束有任意多个被满足则满足
 - `one(constraint_a, constraint_b, ...)` 内部约束只有一个被满足则满足
 - `all(constraint_a, constraint_b, ...)` 内部约束全部满足则满足
+- `when(condition, requirement)`         当condition满足时，要求requirement满足
 
 特殊规则:
 - **单约束可省略尖括号**: `field: int = 10` 等价于 `field: <int> = 10`
@@ -275,43 +289,48 @@ user_service Service(
 )
 ```
 
-### 2.5 跨字段断言
+### 2.5 模板级约束
 
-> `assert` 仅允许写在模板内部，用于表达字段之间的约束关系。
+> 以 `:` 起始，约束目标为模板实例化出的整个 dict。
 
 基础语法:
-- `assert condition, "错误信息"`
+- `: <constraint, ...>`
+- `: constraint` 单约束可省略尖括号
 
 规则:
-- `assert` 只能在模板（`~Template { ... }`）内部使用。
-- `condition` 支持引用同模板中定义的字段名。
-- `condition` 支持 `and`, `or`, `not`, `==`, `!=`, `>`, `<`, `>=`, `<=`, `in(...)` 运算符。
-- `"错误信息"` 为必填，断言违反时作为诊断消息输出。
-- 实例化或手写 dict 满足模板约束时，所有 `assert` 均需通过。
-- **不允许多层嵌套**：`assert` 在模板的顶层字段作用域执行，字段引用无歧义。
+- `:` 只能在模板（`~Template { ... }`）内部使用。
+- 约束目标是模板对应的整个 dict，而非某个字段。
+- 约束函数与字段级约束完全共用（同一注册表）。
+- 所有 `:` 约束均需通过，否则为语义错误。
 
 示例:
 ```infd
 ~Server {
-    port: int = 80,
+    port: <int, range(1, 65535)> = 80,
     tls: bool = false,
     debug: bool = false,
     mode: <str, in("production", "staging")> = "production",
 
-    assert port > 1024 or not debug, "debug 模式下端口必须大于 1024"
-    assert (port != 443) or tls, "使用 443 端口时必须启用 TLS"
-    assert mode != "production" or tls, "生产环境必须启用 TLS"
-    assert port != 80 or mode != "production", "生产环境不允许使用默认端口 80"
-    assert port in (80, 443, 8080, 8443) or port > 1024, "非标准端口必须大于 1024"
+    # 互斥字段：要么有 host 要么有 ip
+    : <one(has(host), has(ip))>,
+
+    # port=443 时必须启用 TLS
+    : <when(field(port, eq(443)), field(tls, eq(true)))>,
+
+    # debug 模式下端口必须大于 1024
+    : <when(field(debug, eq(true)), field(port, range(1025, 65535)))>,
+
+    # 生产环境必须启用 TLS
+    : <when(field(mode, eq("production")), field(tls, eq(true)))>,
 }
 
-# 实例化：所有 assert 在语义分析时校验
+# 实例化：所有 : 约束在语义分析时校验
 my_server = Server(port=443, tls=true)
-# ✅ 通过: port=443 → (443!=443) or true → true
+# ✅ 通过
 
 # 违反时获得明确的错误信息
 bad_server = Server(port=443, tls=false)
-# ❌ 断言违反: "使用 443 端口时必须启用 TLS"
+# ❌ 约束违反: when(field(port, eq(443)), field(tls, eq(true)))
 ```
 
 ---

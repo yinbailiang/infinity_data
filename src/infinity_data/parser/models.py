@@ -13,26 +13,21 @@ from infinity_data.tokenizer.models.tokens import (
     NoexistToken,
     NullToken,
     StringToken,
-    Token,
 )
 
-# ═══════════════════════════════════════════════════════════
-# 工具函数
-# ═══════════════════════════════════════════════════════════
-
-def token_source(token: Token) -> SourceRange:
-    """从任意 Token 提取 SourceRange。"""
-    return token.raw.source
-
 
 # ═══════════════════════════════════════════════════════════
-# 文档
+# 节点
 # ═══════════════════════════════════════════════════════════
 @dataclass
 class AstNode:
     """AST 节点基类。"""
     source: SourceRange
 
+
+# ═══════════════════════════════════════════════════════════
+# 文档
+# ═══════════════════════════════════════════════════════════
 
 @dataclass
 class Document(AstNode):
@@ -50,53 +45,36 @@ class TemplateImportStmt(AstNode):
     from_path: str        # 文件路径（unix 风格）
     names: list[str]      # 导入的模板名列表
 
-
 @dataclass
 class EnvImportStmt(AstNode):
     """环境变量导入: !env import NAME [as NEW_NAME]"""
     name: str             # 环境变量名
     alias: str | None     # 别名（可选）
 
-
-@dataclass
-class FileImportStmt(AstNode):
-    """配置文件导入: !file "path" as <format> import .path.to.key [as alias], ..."""
-    file_path: str        # 文件路径
-    format: str | None    # 文件格式: "yaml", "json", "toml" 或 None（自动检测后缀）
-    imports: list[FileImportItem]
-
-
-@dataclass
-class FileImportItem(AstNode):
-    """配置文件导入项。"""
-    json_path: list[JsonPathSegment]  # 路径段列表；空列表 = 导入整个文件
-    alias: str | None     # 别名（可选）
-
-
-# ═══════════════════════════════════════════════════════════
-# JSON 路径
-# ═══════════════════════════════════════════════════════════
-
 @dataclass
 class JsonPathKey(AstNode):
     """JSON 路径中的键访问: .key 或 .\"key\" """
     key: str
-
 
 @dataclass
 class JsonPathIndex(AstNode):
     """JSON 路径中的索引访问: [N] """
     index: int
 
-
 type JsonPathSegment = JsonPathKey | JsonPathIndex
 
+@dataclass
+class FileImportItem(AstNode):
+    """配置文件导入项。"""
+    json_path: list[JsonPathSegment]  # 路径段列表；空列表 = 导入整个文件
+    alias: str                        # 别名（必须）
 
 @dataclass
-class TemplateDef(AstNode):
-    """模板定义: ~Name { ... }"""
-    name: str
-    fields: list[TemplateField]
+class FileImportStmt(AstNode):
+    """配置文件导入: !file "path" as <format> import .path.to.key as alias, ..."""
+    file_path: str        # 文件路径
+    format: str | None    # 文件格式: "yaml", "json", "toml" 或 None（自动检测后缀）
+    imports: list[FileImportItem]
 
 
 @dataclass
@@ -107,20 +85,28 @@ class TemplateField(AstNode):
     - 必填字段必须在非必填字段之前
     """
     name: str
-    type_annotation: TypeAnnotation                 # 模板字段必须有类型标注
-    default_value: Value | None                     # None = 必填字段
+    constraints: Constraints                 # 模板字段必须有类型标注
+    default_value: Value | None              # None = 必填字段
+
+@dataclass
+class TemplateDef(AstNode):
+    """模板定义: ~Name { ... } 或 ~Name(config=value) { ... }"""
+    name: str
+    fields: list[TemplateField]
+    config: dict[str, Value] = field(default_factory=lambda: {})
+    constraints: list[Constraint] = field(default_factory=lambda: [])
 
 
 @dataclass
 class Field(AstNode):
     """普通字段定义：name[: type] [= value]。"""
     name: str
-    type_annotation: TypeAnnotation | None = None
+    constraints: Constraints | None = None
     value: Value | None = None
 
 
 # ═══════════════════════════════════════════════════════════
-# 类型标注 / 约束
+# 约束
 # ═══════════════════════════════════════════════════════════
 
 @dataclass
@@ -142,20 +128,17 @@ class ConstraintLiteral(AstNode):
     value: LiteralValue
 
 
-type Constraint = ConstraintIdent | ConstraintCall | ConstraintLiteral
+type Constraint = ConstraintIdent | ConstraintCall | ConstraintLiteral | ErrorConstraint
 
 
 @dataclass
-class TypeAnnotation(AstNode):
-    """类型标注，如 int, str?, <int, range(1,10)>, <int, each(str)>。
+class Constraints(AstNode):
+    """约束列表，如 int, str?, <int, range(1,10)>, <int, each(str)>。
 
     语义说明：
     - constraints 列表，若 len > 1，隐含 all(constraint1, constraint2, ...)
-    - nullable: 当标注为 type? 时为 True，等价于 one(type, ?)
-    - 单约束省略尖括号: field: int = 10
     """
     constraints: list[Constraint] = field(default_factory=lambda: [])
-    nullable: bool = False
 
 
 # ═══════════════════════════════════════════════════════════
@@ -198,9 +181,30 @@ class TemplateCallValue(AstNode):
 
 
 # ═══════════════════════════════════════════════════════════
+# 错误节点
+# ═══════════════════════════════════════════════════════════
+
+@dataclass
+class ErrorStatement(AstNode):
+    """解析失败的语句。用于错误恢复。"""
+    message: str
+
+
+@dataclass
+class ErrorValue(AstNode):
+    """解析失败的值。用于错误恢复。"""
+    message: str
+
+
+@dataclass
+class ErrorConstraint(AstNode):
+    """解析失败的约束。用于错误恢复。"""
+    message: str
+
+
+# ═══════════════════════════════════════════════════════════
 # 联合类型
 # ═══════════════════════════════════════════════════════════
 
-type Statement = TemplateImportStmt | EnvImportStmt | FileImportStmt | TemplateDef | Field
-type Value = LiteralValue | DollarValue | DictValue | ArrayValue | TemplateCallValue
-
+type Statement = TemplateImportStmt | EnvImportStmt | FileImportStmt | TemplateDef | Field | ErrorStatement
+type Value = LiteralValue | DollarValue | DictValue | ArrayValue | TemplateCallValue | ErrorValue

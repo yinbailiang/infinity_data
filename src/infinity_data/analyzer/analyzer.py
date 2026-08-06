@@ -46,7 +46,7 @@ from infinity_data.parser.models import (
     TemplateDef,
     TemplateField,
     TemplateImportStmt,
-    TypeAnnotation,
+    Constraints,
     Value,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceInfo
@@ -298,21 +298,12 @@ class SemanticAnalyzer:
     # 约束语法糖展开
     # ═══════════════════════════════════════════════════════
 
-    def _expand_annotation(self, annotation: TypeAnnotation) -> TypeAnnotation:
+    def _expand_annotation(self, annotation: Constraints) -> Constraints:
         """展开约束语法糖：
-        - nullable (type?) → one(type, ?)
         - 多约束 <a, b, c> → all(a, b, c)
+        - type? → one(type, ?) 已在 parser 阶段展开
         """
         constraints = list(annotation.constraints)
-
-        if annotation.nullable:
-            # type? → one(type, ?)
-            constraints = [
-                ConstraintCall(name="one", arguments=[
-                    *constraints,
-                    ConstraintIdent(name="?"),
-                ])
-            ]
 
         if len(constraints) > 1:
             # <a, b, c> → all(a, b, c)
@@ -320,7 +311,7 @@ class SemanticAnalyzer:
                 ConstraintCall(name="all", arguments=constraints),
             ]
 
-        return TypeAnnotation(constraints=constraints, nullable=False)
+        return Constraints(constraints=constraints)
 
     # ═══════════════════════════════════════════════════════
     # 字段分析
@@ -561,7 +552,7 @@ class SemanticAnalyzer:
 
     def _execute_constraints(
         self,
-        annotation: TypeAnnotation,
+        annotation: Constraints,
         value: StdValue | None,
         source: SourceInfo | None,
         path: str,
