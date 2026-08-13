@@ -1,0 +1,147 @@
+"""语义分析阶段的标准 AST（StdAst）与统一诊断模型。
+
+StdAst 是模板展开、约束校验之后的规范化 AST：
+
+- 三态可空：``noexist``（键不存在）/ ``null``（键存在值为 null）/ value
+- 浮点统一为 :class:`decimal.Decimal`（规范要求无限精度十进制浮点）
+- ``nan`` / ``+inf`` / ``-inf`` 以 ``Decimal("NaN")`` / ``Decimal("Infinity")`` /
+  ``Decimal("-Infinity")`` 表示，kind 均为 ``"float"``
+"""
+
+from __future__ import annotations
+
+import decimal
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Literal
+
+from infinity_data.infra.errors import InfinityDataError
+from infinity_data.tokenizer.models.raw_tokens import SourceRange
+
+LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
+"""字面量 kind 枚举。"""
+
+
+class Severity(Enum):
+    """诊断严重级别。"""
+
+    ERROR = 'error'
+    WARNING = 'warning'
+    INFO = 'info'
+
+
+@dataclass(frozen=True)
+class Diagnostic:
+    """统一诊断：语义阶段产生，流水线聚合词法/语法错误也使用此结构。"""
+
+    severity: Severity
+    message: str
+    source: SourceRange | None = None
+    path: str = ''
+
+    @property
+    def location(self) -> str:
+        if self.source is None:
+            return '<unknown>'
+        s = self.source.start
+        return f'{s.file_path}:{s.line}:{s.col}'
+
+    def sort_key(self) -> tuple[str, int, int]:
+        """按源码位置排序。"""
+        if self.source is None:
+            return ('\uffff', 0, 0)
+        s = self.source.start
+        return (s.file_path, s.line, s.col)
+
+    @classmethod
+    def from_error(cls, error: InfinityDataError[Any]) -> Diagnostic:
+        """将词法/语法阶段的异常式错误转换为统一诊断（唯一转换口）。
+
+        - 词法阶段 ``source`` 为单点 ``SourceInfo`` → 零宽 ``SourceRange``
+        - 语法阶段 ``source`` 已是 ``SourceRange`` → 直接使用
+        """
+        src: Any = error.source
+        rng = src if hasattr(src, 'start') else SourceRange(start=src, end=src)
+        return cls(severity=Severity.ERROR, message=error.message, source=rng)
+
+
+# ═══════════════════════════════════════════════════════════
+# 值
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass
+class StdLiteral:
+    """标准字面量值。
+
+    kind 与 Python 值的对应：
+    - ``"str"``    → str
+    - ``"int"``    → int
+    - ``"float"``  → Decimal（含 NaN / ±Infinity）
+    - ``"bool"``   → bool
+    - ``"null"``   → None
+    - ``"noexist"``→ None（键不出现在结果中）
+    """
+
+    kind: LiteralKind
+    value: str | int | decimal.Decimal | bool | None
+
+
+type StdValue = StdLiteral | StdArray | StdObject
+
+
+@dataclass
+class StdField:
+    """标准字段：名称 + 已校验的值 + 来源信息。"""
+
+    name: str
+    value: StdValue | None
+    source: SourceRange | None = None
+
+    @property
+    def is_noexist(self) -> bool:
+        """是否为 noexist 标记（键不出现在结果中）。"""
+        return isinstance(self.value, StdLiteral) and self.value.kind == 'noexist'
+
+    @property
+    def is_null(self) -> bool:
+        """值是否为 null。"""
+        return isinstance(self.value, StdLiteral) and self.value.kind == 'null'
+
+
+@dataclass
+class StdArray:
+    """标准数组值。"""
+
+    elements: list[StdValue] = field(default_factory=list[StdValue])
+
+
+@dataclass
+class StdObject:
+    """标准对象值。"""
+
+    fields: list[StdField] = field(default_factory=list[StdField])
+
+    def get(self, name: str) -> StdField | None:
+        """按名称查找字段（无则 None）。"""
+        for f in self.fields:
+            if f.name == name:
+                return f
+        return None
+
+
+# ═══════════════════════════════════════════════════════════
+# 文档
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass
+class StdDocument:
+    """标准文档：顶层对象 + 诊断信息。"""
+
+    root: StdObject = field(default_factory=StdObject)
+    diagnostics: list[Diagnostic] = field(default_factory=list[Diagnostic])
+
+    @property
+    def has_errors(self) -> bool:
+        return any(d.severity is Severity.ERROR for d in self.diagnostics)

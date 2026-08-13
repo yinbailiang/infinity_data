@@ -12,6 +12,10 @@
 - .infd 允许模板定义和数据定义
 - .inft 仅允许模板定义
 
+### 0.3 顶层数据模型
+
+顶层所有非模板定义共同构成一个 dict
+
 ## 1. 基础语法
 
 ### 1.1 字段定义
@@ -31,18 +35,21 @@
 基础语法:
 - `key: constraint = default,`
 - `key: <constraint, ...> = default,`
+- `key: constraint [...],`
+- `key: <constraint, ...> {...},`
 
 
 内置类型约束:
-- `?`
-- `object`，`int`, `str`, `bool`, `float`, `list`, `dict`
-- `object?`, `int?`, `str?`, `bool?`, ...
+- `?` 值只能是 `null` 或者 `noexist`
+- `object` 任何不是 `null` 或者 `noexist` 的值
+- `int`, `str`, `bool`, `float`, `list`, `dict` 字面意思
+- `object?`, `int?`, `str?`, `bool?`, ... 便携可空类型语法糖
 
 内置一般约束:
 - `range(ge, le)` 数值范围，ge/le 可省略一端
 - `size(ge, le)` 集合大小或字符串长度
-- `each(constraint)` list 每个元素均满足约束则满足，dict 每个键值均满足则满足
-- `in([choice, ...])` 值必须在给定选项中
+- `each(constraint)` list 每个元素均满足约束则满足，dict 每个键的值均满足则满足
+- `in(choice, ...)` 值必须在给定选项中
 - `ip`, `ip4`, `ip6` IP 地址格式
 - `regex("re")` 正则匹配
 - `email` 邮箱格式
@@ -155,10 +162,10 @@ MD风格多行字符串，可变长起始串。
 ~Server {
     host: str = "0.0.0.0",
     port: <int, range(1, 65535)> = 80,
-    features: dict {
-        caching: <?> = exist,
+    features: <dict> {
+        caching: <?> = noexist,
         compression: bool = true,
-    },
+    }, # 注意，这里的内部dict作为默认值。模板不会为内嵌的dict默认值生成递归的校验
     tags: <list, each(str)> = ["web"],
 }
 
@@ -202,10 +209,10 @@ api Server()
 db Database("mydb")
 
 # 命名参数覆盖指定字段
-cache Server("default_cache", host="redis.internal", port=6379)
+cache Server(host="redis.internal", port=6379)
 
 # 命名参数位置无关
-cache_backup Server("backup_cache", port=6379, host="redis.internal_backup")
+cache_backup Server(port=6379, host="redis.internal_backup")
 
 # 嵌套字典中使用
 backend {
@@ -306,6 +313,8 @@ user_service Service(
 示例:
 ```infd
 ~Server {
+    host: str?
+    ip: str?
     port: <int, range(1, 65535)> = 80,
     tls: bool = false,
     debug: bool = false,

@@ -1,0 +1,245 @@
+"""约束引擎单元测试：类型约束、一般约束、逻辑约束、模板即约束。"""
+
+from decimal import Decimal
+
+from infinity_data import compile_source
+from infinity_data.semantic.models import Severity
+
+
+def errors_of(result) -> list[str]:
+    return [d.message for d in result.diagnostics if d.severity is Severity.ERROR]
+
+
+def compile_ok(source: str) -> dict:
+    result = compile_source(source)
+    assert not errors_of(result), errors_of(result)
+    return result.value
+
+
+# ═══════════════════════════════════════════════════════════
+# 类型约束
+# ═══════════════════════════════════════════════════════════
+
+
+def test_type_int_rejects_float() -> None:
+    result = compile_source('x: int = 1.5\n')
+    assert result.has_errors
+
+
+def test_type_float_accepts_int_with_coercion() -> None:
+    value = compile_ok('x: float = 3\n')
+    assert value['x'] == Decimal(3)
+
+
+def test_type_nullable() -> None:
+    value = compile_ok('a: str? = null\nb: str? = "x"\nc: int? = 7\n')
+    assert value == {'a': None, 'b': 'x', 'c': 7}
+
+
+def test_pure_nullable_question() -> None:
+    value = compile_ok('a: ? = null\nb: ? = noexist\n')
+    assert value == {'a': None}  # noexist 不出现
+
+
+def test_special_float_passes_float_constraint() -> None:
+    value = compile_ok('a: float = nan\nb: float = +inf\n')
+    assert value['a'].is_nan()
+    assert value['b'] == Decimal('Infinity')
+
+
+# ═══════════════════════════════════════════════════════════
+# 一般约束
+# ═══════════════════════════════════════════════════════════
+
+
+def test_range() -> None:
+    compile_ok('x: <int, range(1, 100)> = 50\n')
+    compile_ok('x: <int, range(1,)> = 50\n')  # 单参数 = 下界
+    assert compile_source('x: <int, range(1, 100)> = 200\n').has_errors
+
+
+def test_size() -> None:
+    compile_ok('s: <str, size(1, 5)> = "abc"\n')
+    assert compile_source('s: <str, size(1, 5)> = "abcdef"\n').has_errors
+    compile_ok('l: <list, size(2, 2)> = [1, 2]\n')
+
+
+def test_in() -> None:
+    compile_ok('x: <str, in("a", "b")> = "a"\n')
+    assert compile_source('x: <str, in("a", "b")> = "c"\n').has_errors
+
+
+def test_each_nested_call() -> None:
+    """each 内嵌调用约束（旧版实现会丢失嵌套调用）。"""
+    compile_ok('x: <list, each(in("a", "b"))> = ["a", "b"]\n')
+    assert compile_source('x: <list, each(in("a", "b"))> = ["a", "c"]\n').has_errors
+
+
+def test_each_on_dict() -> None:
+    compile_ok('x: <dict, each(int)> = { a = 1, b = 2 }\n')
+    assert compile_source('x: <dict, each(int)> = { a = 1, b = "x" }\n').has_errors
+
+
+def test_ip_family() -> None:
+    compile_ok('a: ip = "192.168.0.1"\nb: ip4 = "10.0.0.1"\nc: ip6 = "::1"\n')
+    assert compile_source('a: ip = "999.1.1.1"\n').has_errors
+    assert compile_source('b: ip4 = "::1"\n').has_errors
+
+
+def test_regex() -> None:
+    compile_ok('x: regex("a+") = "aaa"\n')
+    assert compile_source('x: regex("a+") = "bbb"\n').has_errors
+
+
+def test_email_url_uuid_hostname() -> None:
+    compile_ok("""
+a: email = "user@example.com"
+b: url = "https://example.com/x"
+c: uuid = "550e8400-e29b-41d4-a716-446655440000"
+d: hostname = "api.example.com"
+""")
+    assert compile_source('a: email = "not-an-email"\n').has_errors
+    assert compile_source('b: url = "not a url"\n').has_errors
+    assert compile_source('c: uuid = "xyz"\n').has_errors
+    assert compile_source('d: hostname = "-bad-.com"\n').has_errors
+
+
+def test_sign_constraints() -> None:
+    compile_ok('a: positive = 1\nb: negative = -1\nc: nonnegative = 0\n')
+    assert compile_source('a: positive = -1\n').has_errors
+    assert compile_source('b: negative = 1\n').has_errors
+    assert compile_source('c: nonnegative = -1\n').has_errors
+
+
+def test_eq() -> None:
+    compile_ok('x: eq(42) = 42\n')
+    assert compile_source('x: eq(42) = 43\n').has_errors
+
+
+def test_unique() -> None:
+    compile_ok('x: unique = [1, 2, 3]\n')
+    assert compile_source('x: unique = [1, 2, 1]\n').has_errors
+
+
+# ═══════════════════════════════════════════════════════════
+# 字典约束
+# ═══════════════════════════════════════════════════════════
+
+
+def test_has() -> None:
+    compile_ok('x: has(a) = { a = 1 }\n')
+    assert compile_source('x: has(a) = { b = 1 }\n').has_errors
+
+
+def test_field() -> None:
+    compile_ok('x: field(port, range(1, 100)) = { port = 80 }\n')
+    assert compile_source('x: field(port, range(1, 100)) = { port = 200 }\n').has_errors
+    assert compile_source('x: field(missing, int) = { port = 80 }\n').has_errors
+
+
+# ═══════════════════════════════════════════════════════════
+# 逻辑约束
+# ═══════════════════════════════════════════════════════════
+
+
+def test_not() -> None:
+    compile_ok('x: not(eq(1)) = 2\n')
+    assert compile_source('x: not(eq(1)) = 1\n').has_errors
+
+
+def test_any() -> None:
+    compile_ok('x: <any(int, str)> = 5\nx2: <any(int, str)> = "s"\n')
+    assert compile_source('x: <any(int, str)> = true\n').has_errors
+
+
+def test_one() -> None:
+    compile_ok('x: <one(int, str)> = 5\nx2: <one(int, str)> = "s"\n')
+    assert compile_source('x: <one(int, eq(5))> = 5\n').has_errors  # 两个都满足
+
+
+def test_all_default_sugar() -> None:
+    """<a, b> 等价 all(a, b)。"""
+    compile_ok('x: <int, range(1, 10)> = 5\n')
+    assert compile_source('x: <int, range(1, 10)> = "s"\n').has_errors
+
+
+def test_when() -> None:
+    compile_ok("""
+x: <dict, when(field(mode, eq("prod")), field(tls, eq(true)))> = {
+    mode = "dev"
+    tls = false
+}
+""")
+    assert compile_source("""
+x: <dict, when(field(mode, eq("prod")), field(tls, eq(true)))> = {
+    mode = "prod"
+    tls = false
+}
+""").has_errors
+
+
+def test_unknown_constraint() -> None:
+    result = compile_source('x: not_a_constraint = 1\n')
+    assert result.has_errors
+    assert any('未知约束' in m for m in errors_of(result))
+
+
+# ═══════════════════════════════════════════════════════════
+# 模板即约束（嵌套与可空）
+# ═══════════════════════════════════════════════════════════
+
+
+def test_template_as_constraint_with_each() -> None:
+    value = compile_ok("""
+~Endpoint {
+    path: str = "/"
+    method: str = "GET"
+}
+cluster: <list, each(Endpoint)> = [
+    { path = "/users", method = "GET" },
+    { path = "/users", method = "POST" },
+]
+""")
+    assert value['cluster'] == [
+        {'path': '/users', 'method': 'GET'},
+        {'path': '/users', 'method': 'POST'},
+    ]
+
+
+def test_template_constraint_required_field_missing() -> None:
+    result = compile_source("""
+~Database {
+    name: str
+    host: str = "localhost"
+}
+db: Database = { host = "h" }
+""")
+    assert result.has_errors
+    assert any('缺失' in d.message for d in result.diagnostics)
+
+
+def test_template_constraint_null_requires_nullable() -> None:
+    assert compile_source("""
+~Server {
+    host: str = "0.0.0.0"
+}
+x: Server = null
+""").has_errors
+    compile_ok("""
+~Server {
+    host: str = "0.0.0.0"
+}
+x: Server? = null
+""")
+
+
+def test_template_constraint_applies_level_constraints() -> None:
+    result = compile_source("""
+~Server {
+    port: int = 80
+    tls: bool = false
+    : <when(field(port, eq(443)), field(tls, eq(true)))>
+}
+hand: Server = { port = 443, tls = false }
+""")
+    assert result.has_errors

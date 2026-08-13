@@ -1,12 +1,14 @@
 [project]
 name = "infinity-data"
 version = "0.1.0"
-description = "Add your description here"
+description = "InfinityData：声明式配置语言（.infd/.inft）的 Python 编译器库"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "aiostream",
-    "pydantic>=2.13.4",
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
     "ruff>=0.15.21",
     "pyright",
 ]
@@ -40,7 +42,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["event_bus"]
+known-first-party = ["infinity_data"]
 
 [tool.ruff.format]
 indent-style = "space"

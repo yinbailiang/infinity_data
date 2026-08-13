@@ -55,34 +55,35 @@ from infinity_data.tokenizer.models.tokens import (
 # ── 单字符 token 映射 ──────────────────────────────
 
 _SIMPLE_MAP: dict[RawTokenType, type[Token]] = {
-    RawTokenType.LBRACE:      LbraceToken,
-    RawTokenType.RBRACE:      RbraceToken,
-    RawTokenType.LBRACKET:    LbracketToken,
-    RawTokenType.RBRACKET:    RbracketToken,
-    RawTokenType.LPAREN:      LparenToken,
-    RawTokenType.RPAREN:      RparenToken,
-    RawTokenType.LANGLE:      LangleToken,
-    RawTokenType.RANGLE:      RangleToken,
-    RawTokenType.EQUALS:      EqualsToken,
-    RawTokenType.COLON:       ColonToken,
-    RawTokenType.COMMA:       CommaToken,
-    RawTokenType.TILDE:       TildeToken,
+    RawTokenType.LBRACE: LbraceToken,
+    RawTokenType.RBRACE: RbraceToken,
+    RawTokenType.LBRACKET: LbracketToken,
+    RawTokenType.RBRACKET: RbracketToken,
+    RawTokenType.LPAREN: LparenToken,
+    RawTokenType.RPAREN: RparenToken,
+    RawTokenType.LANGLE: LangleToken,
+    RawTokenType.RANGLE: RangleToken,
+    RawTokenType.EQUALS: EqualsToken,
+    RawTokenType.COLON: ColonToken,
+    RawTokenType.COMMA: CommaToken,
+    RawTokenType.TILDE: TildeToken,
     RawTokenType.EXCLAMATION: ExclamationToken,
-    RawTokenType.QUESTION:    QuestionToken,
-    RawTokenType.DOLLAR:      DollarToken,
-    RawTokenType.DOT:         DotToken,
-    RawTokenType.NULL:        NullToken,
-    RawTokenType.NOEXIST:     NoexistToken,
-    RawTokenType.FROM:        FromToken,
-    RawTokenType.IMPORT:      ImportToken,
-    RawTokenType.ENV:         EnvToken,
-    RawTokenType.FILE:        FileToken,
-    RawTokenType.AS:          AsToken,
-    RawTokenType.NEWLINE:     NewlineToken,
+    RawTokenType.QUESTION: QuestionToken,
+    RawTokenType.DOLLAR: DollarToken,
+    RawTokenType.DOT: DotToken,
+    RawTokenType.NULL: NullToken,
+    RawTokenType.NOEXIST: NoexistToken,
+    RawTokenType.FROM: FromToken,
+    RawTokenType.IMPORT: ImportToken,
+    RawTokenType.ENV: EnvToken,
+    RawTokenType.FILE: FileToken,
+    RawTokenType.AS: AsToken,
+    RawTokenType.NEWLINE: NewlineToken,
 }
 
 
 # ── 多行字符串处理 ─────────────────────────────────
+
 
 def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
     """处理多行字符串 raw 返回 (content, tags)。
@@ -92,7 +93,7 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
     # 1. 统计起始反引号数量
     backtick_count = 0
     for ch in raw:
-        if ch == "`":
+        if ch == '`':
             backtick_count += 1
         else:
             break
@@ -102,10 +103,10 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
 
     # 2. 提取 tags（起始行剩余部分）
     rest_start = backtick_count
-    newline_idx = raw.find("\n", rest_start)
+    newline_idx = raw.find('\n', rest_start)
     if newline_idx == -1:
         # 无换行：整个内容在同一行（没有 tags，没有 body）
-        return "", []
+        return '', []
 
     tags_part = raw[rest_start:newline_idx]
     tags = tags_part.split() if tags_part.strip() else []
@@ -118,10 +119,10 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
     # 从尾部查找连续反引号序列
     idx = len(raw) - 1
     while idx >= content_start:
-        if raw[idx] == "`":
+        if raw[idx] == '`':
             # 向前数连续反引号
             seq_end = idx
-            while idx >= content_start and raw[idx] == "`":
+            while idx >= content_start and raw[idx] == '`':
                 idx -= 1
             seq_len = seq_end - idx
             if seq_len >= backtick_count:
@@ -139,7 +140,7 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
     content = raw[content_start:closing_start]
 
     # 6. 丢弃尾部空白及一个格式化换行
-    content: str = content.rstrip(" \t").removesuffix("\n")
+    content: str = content.rstrip(' \t').removesuffix('\n')
 
     return content, tags
 
@@ -148,6 +149,7 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
 # FinalTokenizer
 # ═══════════════════════════════════════════════════════════
 
+
 class FinalTokenizer:
     """终遍词法分析器：消费 RawToken 流，产出 Token 流。"""
 
@@ -155,17 +157,14 @@ class FinalTokenizer:
         self._aiter: AsyncIterator[RawToken] | None = None
         self._source: AsyncIterable[RawToken] = source
 
-    def __aiter__(self) -> "FinalTokenizer":
+    def __aiter__(self) -> 'FinalTokenizer':
         return self
 
     async def __anext__(self) -> Token:
         if self._aiter is None:
             self._aiter = aiter(self._source)
         raw = await anext(self._aiter)
-        tok = self._convert(raw)
-        if isinstance(tok, EofToken):
-            raise StopAsyncIteration
-        return tok
+        return self._convert(raw)
 
     # ── 转换核心 ──────────────────────────────────────
 
@@ -201,7 +200,7 @@ class FinalTokenizer:
             return IdentifierToken(raw=raw, name=raw.raw)
 
         # 未知类型（不应到达）
-        raise ValueError(f"未知 RawTokenType: {token_type}")
+        raise ValueError(f'未知 RawTokenType: {token_type}')
 
     # ── 各类型转换 ────────────────────────────────────
 
@@ -226,12 +225,12 @@ class FinalTokenizer:
         """解析浮点字面量（含 nan, +inf, -inf）。"""
         s = raw.raw
         match s:
-            case "nan":
-                value = decimal.Decimal("NaN")
-            case "+inf":
-                value = decimal.Decimal("Infinity")
-            case "-inf":
-                value = decimal.Decimal("-Infinity")
+            case 'nan':
+                value = decimal.Decimal('NaN')
+            case '+inf':
+                value = decimal.Decimal('Infinity')
+            case '-inf':
+                value = decimal.Decimal('-Infinity')
             case _:
                 value = decimal.Decimal(s)
         return FloatToken(raw=raw, value=value)
@@ -239,4 +238,4 @@ class FinalTokenizer:
     @staticmethod
     def _convert_bool(raw: RawToken) -> BoolToken:
         """解析布尔字面量。"""
-        return BoolToken(raw=raw, value=(raw.raw == "true"))
+        return BoolToken(raw=raw, value=(raw.raw == 'true'))

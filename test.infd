@@ -34,9 +34,9 @@ MyApp {
     log_level: <str, in("debug", "info", "warn", "error")> = "info"
     ratio: float = 0.75
 
-    # 存在性标记（裸 key）
-    experimental_features
-    maintenance_mode
+    # 存在性标记
+    experimental_features = noexist
+    maintenance_mode = noexist
 
     # 可空字段
     description: str? = null
