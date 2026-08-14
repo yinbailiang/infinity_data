@@ -2,21 +2,24 @@
 
 全链路流式：chars → RawTokenizer → FinalTokenizer → Parser → SemanticAnalyzer → Converter。
 
-公共 API 为同步接口；内部 async 阶段通过 :func:`asyncio.run` 编排。
-（词法/语法阶段的 async 是流式设计产物，性能敏感场景的同步化重构见后续里程碑。）
+公共 API：
+- :func:`compile_source` / :func:`load`：编译入口，返回 :class:`CompilationResult`
+- :func:`safe_load`：零信任加载（deny_all 沙盒，禁止一切导入）
+- :func:`check`：仅校验，返回诊断列表
+- :func:`compile_to_dict`：编译为 StdDocument（不降维）
 """
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from infinity_data.parser.errors import ParseErrorCollector
 from infinity_data.parser.models import Document
 from infinity_data.parser.parser import Parser
+from infinity_data.sandbox import SandboxConfig, SandboxError, Schema, SchemaError
 from infinity_data.semantic.analyzer import SemanticAnalyzer
 from infinity_data.semantic.converter import reduce_object
 from infinity_data.semantic.imports import ImportResolver
@@ -45,25 +48,19 @@ class CompilationResult:
         return [d for d in self.diagnostics if d.severity is Severity.WARNING]
 
 
-async def _char_source(text: str) -> AsyncIterator[str]:
-    """逐字符产出（CharStream 按单字符消费）。"""
-    for ch in text:
-        yield ch
-
-
-async def _tokenize_and_parse(source: str, file_path: str) -> tuple[Document, list[Diagnostic]]:
-    """异步阶段：词法 + 语法分析。"""
+def _tokenize_and_parse(source: str, file_path: str) -> tuple[Document, list[Diagnostic]]:
+    """词法 + 语法分析。"""
     tokenize_collector = TokenizeErrorCollector()
     parse_collector = ParseErrorCollector()
 
     raw_tokens = RawTokenizer(
-        _char_source(source),
+        iter(source),
         file_path=file_path,
         error_collector=tokenize_collector,
     )
     tokens = FinalTokenizer(raw_tokens)
     parser = Parser(tokens, error_collector=parse_collector)
-    doc = await parser.parse()
+    doc = parser.parse()
 
     diagnostics: list[Diagnostic] = []
     for err in tokenize_collector:
@@ -73,20 +70,45 @@ async def _tokenize_and_parse(source: str, file_path: str) -> tuple[Document, li
     return doc, diagnostics
 
 
+def _effective_sandbox(
+    sandbox: SandboxConfig | None,
+    env: Mapping[str, str] | None,
+) -> SandboxConfig:
+    """合并 sandbox 与便捷 env 参数。
+
+    - 两者均缺省 → deny_all（零信任，库默认）
+    - 仅 env → 以 env 授权环境变量、其余关闭（兼容旧调用方式）
+    - 均提供 → env 条目合并进 sandbox（env 优先）
+    """
+    if sandbox is None:
+        return SandboxConfig(env=dict(env)) if env is not None else SandboxConfig.deny_all()
+    if env is not None:
+        return replace(sandbox, env={**sandbox.env, **dict(env)})
+    return sandbox
+
+
 def compile_source(
     source: str,
     *,
     file_path: str = 'unknown',
     env: Mapping[str, str] | None = None,
     registry: ConstraintRegistry | None = None,
+    sandbox: SandboxConfig | None = None,
+    schema: Schema | None = None,
 ) -> CompilationResult:
     """编译源码字符串，返回 CompilationResult。
 
     Args:
         source: infd 源码文本
         file_path: 源码路径（诊断定位与相对导入基准）
-        env: 环境变量映射（None = 继承进程环境）
+        env: 环境变量便捷授权（等价于 SandboxConfig(env=env)，与 sandbox 合并）
         registry: 自定义约束注册表（None = 内置）
+        sandbox: 沙盒配置（None = 零信任 deny_all）
+        schema: 顶层模板约束
+
+    Raises:
+        SandboxError: 导入超出沙盒授权（strict 模式）
+        SchemaError: 输出不符合顶层 schema 约束
     """
     # 空源码 → 空配置
     if not source.strip():
@@ -97,10 +119,13 @@ def compile_source(
             diagnostics=[],
         )
 
-    doc, front_diagnostics = asyncio.run(_tokenize_and_parse(source, file_path))
+    doc, front_diagnostics = _tokenize_and_parse(source, file_path)
 
-    resolver = ImportResolver(env=env, base_dir=Path(file_path).parent)
-    analyzer = SemanticAnalyzer(registry=registry, import_resolver=resolver)
+    resolver = ImportResolver(
+        base_dir=Path(file_path).parent,
+        sandbox=_effective_sandbox(sandbox, env),
+    )
+    analyzer = SemanticAnalyzer(registry=registry, import_resolver=resolver, schema=schema)
     document = analyzer.analyze(doc)
 
     diagnostics = sorted(
@@ -120,17 +145,32 @@ def load(
     *,
     env: Mapping[str, str] | None = None,
     registry: ConstraintRegistry | None = None,
+    sandbox: SandboxConfig | None = None,
+    schema: Schema | None = None,
 ) -> CompilationResult:
     """加载 .infd/.inft 文件并编译。
 
     Args:
         path: 文件路径（相对导入以此为基准）
-        env: 环境变量映射（None = 继承进程环境）
+        env: 环境变量便捷授权（等价于 SandboxConfig(env=env)，与 sandbox 合并）
         registry: 自定义约束注册表（None = 内置）
+        sandbox: 沙盒配置（None = 零信任 deny_all）
+        schema: 顶层模板约束
+
+    Raises:
+        SandboxError: 导入超出沙盒授权（strict 模式）
+        SchemaError: 输出不符合顶层 schema 约束
     """
     p = Path(path)
     text = p.read_text(encoding='utf-8')
-    result = compile_source(text, file_path=str(p), env=env, registry=registry)
+    result = compile_source(
+        text,
+        file_path=str(p),
+        env=env,
+        registry=registry,
+        sandbox=sandbox,
+        schema=schema,
+    )
 
     # 规范要求 utf-8 NO BOM
     if text.startswith('\ufeff'):
@@ -142,3 +182,57 @@ def load(
         )
         result.diagnostics.sort(key=lambda d: d.sort_key())
     return result
+
+
+def safe_load(
+    path: str | Path,
+    *,
+    registry: ConstraintRegistry | None = None,
+    schema: Schema | None = None,
+) -> CompilationResult:
+    """零信任加载：等价于 ``load(path, sandbox=SandboxConfig.deny_all())``。
+
+    所有导入语句（``!env`` / ``!file`` / ``!from``）均报错。
+    只允许纯字段定义、模板定义与字面量值。
+
+    用途:
+    - 读取沙盒配置文件（自举：SandboxConfig.from_dict）
+    - 读取纯模板文件 (.inft)
+    - 读取不需要外部资源的配置
+    """
+    return load(path, registry=registry, schema=schema, sandbox=SandboxConfig.deny_all())
+
+
+def check(
+    path: str | Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    registry: ConstraintRegistry | None = None,
+    sandbox: SandboxConfig | None = None,
+    schema: Schema | None = None,
+) -> list[Diagnostic]:
+    """仅校验，不输出。沙盒/schema 违规转为 ERROR 诊断返回而非抛出。"""
+    try:
+        result = load(path, env=env, registry=registry, sandbox=sandbox, schema=schema)
+    except (SandboxError, SchemaError) as e:
+        return [
+            Diagnostic(
+                severity=Severity.ERROR,
+                message=e.message,
+                source=e.source,
+            )
+        ]
+    return result.diagnostics
+
+
+def compile_to_dict(
+    path: str | Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    registry: ConstraintRegistry | None = None,
+    sandbox: SandboxConfig | None = None,
+    schema: Schema | None = None,
+) -> StdDocument:
+    """编译为 StdDocument（不经过降维），含 .root 与 .diagnostics。"""
+    result = load(path, env=env, registry=registry, sandbox=sandbox, schema=schema)
+    return result.document if result.document is not None else StdDocument()

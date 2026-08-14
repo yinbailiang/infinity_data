@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from infinity_data.infra.location import SourceInfo, SourceRange
+
+__all__ = ['RawTokenType', 'RawToken', 'SourceInfo', 'SourceRange']
+
 
 class RawTokenType(Enum):
     """所有 token 类型。"""
@@ -40,34 +44,14 @@ class RawTokenType(Enum):
     # ── 标识符 / 关键字 ────────────────────────────
     IDENTIFIER = 'identifier'
 
-    # ── 导入关键字 ─────────────────────────────────
-    FROM = 'from'  # !from import ...
-    IMPORT = 'import'  # ... import ...
-    ENV = 'env'  # !env import ...
-    FILE = 'file'  # !file "path" as ...
-    AS = 'as'  # import ... as name / $NAME as type
+    # ── 导入关键字（! + 标识符组合，词法阶段识别，避免语法阶段二义）──
+    ENV_IMPORT = '!env'  # !env import NAME
+    FILE_IMPORT = '!file'  # !file "path" import ...
+    FROM_IMPORT = '!from'  # !from "path" import ...
 
     # ── 换行 / EOF ─────────────────────────────────
     NEWLINE = 'newline'
     EOF = 'eof'
-
-
-@dataclass
-class SourceInfo:
-    """源码位置信息。"""
-
-    file_path: str
-    line: int
-    col: int
-    index: int
-
-
-@dataclass
-class SourceRange:
-    """源码位置范围。"""
-
-    start: SourceInfo
-    end: SourceInfo
 
 
 @dataclass

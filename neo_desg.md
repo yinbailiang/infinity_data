@@ -28,7 +28,7 @@
 
 特殊规则:
 - **省略等号**：对于复合值（字典、数组等）字段，等号可省略，如 `server { port = 8080 }`
-- **省略逗号**: 对于任何需要逗号的地方，可以用换行替代
+- **省略逗号**: 对于任何需要逗号的地方，可以用换行替代，除了导入语法中使用的逗号
 
 ### 1.2 约束
 
@@ -367,6 +367,7 @@ bad_server = Server(port=443, tls=false)
 
 基础语法:
 - `!from "Path to .inft file" import Template1, Template2`
+- `!from "Path to .inft file" import Template1 as T1`
 
 Path规则:
 - 路径分割符: unix 风格 `/`
@@ -378,6 +379,7 @@ Path规则:
 
 使用:
 - 同正常模板
+- 无需 $ 前缀
 
 ### 3.3 现有配置导入
 

@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from infinity_data import compile_source, load
+from infinity_data import SandboxConfig, compile_source, load
 from infinity_data.semantic.models import Severity
 
 
@@ -241,7 +241,11 @@ def test_env_import() -> None:
 
 
 def test_file_import() -> None:
-    result = load('test_file_import.infd')
+    # M3 零信任：!file 需要显式授权（allow_files glob 白名单）
+    result = load(
+        'test_file_import.infd',
+        sandbox=SandboxConfig(allow_files=['./test_config.json']),
+    )
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {
         'config': {
@@ -273,6 +277,20 @@ def test_error_recovery_unknown_char() -> None:
     result = compile_source('a = 1\nb = 2 @\nc = 3\n')
     assert result.has_errors
     assert result.value.get('a') == 1
+
+
+def test_bang_non_import_keyword_is_tokenize_error() -> None:
+    """! 后跟非 env/file/from 是词法错误（语言不允许单独 !），其余字段不受影响。"""
+    result = compile_source('a = 1\n!bad\nb = 2\n')
+    assert result.has_errors
+    assert any('!' in d.message and 'env/file/from' in d.message for d in result.diagnostics)
+    assert result.value == {'a': 1, 'b': 2}
+
+
+def test_bang_at_eof_is_tokenize_error() -> None:
+    result = compile_source('a = 1\n!\n')
+    assert result.has_errors
+    assert result.value == {'a': 1}
 
 
 # ═══════════════════════════════════════════════════════════

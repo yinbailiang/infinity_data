@@ -11,28 +11,26 @@ from __future__ import annotations
 
 import decimal
 import json
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import Iterable, Iterator
 
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
 )
 from infinity_data.tokenizer.models.tokens import (
-    AsToken,
     BoolToken,
     ColonToken,
     CommaToken,
     DollarToken,
     DotToken,
-    EnvToken,
+    EnvImportToken,
     EofToken,
     EqualsToken,
     ExclamationToken,
-    FileToken,
+    FileImportToken,
     FloatToken,
-    FromToken,
+    FromImportToken,
     IdentifierToken,
-    ImportToken,
     IntegerToken,
     LangleToken,
     LbraceToken,
@@ -73,11 +71,9 @@ _SIMPLE_MAP: dict[RawTokenType, type[Token]] = {
     RawTokenType.DOT: DotToken,
     RawTokenType.NULL: NullToken,
     RawTokenType.NOEXIST: NoexistToken,
-    RawTokenType.FROM: FromToken,
-    RawTokenType.IMPORT: ImportToken,
-    RawTokenType.ENV: EnvToken,
-    RawTokenType.FILE: FileToken,
-    RawTokenType.AS: AsToken,
+    RawTokenType.ENV_IMPORT: EnvImportToken,
+    RawTokenType.FILE_IMPORT: FileImportToken,
+    RawTokenType.FROM_IMPORT: FromImportToken,
     RawTokenType.NEWLINE: NewlineToken,
 }
 
@@ -153,17 +149,17 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
 class FinalTokenizer:
     """终遍词法分析器：消费 RawToken 流，产出 Token 流。"""
 
-    def __init__(self, source: AsyncIterable[RawToken]) -> None:
-        self._aiter: AsyncIterator[RawToken] | None = None
-        self._source: AsyncIterable[RawToken] = source
+    def __init__(self, source: Iterable[RawToken]) -> None:
+        self._iter: Iterator[RawToken] | None = None
+        self._source: Iterable[RawToken] = source
 
-    def __aiter__(self) -> 'FinalTokenizer':
+    def __iter__(self) -> 'FinalTokenizer':
         return self
 
-    async def __anext__(self) -> Token:
-        if self._aiter is None:
-            self._aiter = aiter(self._source)
-        raw = await anext(self._aiter)
+    def __next__(self) -> Token:
+        if self._iter is None:
+            self._iter = iter(self._source)
+        raw = next(self._iter)
         return self._convert(raw)
 
     # ── 转换核心 ──────────────────────────────────────

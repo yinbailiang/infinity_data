@@ -3,16 +3,20 @@
 执行顺序（对应 neo_desg.md）：
 
 1. 收集模板定义（重复定义警告、必填字段排序校验）
-2. 解析导入语句（``!env`` / ``!file`` / ``!from``）
-3. 模板名注册为同名校验器（**模板即约束**）
-4. 逐语句分析：模板展开、约束语法糖展开、约束链执行
+2. 解析模板导入（``!from``，沙盒授权 + 递归加载外部 .inft/.infd 模板）
+3. 解析数据导入（``!env`` / ``!file``）
+4. 模板名注册为同名校验器（**模板即约束**）
+5. 逐语句分析：模板展开、约束语法糖展开、约束链执行
+6. 顶层 schema 校验（strict/lenient/strip）
 """
 
 from __future__ import annotations
 
 import decimal
+from pathlib import Path
 from typing import Any, cast
 
+from infinity_data.parser.errors import ParseErrorCollector
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
@@ -31,9 +35,12 @@ from infinity_data.parser.models import (
     LiteralValue,
     TemplateCallValue,
     TemplateDef,
+    TemplateImportItem,
     TemplateImportStmt,
     Value,
 )
+from infinity_data.parser.parser import Parser
+from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import (
     Diagnostic,
@@ -54,6 +61,8 @@ from infinity_data.semantic.registry import (
     fail_result,
     ok_result,
 )
+from infinity_data.tokenizer.errors import TokenizeErrorCollector
+from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
@@ -64,9 +73,13 @@ from infinity_data.tokenizer.models.tokens import (
     NullToken,
     StringToken,
 )
+from infinity_data.tokenizer.tokenizer import RawTokenizer
 
 MAX_NESTING_DEPTH = 200
 """值嵌套深度上限，防止递归下降导致 RecursionError。"""
+
+MAX_IMPORT_DEPTH = 32
+"""模板导入递归深度上限（防止循环导入无限递归）。"""
 
 _INVALID_CONSTRAINT = '@invalid'
 
@@ -79,10 +92,13 @@ class SemanticAnalyzer:
         *,
         registry: ConstraintRegistry | None = None,
         import_resolver: ImportResolver | None = None,
+        schema: Schema | None = None,
     ) -> None:
         self._registry = registry or ConstraintRegistry()
         self._imports = import_resolver or ImportResolver()
+        self._schema = schema
         self._templates: dict[str, TemplateDef] = {}
+        self._local_template_names: set[str] = set()
         self._namespace: dict[str, Any] = {}  # $ 引用解析目标
         self._diagnostics: list[Diagnostic] = []
         self._depth = 0
@@ -94,14 +110,18 @@ class SemanticAnalyzer:
     def analyze(self, doc: Document) -> StdDocument:
         """主入口：分析 RawAst，返回 StandardAst。"""
         self._templates = {}
+        self._local_template_names = set()
         self._namespace = {}
         self._diagnostics = []
         self._depth = 0
 
-        # 第一遍：收集模板定义
+        # 第一遍：收集本地模板定义
         self._collect_templates(doc)
 
-        # 解析导入语句
+        # 解析模板导入（!from，含 schema.from_file 隐式导入）
+        self._load_imported_templates(doc)
+
+        # 解析数据导入语句（!env / !file）
         self._namespace = self._imports.resolve(doc, self._report)
 
         # 模板名注册为约束（模板即约束）
@@ -125,8 +145,14 @@ class SemanticAnalyzer:
                 case _:
                     pass  # ErrorStatement 已在语法阶段诊断
 
+        root = StdObject(fields=root_fields)
+
+        # 顶层 schema 约束（strict/lenient/strip）
+        if self._schema is not None:
+            root = self._apply_schema(root)
+
         diagnostics = sorted(self._diagnostics, key=lambda d: d.sort_key())
-        return StdDocument(root=StdObject(fields=root_fields), diagnostics=diagnostics)
+        return StdDocument(root=root, diagnostics=diagnostics)
 
     # ═══════════════════════════════════════════════════════
     # 模板收集
@@ -159,6 +185,249 @@ class SemanticAnalyzer:
                 else:
                     seen_optional = True
             self._templates[stmt.name] = stmt
+            self._local_template_names.add(stmt.name)
+
+    # ═══════════════════════════════════════════════════════
+    # 模板导入（!from）
+    # ═══════════════════════════════════════════════════════
+
+    def _load_imported_templates(self, doc: Document) -> None:
+        """解析 !from 导入（含 schema.from_file 隐式导入）。"""
+        loaded: set[Path] = set()
+        if self._schema is not None and self._schema.from_file:
+            self._import_template_path(
+                self._schema.from_file,
+                base_dir=self._imports.base_dir,
+                source=None,
+                loaded=loaded,
+                depth=0,
+            )
+        for stmt in doc.statements:
+            if isinstance(stmt, TemplateImportStmt):
+                self._import_template_path(
+                    stmt.from_path,
+                    base_dir=self._imports.base_dir,
+                    source=stmt.source,
+                    loaded=loaded,
+                    depth=0,
+                    items=stmt.items,
+                )
+
+    def _import_template_path(
+        self,
+        from_path: str,
+        *,
+        base_dir: Path,
+        source: SourceRange | None,
+        loaded: set[Path],
+        depth: int,
+        items: list[TemplateImportItem] | None = None,
+    ) -> None:
+        """加载单个模板文件并合并其模板定义（递归解析嵌套 !from）。"""
+        if depth > MAX_IMPORT_DEPTH:
+            self._diagnostics.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    f'模板导入嵌套深度超过上限 {MAX_IMPORT_DEPTH}: {from_path}',
+                    source,
+                )
+            )
+            return
+
+        path = self._imports.resolve_template_path(
+            from_path,
+            base_dir=base_dir,
+            source=source,
+            report=self._report,
+        )
+        if path is None:
+            return
+
+        resolved = path.resolve()
+        if resolved in loaded:
+            return  # 已加载（含循环导入防护）
+        loaded.add(resolved)
+
+        try:
+            text = resolved.read_text(encoding='utf-8')
+        except OSError as e:
+            self._diagnostics.append(Diagnostic(Severity.ERROR, f'读取模板文件失败 {resolved}: {e}', source))
+            return
+
+        imported_doc = self._parse_document(text, str(resolved))
+        for s in imported_doc.statements:
+            match s:
+                case TemplateDef():
+                    self._merge_imported_template(s)
+                case TemplateImportStmt():
+                    # 递归：相对路径以被导入文件所在目录为基准
+                    self._import_template_path(
+                        s.from_path,
+                        base_dir=resolved.parent,
+                        source=s.source,
+                        loaded=loaded,
+                        depth=depth + 1,
+                        items=s.items,
+                    )
+                case _:
+                    if resolved.suffix == '.inft':
+                        self._diagnostics.append(
+                            Diagnostic(
+                                Severity.ERROR,
+                                '.inft 文件只允许模板定义，发现其他语句',
+                                s.source,
+                            )
+                        )
+
+        # 别名注册（!from ... import Name as Alias）
+        if items is not None:
+            for item in items:
+                self._register_import_alias(item)
+
+    def _register_import_alias(self, item: TemplateImportItem) -> None:
+        """注册 ``!from ... import Name as Alias`` 的别名（原名保留可用）。"""
+        if item.alias is None or item.alias == item.name:
+            return
+        source_tpl = self._templates.get(item.name)
+        if source_tpl is None:
+            self._diagnostics.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    f'导入文件中不存在模板 {item.name!r}，无法以别名 {item.alias!r} 引用',
+                    item.source,
+                )
+            )
+            return
+        if item.alias in self._templates:
+            if item.alias in self._local_template_names:
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f'模板别名 {item.alias!r} 与文件内定义冲突',
+                        item.source,
+                    )
+                )
+            else:
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.WARNING,
+                        f'模板别名 {item.alias!r} 已存在，后者覆盖前者',
+                        item.source,
+                    )
+                )
+                self._templates[item.alias] = source_tpl
+            return
+        self._templates[item.alias] = source_tpl
+
+    def _merge_imported_template(self, tpl: TemplateDef) -> None:
+        """合并导入的模板定义（与本地定义冲突时报错）。"""
+        if tpl.name in self._templates:
+            if tpl.name in self._local_template_names:
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f'导入的模板 {tpl.name!r} 与文件内定义冲突',
+                        tpl.source,
+                    )
+                )
+            else:
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.WARNING,
+                        f'模板 {tpl.name!r} 被多次导入，后者覆盖前者',
+                        tpl.source,
+                    )
+                )
+                self._templates[tpl.name] = tpl
+            return
+        self._templates[tpl.name] = tpl
+
+    def _parse_document(self, text: str, file_path: str) -> Document:
+        """词法 + 语法分析一段源码（用于外部模板文件），诊断并入当前分析。"""
+        tokenize_collector = TokenizeErrorCollector()
+        parse_collector = ParseErrorCollector()
+        raw_tokens = RawTokenizer(
+            iter(text),
+            file_path=file_path,
+            error_collector=tokenize_collector,
+        )
+        tokens = FinalTokenizer(raw_tokens)
+        parser = Parser(tokens, error_collector=parse_collector)
+        doc = parser.parse()
+        for err in tokenize_collector:
+            self._diagnostics.append(Diagnostic.from_error(err))
+        for err in parse_collector:
+            self._diagnostics.append(Diagnostic.from_error(err))
+        return doc
+
+    # ═══════════════════════════════════════════════════════
+    # 顶层 schema 约束
+    # ═══════════════════════════════════════════════════════
+
+    def _apply_schema(self, root: StdObject) -> StdObject:
+        """对顶层对象执行 schema 模板约束（strict/lenient/strip）。"""
+        assert self._schema is not None
+        tpl = self._templates.get(self._schema.template)
+        if tpl is None:
+            raise SchemaError(f'未定义的 schema 模板 {self._schema.template!r}')
+        return self._check_schema_object(root, tpl, self._schema.mode)
+
+    def _check_schema_object(self, obj: StdObject, tpl: TemplateDef, mode: str) -> StdObject:
+        """按模板校验顶层对象。失败抛 :class:`SchemaError`（strip 先过滤再校验）。"""
+        declared = {tf.name for tf in tpl.fields}
+        diags: list[Diagnostic] = []
+
+        # 额外字段处理（模式差异）
+        extra_names = [f.name for f in obj.fields if f.name not in declared]
+        if extra_names:
+            if mode == 'strict':
+                diags.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f'顶层 schema 不允许额外字段: {extra_names}',
+                        None,
+                    )
+                )
+            elif mode == 'lenient':
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.WARNING,
+                        f'顶层 schema 存在额外字段（已保留）: {extra_names}',
+                        None,
+                    )
+                )
+            else:  # strip
+                obj = StdObject(fields=[f for f in obj.fields if f.name in declared])
+
+        # 必填字段缺失 → 报错
+        for tf in tpl.fields:
+            if tf.default_value is None and obj.get(tf.name) is None:
+                diags.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f'顶层 schema 缺少必填字段 {tf.name!r}（模板 {tpl.name}）',
+                        None,
+                        tf.name,
+                    )
+                )
+
+        # 字段约束校验
+        for tf in tpl.fields:
+            f = obj.get(tf.name)
+            if f is not None and f.value is not None:
+                result = self._execute_constraints(tf.constraints, f.value, tf.source, tf.name)
+                if not result.ok:
+                    diags.extend(result.diagnostics)
+
+        # 模板级约束
+        for c in tpl.constraints:
+            result = self._execute_spec(self._resolve_constraint(c), obj, None, '')
+            if not result.ok:
+                diags.extend(result.diagnostics)
+
+        if diags:
+            raise SchemaError('顶层 schema 校验失败: ' + '；'.join(d.message for d in diags))
+        return obj
 
     # ═══════════════════════════════════════════════════════
     # 模板即约束
@@ -447,10 +716,7 @@ class SemanticAnalyzer:
             return StdArray(elements=[self._auto_literal(e) for e in items])
         if isinstance(raw, dict):
             mapping = cast(dict[Any, Any], raw)
-            return StdObject(fields=[
-                StdField(name=str(k), value=self._auto_literal(v))
-                for k, v in mapping.items()
-            ])
+            return StdObject(fields=[StdField(name=str(k), value=self._auto_literal(v)) for k, v in mapping.items()])
         return StdLiteral(kind='str', value=str(raw))
 
     # ═══════════════════════════════════════════════════════

@@ -4,9 +4,9 @@
 
 用法::
 
-    from infinity_data import compile_source, load
+    from infinity_data import load, safe_load, SandboxConfig, Schema
 
-    result = load("app.infd")
+    result = safe_load("app.infd")
     if result.has_errors:
         for d in result.diagnostics:
             print(d.location, d.message)
@@ -14,13 +14,28 @@
         print(result.value)
 """
 
-from infinity_data.pipeline import CompilationResult, compile_source, load
+from infinity_data.pipeline import (
+    CompilationResult,
+    check,
+    compile_source,
+    compile_to_dict,
+    load,
+    safe_load,
+)
+from infinity_data.sandbox import SandboxConfig, SandboxError, Schema, SchemaError
 from infinity_data.semantic.models import Diagnostic, Severity
 
 __all__ = [
     'compile_source',
     'load',
+    'safe_load',
+    'check',
+    'compile_to_dict',
     'CompilationResult',
+    'SandboxConfig',
+    'SandboxError',
+    'Schema',
+    'SchemaError',
     'Diagnostic',
     'Severity',
 ]

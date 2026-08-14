@@ -13,7 +13,7 @@ from __future__ import annotations
 import decimal
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 from infinity_data.infra.errors import InfinityDataError
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -54,15 +54,9 @@ class Diagnostic:
         return (s.file_path, s.line, s.col)
 
     @classmethod
-    def from_error(cls, error: InfinityDataError[Any]) -> Diagnostic:
-        """将词法/语法阶段的异常式错误转换为统一诊断（唯一转换口）。
-
-        - 词法阶段 ``source`` 为单点 ``SourceInfo`` → 零宽 ``SourceRange``
-        - 语法阶段 ``source`` 已是 ``SourceRange`` → 直接使用
-        """
-        src: Any = error.source
-        rng = src if hasattr(src, 'start') else SourceRange(start=src, end=src)
-        return cls(severity=Severity.ERROR, message=error.message, source=rng)
+    def from_error(cls, error: InfinityDataError) -> Diagnostic:
+        """将各阶段异常式错误转换为统一诊断（唯一转换口）。"""
+        return cls(severity=Severity.ERROR, message=error.message, source=error.source)
 
 
 # ═══════════════════════════════════════════════════════════

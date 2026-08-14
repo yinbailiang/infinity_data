@@ -1,41 +1,30 @@
 """infd 语言公共错误基础设施。
 
-提供所有阶段（词法分析、语法分析、语义分析）共用的：
-- 泛型异常基类 :class:`InfinityDataError`
-- 泛型错误收集器 :class:`ErrorCollector`
+提供所有阶段（词法分析、语法分析、语义分析、安全模型）共用的：
+- 异常基类 :class:`InfinityDataError`（``source`` 统一为 ``SourceRange``）
+- 错误收集器 :class:`ErrorCollector`
 """
 
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Generic, Iterator, TypeVar
 
-# ═══════════════════════════════════════════════════════════
-# 类型变量
-# ═══════════════════════════════════════════════════════════
-
-S = TypeVar('S')
-"""源码位置类型 —— 词法阶段为 ``SourceInfo``，后续阶段为 ``SourceRange``。"""
-
-E = TypeVar('E', bound='InfinityDataError[Any]')
-"""错误类型变量，约束为 :class:`InfinityDataError` 的子类。"""
-
-# ═══════════════════════════════════════════════════════════
-# 公共异常基类
-# ═══════════════════════════════════════════════════════════
+from infinity_data.infra.location import SourceRange
 
 
 @dataclass
-class InfinityDataError(Exception, Generic[S]):
-    """infd 语言所有阶段错误的公共基类。
+class InfinityDataError(Exception):
+    """infd 语言所有错误的公共基类。
 
-    泛型参数 ``S`` 为源码位置类型：
-    - 词法分析阶段：``SourceInfo``（单点位置）
-    - 语法/语义分析阶段：``SourceRange``（区间位置）
+    ``source`` 统一为 :class:`SourceRange`：
+    - 词法分析阶段：零宽 range（start == end，单点位置）
+    - 语法/语义阶段：区间 range
+    - 无源码位置的安全异常（如顶层 schema 校验失败）：None
 
-    子类应重写 ``_format_message()`` 以提供人类可读的中文错误描述。
-    框架自动提供 ``message`` 属性和 ``__str__`` 方法。
+    消息协议：子类统一重写 ``_format_message()`` 提供人类可读的中文描述；
+    携带现成消息的安全异常在重写中直接返回它。
     """
 
-    source: S
+    source: SourceRange | None
 
     # ── 消息协议 ──────────────────────────────────────
 
@@ -46,14 +35,11 @@ class InfinityDataError(Exception, Generic[S]):
 
     @property
     def location(self) -> str:
-        """格式化的源码位置 ``file:line:col``。
-
-        支持两种 source 类型（duck-typing，避免 infra 依赖 tokenizer 层）：
-        - ``SourceInfo``（词法阶段，单点位置）
-        - ``SourceRange``（语法阶段，取起点）
-        """
-        point: Any = getattr(self.source, 'start', self.source)
-        return f'{point.file_path}:{point.line}:{point.col}'
+        """格式化的源码位置 ``file:line:col``（无位置时为 ``<unknown>``）。"""
+        if self.source is None:
+            return '<unknown>'
+        s = self.source.start
+        return f'{s.file_path}:{s.line}:{s.col}'
 
     def _format_message(self) -> str:
         """格式化错误消息，子类应重写此方法。"""
@@ -66,6 +52,9 @@ class InfinityDataError(Exception, Generic[S]):
 # ═══════════════════════════════════════════════════════════
 # 公共错误收集器
 # ═══════════════════════════════════════════════════════════
+
+E = TypeVar('E', bound='InfinityDataError')
+"""错误类型变量，约束为 :class:`InfinityDataError` 的子类。"""
 
 
 class ErrorCollector(Generic[E]):
@@ -103,6 +92,6 @@ class ErrorCollector(Generic[E]):
 
     # ── 容器协议 ──────────────────────────────────────
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[E]:
         """迭代所有已收集的错误。"""
         return iter(self._errors)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from infinity_data.infra.errors import ErrorCollector, InfinityDataError
-from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceInfo
+from infinity_data.tokenizer.models.raw_tokens import RawTokenType
 
 # ═══════════════════════════════════════════════════════════
 # 错误类型
@@ -12,8 +12,8 @@ from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceInfo
 
 
 @dataclass
-class TokenizeError(InfinityDataError[SourceInfo]):
-    """词法分析阶段错误基类"""
+class TokenizeError(InfinityDataError):
+    """词法分析阶段错误基类（source 为零宽 SourceRange）。"""
 
     def _format_message(self) -> str:
         return '词法分析错误'
@@ -68,6 +68,16 @@ class InvalidNumberError(TokenizeError):
 
     def _format_message(self) -> str:
         return f'[{self.location}] 无效的数字字面量: {self.raw}'
+
+
+@dataclass
+class InvalidBangError(TokenizeError):
+    """! 后跟非导入关键字（env/file/from）。"""
+
+    actual: str
+
+    def _format_message(self) -> str:
+        return f'[{self.location}] ! 后期望 env/file/from，实际为 {self.actual}'
 
 
 @dataclass

@@ -1,14 +1,14 @@
 """递归下降语法分析器，将 Token 流转换为 RawAst"""
 
-from collections.abc import AsyncIterable
+from collections.abc import Iterable
 from typing import TypeVar
 
 from infinity_data.infra.ll1_stream import NoNextType
 from infinity_data.parser.errors import (
     EmptyTokenListError,
-    InvalidImportKeywordError,
     ParseErrorCollector,
     TemplateArgOrderError,
+    UnexpectedTokenError,
 )
 from infinity_data.parser.models import (
     ArrayValue,
@@ -35,26 +35,24 @@ from infinity_data.parser.models import (
     TemplateCallValue,
     TemplateDef,
     TemplateField,
+    TemplateImportItem,
     TemplateImportStmt,
     Value,
 )
 from infinity_data.parser.token_stream import TokenStream
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceInfo, SourceRange
 from infinity_data.tokenizer.models.tokens import (
-    AsToken,
     BoolToken,
     ColonToken,
     CommaToken,
     DollarToken,
     DotToken,
-    EnvToken,
+    EnvImportToken,
     EqualsToken,
-    ExclamationToken,
-    FileToken,
+    FileImportToken,
     FloatToken,
-    FromToken,
+    FromImportToken,
     IdentifierToken,
-    ImportToken,
     IntegerToken,
     LangleToken,
     LbraceToken,
@@ -80,7 +78,7 @@ class Parser:
 
     def __init__(
         self,
-        source: AsyncIterable[Token],
+        source: Iterable[Token],
         error_collector: ParseErrorCollector | None = None,
     ) -> None:
         self._errors = error_collector if error_collector is not None else ParseErrorCollector()
@@ -94,10 +92,10 @@ class Parser:
     # 公开入口
     # ═══════════════════════════════════════════════════════
 
-    async def parse(self) -> Document:
+    def parse(self) -> Document:
         # 懒初始化：预读第一个 token
-        first_tok = await self._stream.peek()
-        if isinstance(first_tok, NoNextType) or await self._stream.eof():
+        first_tok = self._stream.peek()
+        if isinstance(first_tok, NoNextType) or self._stream.eof():
             dummy = SourceRange(
                 start=SourceInfo(file_path='', line=0, col=0, index=0),
                 end=SourceInfo(file_path='', line=0, col=0, index=0),
@@ -106,7 +104,7 @@ class Parser:
             return Document(source=dummy)
         doc = Document(source=first_tok.raw.source)
         while True:
-            stmt = await self._parse_statement()
+            stmt = self._parse_statement()
             if stmt is None:
                 break
             doc.statements.append(stmt)
@@ -116,25 +114,25 @@ class Parser:
     # 顶层
     # ═══════════════════════════════════════════════════════
 
-    async def _parse_statement(self) -> Statement | None:
+    def _parse_statement(self) -> Statement | None:
         """解析一条顶层语句。"""
-        await self._stream.skip_newlines()
+        self._stream.skip_newlines()
 
         # 流真正耗尽（无 EOF token）或到达 EOF token 均视为结束
-        if await self._stream.eof():
+        if self._stream.eof():
             return None
-        if await self._stream.check(RawTokenType.EOF):
+        if self._stream.check(RawTokenType.EOF):
             return None
 
-        match await self._stream.peek():
-            case ExclamationToken():
-                return await self._parse_any_import()
+        match self._stream.peek():
+            case EnvImportToken() | FileImportToken() | FromImportToken():
+                return self._parse_import_statement()
             case TildeToken():
-                return await self._parse_template_def()
+                return self._parse_template_def()
             case IdentifierToken():
-                return await self._parse_field()
+                return self._parse_field()
             case _:
-                bad_tok = await self._stream.advance()
+                bad_tok = self._stream.advance()
                 return ErrorStatement(
                     source=bad_tok.raw.source,
                     message=f'无法识别的顶层 token: {bad_tok.raw.type.name}',
@@ -144,99 +142,115 @@ class Parser:
     # 导入语句
     # ═══════════════════════════════════════════════════════
 
-    async def _parse_any_import(self) -> Statement:
-        """解析 !env / !file / !from 导入语句。"""
-        excl_tok = await self._stream.expect(ExclamationToken)
+    def _parse_import_statement(self) -> Statement:
+        """分发 !env / !file / !from 导入语句"""
+        match self._stream.peek():
+            case EnvImportToken() as tok:
+                self._stream.advance()
+                return self._parse_env_import(tok)
+            case FileImportToken() as tok:
+                self._stream.advance()
+                return self._parse_file_import(tok)
+            case FromImportToken() as tok:
+                self._stream.advance()
+                return self._parse_template_import(tok)
+            case _:
+                first = self._stream.peek()
+                return ErrorStatement(source=self._stream.span_from(first), message='无法识别的导入语句')
 
-        match await self._stream.peek():
-            case EnvToken():
-                return await self._parse_env_import(excl_tok)
-            case FileToken():
-                return await self._parse_file_import(excl_tok)
-            case FromToken():
-                return await self._parse_template_import(excl_tok)
-            case tok:
-                if isinstance(tok, NoNextType):
-                    return ErrorStatement(source=self._stream.span_from(excl_tok), message='! 后期望 env/file/from')
-                await self._stream.advance()
-                self._errors.add(
-                    InvalidImportKeywordError(
-                        source=tok.raw.source,
-                        actual=tok.raw.type.name,
-                    )
-                )
-                await self._stream.skip_newlines()
-                return ErrorStatement(
-                    source=self._stream.span_from(excl_tok),
-                    message=f'! 后期望 env/file/from，实际为 {tok.raw.type.name}',
-                )
+    def _peek_keyword(self, name: str) -> bool:
+        """当前 token 是否为名为 ``name`` 的标识符（import/as 已降级为标识符）。"""
+        tok = self._stream.peek()
+        return isinstance(tok, IdentifierToken) and tok.name == name
 
-    async def _parse_env_import(self, excl_tok: ExclamationToken) -> EnvImportStmt:
+    def _expect_keyword(self, name: str) -> None:
+        """期望语法位置上的关键字名（import/as），含错误恢复。"""
+        if self._peek_keyword(name):
+            self._stream.advance()
+            return
+        tok = self._stream.peek()
+        if isinstance(tok, NoNextType):
+            self._errors.add(
+                UnexpectedTokenError(
+                    source=self._stream.span_from(None),
+                    expected=f'关键字 {name!r}',
+                    actual='EOF',
+                )
+            )
+            return
+        self._errors.add(
+            UnexpectedTokenError(
+                source=tok.raw.source,
+                expected=f'关键字 {name!r}',
+                actual=tok.raw.type.name,
+            )
+        )
+        self._stream.advance()
+
+    def _parse_env_import(self, kw_tok: EnvImportToken) -> EnvImportStmt:
         """!env import NAME [as NEW_NAME]"""
-        await self._stream.expect(EnvToken)
-        await self._stream.expect(ImportToken)
-        name_tok = await self._stream.expect(IdentifierToken)
+        self._expect_keyword('import')
+        name_tok = self._stream.expect(IdentifierToken)
 
         alias = None
-        if isinstance(await self._stream.peek(), AsToken):
-            await self._stream.advance()
-            alias = (await self._stream.expect(IdentifierToken)).name
+        if self._peek_keyword('as'):
+            self._stream.advance()
+            alias = self._stream.expect(IdentifierToken).name
 
-        await self._stream.skip_newlines()
+        self._stream.skip_newlines()
         return EnvImportStmt(
-            source=self._stream.span_from(excl_tok),
+            source=self._stream.span_from(kw_tok),
             name=name_tok.name,
             alias=alias,
         )
 
-    async def _parse_file_import(self, excl_tok: ExclamationToken) -> FileImportStmt:
+    def _parse_file_import(self, kw_tok: FileImportToken) -> FileImportStmt:
         """!file "path" [as <format>] import .path.to.key as alias, ..."""
-        await self._stream.expect(FileToken)
-        path_tok = await self._stream.expect(StringToken)
+        path_tok = self._stream.expect(StringToken)
 
         # 可选 as <format>
         fmt = None
-        if isinstance(await self._stream.peek(), AsToken):
-            await self._stream.advance()
-            fmt = (await self._stream.expect(IdentifierToken)).name
+        if self._peek_keyword('as'):
+            self._stream.advance()
+            fmt = self._stream.expect(IdentifierToken).name
 
-        await self._stream.expect(ImportToken)
+        self._expect_keyword('import')
 
         # 导入项列表
         items: list[FileImportItem] = []
-        items.append(await self._parse_file_import_item())
+        items.append(self._parse_file_import_item())
 
-        while isinstance(await self._stream.peek(), CommaToken):
-            await self._stream.advance()
-            items.append(await self._parse_file_import_item())
+        while isinstance(self._stream.peek(), CommaToken):
+            self._stream.advance()
+            items.append(self._parse_file_import_item())
 
-        await self._stream.skip_newlines()
+        self._stream.skip_newlines()
         return FileImportStmt(
-            source=self._stream.span_from(excl_tok),
+            source=self._stream.span_from(kw_tok),
             file_path=path_tok.value,
             format=fmt,
             imports=items,
         )
 
-    async def _parse_file_import_item(self) -> FileImportItem:
+    def _parse_file_import_item(self) -> FileImportItem:
         """解析单个 .path.to.key as alias。
 
         alias 必须提供——import 的值需要通过 $alias 引用。
         """
-        first = await self._stream.peek()
-        json_path = await self._parse_json_path()
+        first = self._stream.peek()
+        json_path = self._parse_json_path()
 
-        await self._stream.expect(AsToken)
-        alias = (await self._stream.expect(IdentifierToken)).name
+        self._expect_keyword('as')
+        alias = self._stream.expect(IdentifierToken).name
 
-        await self._stream.skip_newlines()
+        self._stream.skip_newlines()
         return FileImportItem(
             source=self._stream.span_from(first),
             json_path=json_path,
             alias=alias,
         )
 
-    async def _parse_json_path(self) -> list[JsonPathSegment]:
+    def _parse_json_path(self) -> list[JsonPathSegment]:
         """解析 JSON 路径为结构化段列表。
 
         Token 序列示例:
@@ -250,42 +264,42 @@ class Parser:
         segments: list[JsonPathSegment] = []
 
         # 路径必须以 . 起始
-        tok = await self._stream.peek()
+        tok = self._stream.peek()
         if not isinstance(tok, DotToken):
             return []
-        await self._stream.advance()
+        self._stream.advance()
 
         # 第一个段：必须是标识符（首 key 名）
-        tok = await self._stream.peek()
+        tok = self._stream.peek()
         if isinstance(tok, IdentifierToken):
             segments.append(JsonPathKey(source=tok.raw.source, key=tok.name))
-            await self._stream.advance()
+            self._stream.advance()
         else:
             # 只有 . → 导入整个文件
             return []
 
         # 后续段：".key" 或 "[index]"
-        while not await self._stream.eof():
-            match await self._stream.peek():
+        while not self._stream.eof():
+            match self._stream.peek():
                 case DotToken():
-                    await self._stream.advance()
-                    match await self._stream.peek():
+                    self._stream.advance()
+                    match self._stream.peek():
                         case IdentifierToken(name=name) as id_tok:
                             segments.append(JsonPathKey(source=self._stream.single_span(id_tok), key=name))
-                            await self._stream.advance()
+                            self._stream.advance()
                         case StringToken(value=value) as str_tok:
                             segments.append(JsonPathKey(source=self._stream.single_span(str_tok), key=value))
-                            await self._stream.advance()
+                            self._stream.advance()
                         case _:
                             break
 
                 case LbracketToken():
-                    lbracket = await self._stream.advance()
-                    match await self._stream.peek():
+                    lbracket = self._stream.advance()
+                    match self._stream.peek():
                         case IntegerToken(value=value):
-                            await self._stream.advance()
-                            if isinstance(await self._stream.peek(), RbracketToken):
-                                await self._stream.advance()
+                            self._stream.advance()
+                            if isinstance(self._stream.peek(), RbracketToken):
+                                self._stream.advance()
                             segments.append(JsonPathIndex(source=self._stream.span_from(lbracket), index=value))
                         case _:
                             break
@@ -295,64 +309,79 @@ class Parser:
 
         return segments
 
-    async def _parse_template_import(self, excl_tok: ExclamationToken) -> TemplateImportStmt:
-        """!from "path" import Name1, Name2, ..."""
-        await self._stream.expect(FromToken)
-        path_tok = await self._stream.expect(StringToken)
-        await self._stream.expect(ImportToken)
+    def _parse_template_import(self, kw_tok: FromImportToken) -> TemplateImportStmt:
+        """!from "path" import Name1 [as Alias1], Name2, ..."""
+        path_tok = self._stream.expect(StringToken)
+        self._expect_keyword('import')
 
-        names: list[str] = []
-        names.append((await self._stream.expect(IdentifierToken)).name)
-        while isinstance(await self._stream.peek(), CommaToken):
-            await self._stream.advance()
-            names.append((await self._stream.expect(IdentifierToken)).name)
+        items: list[TemplateImportItem] = []
+        items.append(self._parse_template_import_item())
+        while isinstance(self._stream.peek(), CommaToken):
+            self._stream.advance()
+            items.append(self._parse_template_import_item())
 
-        await self._stream.skip_newlines()
+        self._stream.skip_newlines()
         return TemplateImportStmt(
-            source=self._stream.span_from(excl_tok),
+            source=self._stream.span_from(kw_tok),
             from_path=path_tok.value,
-            names=names,
+            items=items,
+        )
+
+    def _parse_template_import_item(self) -> TemplateImportItem:
+        """解析单个导入项: Name [as Alias]。"""
+        first = self._stream.peek()
+        name_tok = self._stream.expect(IdentifierToken)
+
+        alias = None
+        if self._peek_keyword('as'):
+            self._stream.advance()
+            alias = self._stream.expect(IdentifierToken).name
+
+        return TemplateImportItem(
+            source=self._stream.span_from(first),
+            name=name_tok.name,
+            alias=alias,
         )
 
     # ═══════════════════════════════════════════════════════
     # 模板定义
     # ═══════════════════════════════════════════════════════
 
-    async def _parse_template_def(self) -> TemplateDef:
+    def _parse_template_def(self) -> TemplateDef:
         """~Name [(config...)] { template_fields... }"""
-        first = await self._stream.peek()
-        await self._stream.expect(TildeToken)
-        name_tok = await self._stream.expect(IdentifierToken)
+        first = self._stream.peek()
+        self._stream.expect(TildeToken)
+        name_tok = self._stream.expect(IdentifierToken)
 
         # 可选模板配置参数: ~Name(allow_extra=true, ...)
         config: dict[str, Value] = {}
-        if isinstance(await self._stream.peek(), LparenToken):
-            await self._stream.advance()
-            await self._stream.skip_newlines()
-            while not await self._stream.check(RawTokenType.RPAREN) and not await self._stream.eof():
-                key_tok = await self._stream.expect(IdentifierToken)
-                await self._stream.expect(EqualsToken)
-                config[key_tok.name] = await self._parse_value()
-                await self._stream.skip_separators()
-            await self._stream.expect(RparenToken)
+        if isinstance(self._stream.peek(), LparenToken):
+            self._stream.advance()
+            self._stream.skip_newlines()
+            while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
+                key_tok = self._stream.expect(IdentifierToken)
+                self._stream.expect(EqualsToken)
+                config[key_tok.name] = self._parse_value()
+                self._stream.skip_separators()
+            self._stream.expect(RparenToken)
 
-        await self._stream.expect(LbraceToken)
-        await self._stream.skip_newlines()
+        self._stream.expect(LbraceToken)
+        self._stream.skip_newlines()
 
         fields: list[TemplateField] = []
         constraints: list[Constraint] = []
-        while not await self._stream.check(RawTokenType.RBRACE) and not await self._stream.eof():
+        while not self._stream.check(RawTokenType.RBRACE) and not self._stream.eof():
             # 模板级约束: : <...>
-            if isinstance(await self._stream.peek(), ColonToken):
-                await self._stream.advance()
-                parsed = await self._parse_constraints()
+            if isinstance(self._stream.peek(), ColonToken):
+                self._stream.advance()
+                parsed = self._parse_constraints()
                 constraints.extend(parsed.constraints)
             else:
-                fields.append(await self._parse_template_field())
-            await self._stream.skip_newlines()
+                fields.append(self._parse_template_field())
+            self._stream.skip_newlines()
 
-        await self._stream.expect(RbraceToken)
-        await self._stream.skip_newlines()
+        self._stream.expect(RbraceToken)
+        self._stream.skip_newlines()
 
         return TemplateDef(
             source=self._stream.span_from(first),
@@ -362,24 +391,24 @@ class Parser:
             constraints=constraints,
         )
 
-    async def _parse_template_field(self) -> TemplateField:
+    def _parse_template_field(self) -> TemplateField:
         """解析模板内部字段：必须有类型标注，默认值可选。"""
-        first = await self._stream.peek()
-        name_tok = await self._stream.expect(IdentifierToken)
+        first = self._stream.peek()
+        name_tok = self._stream.expect(IdentifierToken)
 
         # 类型标注（模板字段必须）
-        await self._stream.expect(ColonToken)
-        constraints = await self._parse_constraints()
+        self._stream.expect(ColonToken)
+        constraints = self._parse_constraints()
 
         # 默认值（可选，省略 = 必填）
         default_value: Value | None = None
-        if isinstance(await self._stream.peek(), EqualsToken):
-            await self._stream.advance()
-            default_value = await self._parse_value()
-        elif self._starts_value(await self._stream.peek()):
-            default_value = await self._parse_value()
+        if isinstance(self._stream.peek(), EqualsToken):
+            self._stream.advance()
+            default_value = self._parse_value()
+        elif self._starts_value(self._stream.peek()):
+            default_value = self._parse_value()
 
-        await self._stream.skip_newlines()
+        self._stream.skip_newlines()
         return TemplateField(
             source=self._stream.span_from(first),
             name=name_tok.name,
@@ -391,30 +420,30 @@ class Parser:
     # 字段
     # ═══════════════════════════════════════════════════════
 
-    async def _parse_field(self) -> Field:
+    def _parse_field(self) -> Field:
         """解析普通字段：name[: type] [= value]
 
         支持省略等号：name { ... }, name [ ... ], name Template(...)
         """
-        first = await self._stream.peek()
-        name_tok = await self._stream.expect(IdentifierToken)
+        first = self._stream.peek()
+        name_tok = self._stream.expect(IdentifierToken)
 
         # 类型标注 name: <...> 或 name: type 或 name: type?
         constraints: Constraints | None = None
-        if isinstance(await self._stream.peek(), ColonToken):
-            await self._stream.advance()
-            constraints = await self._parse_constraints()
+        if isinstance(self._stream.peek(), ColonToken):
+            self._stream.advance()
+            constraints = self._parse_constraints()
 
         # 值：有 = 时直接解析；无 = 时识别复合值、模板调用或 $ 引用
         value: Value | None = None
-        tok = await self._stream.peek()
+        tok = self._stream.peek()
         if isinstance(tok, EqualsToken):
-            await self._stream.advance()
-            value = await self._parse_value()
+            self._stream.advance()
+            value = self._parse_value()
         elif self._starts_value(tok):
-            value = await self._parse_value()
+            value = self._parse_value()
 
-        await self._stream.skip_separators()
+        self._stream.skip_separators()
         return Field(
             source=self._stream.span_from(first),
             name=name_tok.name,
@@ -447,7 +476,7 @@ class Parser:
     # 约束列表
     # ═══════════════════════════════════════════════════════
 
-    async def _parse_constraints(self) -> Constraints:
+    def _parse_constraints(self) -> Constraints:
         """解析约束。
 
         支持:
@@ -456,25 +485,25 @@ class Parser:
         - <constraint, constraint, ...> → all(constraint, ...)
         - <any(...)>, <one(...)>, <not(...)>, <all(...)>
         """
-        first = await self._stream.peek()
+        first = self._stream.peek()
 
         match first:
             case LangleToken():
-                await self._stream.advance()
+                self._stream.advance()
                 constraints: list[Constraint] = []
-                while not await self._stream.check(RawTokenType.RANGLE) and not await self._stream.eof():
-                    constraints.append(await self._parse_constraint())
-                    if isinstance(await self._stream.peek(), CommaToken):
-                        await self._stream.advance()
-                await self._stream.expect(RangleToken)
+                while not self._stream.check(RawTokenType.RANGLE) and not self._stream.eof():
+                    constraints.append(self._parse_constraint())
+                    if isinstance(self._stream.peek(), CommaToken):
+                        self._stream.advance()
+                self._stream.expect(RangleToken)
                 return Constraints(source=self._stream.span_from(first), constraints=constraints)
 
             case IdentifierToken(name=name):
-                await self._stream.advance()
+                self._stream.advance()
                 ident = ConstraintIdent(source=self._stream.single_span(first), name=name)
 
-                if isinstance(await self._stream.peek(), QuestionToken):
-                    await self._stream.advance()
+                if isinstance(self._stream.peek(), QuestionToken):
+                    self._stream.advance()
                     # 直接展开: type? → one(type, ?)
                     return Constraints(
                         source=self._stream.span_from(first),
@@ -491,8 +520,8 @@ class Parser:
                     )
 
                 # 单约束函数调用可省略尖括号: field: regex("re") = ...
-                if isinstance(await self._stream.peek(), LparenToken):
-                    call = await self._parse_constraint_call(first)
+                if isinstance(self._stream.peek(), LparenToken):
+                    call = self._parse_constraint_call(first)
                     return Constraints(
                         source=self._stream.span_from(first),
                         constraints=[call],
@@ -504,60 +533,60 @@ class Parser:
                 )
 
             case QuestionToken():
-                await self._stream.advance()
+                self._stream.advance()
                 return Constraints(
                     source=self._stream.span_from(first),
                     constraints=[ConstraintIdent(source=self._stream.single_span(first), name='?')],
                 )
 
             case _:
-                await self._stream.advance()
+                self._stream.advance()
                 return Constraints(source=self._stream.span_from(first))
 
-    async def _parse_constraint(self) -> Constraint:
+    def _parse_constraint(self) -> Constraint:
         """解析单个约束：标识符、函数调用或字面量。"""
-        tok = await self._stream.peek()
+        tok = self._stream.peek()
 
         match tok:
             case IdentifierToken() as name_tok:
-                await self._stream.advance()
-                if isinstance(await self._stream.peek(), LparenToken):
-                    return await self._parse_constraint_call(name_tok)
+                self._stream.advance()
+                if isinstance(self._stream.peek(), LparenToken):
+                    return self._parse_constraint_call(name_tok)
                 return ConstraintIdent(source=self._stream.single_span(name_tok), name=name_tok.name)
 
             case QuestionToken():
-                await self._stream.advance()
+                self._stream.advance()
                 return ConstraintIdent(source=tok.raw.source, name='?')
 
             case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken():
-                return await self._parse_constraint_literal()
+                return self._parse_constraint_literal()
 
             case _:
-                bad_tok = await self._stream.advance()
+                bad_tok = self._stream.advance()
                 return ErrorConstraint(
                     source=self._stream.single_span(bad_tok),
                     message=f'无法解析的约束: {bad_tok.raw.type.name}',
                 )
 
-    async def _parse_constraint_call(self, name_tok: IdentifierToken) -> ConstraintCall:
+    def _parse_constraint_call(self, name_tok: IdentifierToken) -> ConstraintCall:
         """解析约束函数调用: name(arg, arg, ...)。"""
-        await self._stream.expect(LparenToken)
+        self._stream.expect(LparenToken)
         args: list[Constraint] = []
-        while not await self._stream.check(RawTokenType.RPAREN) and not await self._stream.eof():
-            args.append(await self._parse_constraint())
-            if isinstance(await self._stream.peek(), CommaToken):
-                await self._stream.advance()
-        await self._stream.expect(RparenToken)
+        while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
+            args.append(self._parse_constraint())
+            if isinstance(self._stream.peek(), CommaToken):
+                self._stream.advance()
+        self._stream.expect(RparenToken)
         return ConstraintCall(
             source=self._stream.span_from(name_tok),
             name=name_tok.name,
             arguments=args,
         )
 
-    async def _parse_constraint_literal(self) -> ConstraintLiteral:
+    def _parse_constraint_literal(self) -> ConstraintLiteral:
         """解析约束中的字面量参数，包装为 ConstraintLiteral。"""
-        tok = await self._stream.peek()
-        await self._stream.advance()
+        tok = self._stream.peek()
+        self._stream.advance()
         lit = self._wrap_literal(tok)
         return ConstraintLiteral(source=lit.source, value=lit)
 
@@ -565,31 +594,31 @@ class Parser:
     # 值
     # ═══════════════════════════════════════════════════════
 
-    async def _parse_value(self) -> Value:
+    def _parse_value(self) -> Value:
         """解析任意值。"""
-        match await self._stream.peek():
+        match self._stream.peek():
             # ── $ 导入空间引用 ──
             case DollarToken():
-                return await self._parse_dollar_value()
+                return self._parse_dollar_value()
 
             # ── 字面量（FloatToken 覆盖所有浮点值，含 NaN / ±Inf）──
             case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | NoexistToken() as tok:
-                await self._stream.advance()
+                self._stream.advance()
                 return self._wrap_literal(tok)
 
             # ── 复合值 ──
             case LbraceToken():
-                return await self._parse_object()
+                return self._parse_object()
             case LbracketToken():
-                return await self._parse_array()
+                return self._parse_array()
 
             # ── 标识符 → 模板调用 ──
             case IdentifierToken():
-                ident = await self._stream.expect(IdentifierToken)
-                return await self._parse_template_call(ident)
+                ident = self._stream.expect(IdentifierToken)
+                return self._parse_template_call(ident)
 
             case tok:
-                await self._stream.advance()
+                self._stream.advance()
                 if isinstance(tok, NoNextType):
                     return ErrorValue(
                         source=SourceRange(
@@ -608,20 +637,20 @@ class Parser:
         assert not isinstance(tok, NoNextType) and tok is not None
         return LiteralValue(source=tok.raw.source, value=tok)  # type: ignore[arg-type]
 
-    async def _parse_dollar_value(self) -> DollarValue:
+    def _parse_dollar_value(self) -> DollarValue:
         """$name [as type] 导入空间引用。"""
-        dollar_tok = await self._stream.expect(DollarToken)
-        name_tok = await self._stream.expect(IdentifierToken)
+        dollar_tok = self._stream.expect(DollarToken)
+        name_tok = self._stream.expect(IdentifierToken)
 
         type_cast = None
-        if isinstance(await self._stream.peek(), AsToken):
-            await self._stream.advance()
-            cast_tok = await self._stream.peek()
+        if self._peek_keyword('as'):
+            self._stream.advance()
+            cast_tok = self._stream.peek()
             if isinstance(cast_tok, IdentifierToken):
                 name = cast_tok.name
                 if name in ('int', 'float', 'bool', 'str'):
                     type_cast = name
-                await self._stream.advance()
+                self._stream.advance()
 
         return DollarValue(
             source=self._stream.span_from(dollar_tok),
@@ -629,74 +658,74 @@ class Parser:
             type_cast=type_cast,
         )
 
-    async def _parse_object(self) -> DictValue:
+    def _parse_object(self) -> DictValue:
         """{ field, ... }"""
-        lbrace_tok = await self._stream.expect(LbraceToken)
-        await self._stream.skip_separators()
+        lbrace_tok = self._stream.expect(LbraceToken)
+        self._stream.skip_separators()
 
         fields: list[Field] = []
-        while not await self._stream.check(RawTokenType.RBRACE) and not await self._stream.eof():
-            fields.append(await self._parse_field())
-            await self._stream.skip_separators()
+        while not self._stream.check(RawTokenType.RBRACE) and not self._stream.eof():
+            fields.append(self._parse_field())
+            self._stream.skip_separators()
 
-        await self._stream.expect(RbraceToken)
+        self._stream.expect(RbraceToken)
         return DictValue(source=self._stream.span_from(lbrace_tok), fields=fields)
 
-    async def _parse_array(self) -> ArrayValue:
+    def _parse_array(self) -> ArrayValue:
         """[ value, ... ] 换行等价于逗号。"""
-        lbracket_tok = await self._stream.expect(LbracketToken)
-        await self._stream.skip_newlines()
+        lbracket_tok = self._stream.expect(LbracketToken)
+        self._stream.skip_newlines()
 
         elements: list[Value] = []
-        while not await self._stream.check(RawTokenType.RBRACKET) and not await self._stream.eof():
-            val = await self._parse_value()
+        while not self._stream.check(RawTokenType.RBRACKET) and not self._stream.eof():
+            val = self._parse_value()
             elements.append(val)
-            await self._stream.skip_separators()
+            self._stream.skip_separators()
 
-        await self._stream.expect(RbracketToken)
+        self._stream.expect(RbracketToken)
         return ArrayValue(source=self._stream.span_from(lbracket_tok), elements=elements)
 
-    async def _parse_template_call(self, name_tok: IdentifierToken) -> TemplateCallValue:
+    def _parse_template_call(self, name_tok: IdentifierToken) -> TemplateCallValue:
         """Name(pos_args..., named_arg=value, ...)"""
-        await self._stream.expect(LparenToken)
-        await self._stream.skip_newlines()
+        self._stream.expect(LparenToken)
+        self._stream.skip_newlines()
 
         positional: list[Value] = []
         named: dict[str, Value] = {}
         saw_named = False
 
-        while not await self._stream.check(RawTokenType.RPAREN) and not await self._stream.eof():
-            await self._stream.skip_newlines()
-            if await self._stream.check(RawTokenType.RPAREN) or await self._stream.eof():
+        while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
+            self._stream.skip_newlines()
+            if self._stream.check(RawTokenType.RPAREN) or self._stream.eof():
                 break
 
-            tok = await self._stream.peek()
+            tok = self._stream.peek()
 
             # 分支 1：标识符 → 可能是命名参数或模板调用（位置参数）
             if isinstance(tok, IdentifierToken):
-                ident: IdentifierToken = await self._stream.expect(IdentifierToken)  # 消费到缓冲区
-                nxt = await self._stream.peek()  # 下一个 token
+                ident: IdentifierToken = self._stream.expect(IdentifierToken)  # 消费到缓冲区
+                nxt = self._stream.peek()  # 下一个 token
 
                 if isinstance(nxt, EqualsToken):
-                    await self._stream.advance()  # 消费 =
-                    named[ident.name] = await self._parse_value()
+                    self._stream.advance()  # 消费 =
+                    named[ident.name] = self._parse_value()
                     saw_named = True
-                    await self._stream.skip_separators()
+                    self._stream.skip_separators()
                     continue
 
                 # 不是 = → 模板调用（位置参数），复用已消费的 ident
-                positional.append(await self._parse_template_call(ident))
-                await self._stream.skip_separators()
+                positional.append(self._parse_template_call(ident))
+                self._stream.skip_separators()
                 continue
 
             # 分支 2：其他 token → 一定是位置参数
             if saw_named:
                 self._errors.add(TemplateArgOrderError(source=self._stream.single_span(name_tok)))
 
-            positional.append(await self._parse_value())
-            await self._stream.skip_separators()
+            positional.append(self._parse_value())
+            self._stream.skip_separators()
 
-        await self._stream.expect(RparenToken)
+        self._stream.expect(RparenToken)
         return TemplateCallValue(
             source=self._stream.span_from(name_tok),
             template_name=name_tok.name,

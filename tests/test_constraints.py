@@ -184,6 +184,42 @@ def test_unknown_constraint() -> None:
     assert any('未知约束' in m for m in errors_of(result))
 
 
+# ═══════════════════════════════════════════════════════
+# NaN 防护：Decimal NaN 参与比较会抛 InvalidOperation，必须产出诊断而非崩溃
+# ═══════════════════════════════════════════════════════
+
+
+def test_nan_with_range_does_not_crash() -> None:
+    result = compile_source('x: <float, range(1, 100)> = nan\n')
+    assert result.has_errors
+    assert any('NaN' in m for m in errors_of(result))
+
+
+def test_nan_with_sign_constraints_does_not_crash() -> None:
+    result = compile_source('a: positive = nan\nb: negative = nan\nc: nonnegative = nan\n')
+    assert result.has_errors
+    assert any('NaN' in m for m in errors_of(result))
+
+
+def test_nan_with_eq_does_not_crash() -> None:
+    """IEEE 754：NaN 不等于自身，eq(nan) 应失败而非崩溃。"""
+    result = compile_source('x: eq(nan) = nan\n')
+    assert result.has_errors
+
+
+def test_nan_with_in_and_unique_does_not_crash() -> None:
+    result = compile_source('x: <float, in(1, 2)> = nan\n')
+    assert result.has_errors
+    result2 = compile_source('x: unique = [1, nan, nan]\n')
+    # NaN 不与其他值相等 → 不判定重复（不崩溃即可，NaN != NaN）
+    assert not result2.has_errors
+
+
+def test_nan_as_range_argument_is_rejected() -> None:
+    result = compile_source('x: <float, range(nan, 100)> = 1\n')
+    assert result.has_errors
+
+
 # ═══════════════════════════════════════════════════════════
 # 模板即约束（嵌套与可空）
 # ═══════════════════════════════════════════════════════════

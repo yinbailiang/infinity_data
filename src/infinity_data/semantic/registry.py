@@ -16,7 +16,7 @@ import ipaddress
 import re
 import uuid
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Protocol, cast
 from urllib.parse import urlparse
 
@@ -129,14 +129,23 @@ def _as_str(val: StdValue | None) -> str | None:
 
 
 def _as_decimal_arg(a: Any) -> Decimal | None:
-    """约束参数 → Decimal（int / Decimal 才有效）。"""
+    """约束参数 → Decimal（int / Decimal 才有效；NaN 视为无效参数）。"""
     if isinstance(a, bool):
         return None
     if isinstance(a, int):
         return Decimal(a)
     if isinstance(a, Decimal):
-        return a
+        # Decimal 比较遇 NaN 会抛 InvalidOperation（默认 trap），此处拒绝 NaN 参数
+        return None if a.is_nan() else a
     return None
+
+
+def _safe_equal(a: Any, b: Any) -> bool:
+    """安全相等比较：Decimal NaN 参与比较会抛 InvalidOperation，视为不相等。"""
+    try:
+        return bool(a == b)
+    except InvalidOperation:
+        return False
 
 
 def _as_spec(arg: Any) -> ResolvedConstraint | None:
@@ -390,6 +399,8 @@ def _check_range(
     num = _as_number(val)
     if num is None:
         return fail_result(f'{path}: range 约束只适用于数值，实际 {describe(val)}', source, path)
+    if num.is_nan():
+        return fail_result(f'{path}: range 约束不适用于 NaN', source, path)
     lo = _as_decimal_arg(args[0]) if args[0] is not None else None
     hi = _as_decimal_arg(args[1]) if len(args) > 1 and args[1] is not None else None
     if args[0] is not None and lo is None:
@@ -466,7 +477,7 @@ def _check_in(
 ) -> ConstraintResult:
     choices: list[Any] = cast(list[Any], args[0]) if len(args) == 1 and isinstance(args[0], list) else args
     actual = reduce_value(val) if val is not None else None
-    if actual in choices:
+    if any(_safe_equal(actual, c) for c in choices):
         return ok_result()
     return fail_result(f'{path}: 值 {actual!r} 不在允许的值 {choices!r} 中', source, path)
 
@@ -620,6 +631,8 @@ def _check_positive(
     num = _as_number(val)
     if num is None:
         return fail_result(f'{path}: positive 约束只适用于数值', source, path)
+    if num.is_nan():
+        return fail_result(f'{path}: positive 约束不适用于 NaN', source, path)
     return ok_result() if num > 0 else fail_result(f'{path}: 值 {num} 不是正数', source, path)
 
 
@@ -633,6 +646,8 @@ def _check_negative(
     num = _as_number(val)
     if num is None:
         return fail_result(f'{path}: negative 约束只适用于数值', source, path)
+    if num.is_nan():
+        return fail_result(f'{path}: negative 约束不适用于 NaN', source, path)
     return ok_result() if num < 0 else fail_result(f'{path}: 值 {num} 不是负数', source, path)
 
 
@@ -646,6 +661,8 @@ def _check_nonnegative(
     num = _as_number(val)
     if num is None:
         return fail_result(f'{path}: nonnegative 约束只适用于数值', source, path)
+    if num.is_nan():
+        return fail_result(f'{path}: nonnegative 约束不适用于 NaN', source, path)
     return ok_result() if num >= 0 else fail_result(f'{path}: 值 {num} 是负数', source, path)
 
 
@@ -657,7 +674,7 @@ def _check_eq(
     executor: Executor,
 ) -> ConstraintResult:
     actual = reduce_value(val) if val is not None else None
-    if actual == args[0]:
+    if _safe_equal(actual, args[0]):
         return ok_result()
     return fail_result(f'{path}: 值 {actual!r} 不等于 {args[0]!r}', source, path)
 
@@ -674,7 +691,7 @@ def _check_unique(
     seen: list[Any] = []
     for e in val.elements:
         v = reduce_value(e)
-        if any(v == s for s in seen):
+        if any(_safe_equal(v, s) for s in seen):
             return fail_result(f'{path}: 元素 {v!r} 重复', source, path)
         seen.append(v)
     return ok_result()

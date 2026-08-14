@@ -1,11 +1,11 @@
-"""异步 LL(1) Token 流包装器，继承 LL1Stream[Token]，自动追踪 source range。
+"""LL(1) Token 流包装器，继承 LL1Stream[Token]，自动追踪 source range。
 
 全链路流式：CharStream → RawToken → Token → AST。
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterable
+from collections.abc import Iterable
 from typing import TypeVar
 
 from infinity_data.infra.ll1_stream import LL1Stream, NoNextType
@@ -26,11 +26,11 @@ _TToken = TypeVar('_TToken', bound=Token)
 
 
 class TokenStream(LL1Stream[Token]):
-    """异步 LL(1) Token 流，继承 LL1Stream[Token]"""
+    """LL(1) Token 流，继承 LL1Stream[Token]"""
 
     def __init__(
         self,
-        source: AsyncIterable[Token],
+        source: Iterable[Token],
         error_collector: ParseErrorCollector,
     ) -> None:
         super().__init__(source)
@@ -39,27 +39,27 @@ class TokenStream(LL1Stream[Token]):
 
     # ── LL1Stream 钩子 ────────────────────────────────────
 
-    async def _on_advance(self, item: Token) -> None:
+    def _on_advance(self, item: Token) -> None:
         """消费每个 token 时记录，用于 range 追踪。"""
         self._last = item
 
-    async def check(self, expect: RawTokenType) -> bool:
-        token = await self.peek()
+    def check(self, expect: RawTokenType) -> bool:
+        token = self.peek()
         if isinstance(token, NoNextType):
             return False
         return token.raw.type == expect
 
-    # ── 跳过（异步）───────────────────────────────────────
+    # ── 跳过 ───────────────────────────────────────
 
-    async def skip_newlines(self) -> None:
+    def skip_newlines(self) -> None:
         """跳过连续的换行"""
-        while not await self.eof() and isinstance(await self.peek(), NewlineToken):
-            await self.advance()
+        while not self.eof() and isinstance(self.peek(), NewlineToken):
+            self.advance()
 
-    async def skip_separators(self) -> None:
+    def skip_separators(self) -> None:
         """跳过逗号和换行"""
-        while not await self.eof() and isinstance(await self.peek(), (CommaToken, NewlineToken)):
-            await self.advance()
+        while not self.eof() and isinstance(self.peek(), (CommaToken, NewlineToken)):
+            self.advance()
 
     # ── Range 追踪 ────────────────────────────────────────
 
@@ -80,15 +80,15 @@ class TokenStream(LL1Stream[Token]):
         """为单个 token 创建 SourceRange。"""
         return SourceRange(start=token.raw.source.start, end=token.raw.source.end)
 
-    # ── 期望 / 错误恢复（异步）─────────────────────────────
+    # ── 期望 / 错误恢复 ─────────────────────────────
 
-    async def expect(self, token_cls: type[_TToken]) -> _TToken:
+    def expect(self, token_cls: type[_TToken]) -> _TToken:
         """期望当前 token 为指定类型，否则收集错误并插入合成 token。
 
         错误恢复策略：记录 UnexpectedTokenError → 消费意外 token → 返回合成 token。
         合成 token 保证调用方拿到类型安全的对象，解析器始终前进，避免级联崩溃。
         """
-        tok = await self.peek()
+        tok = self.peek()
         if isinstance(tok, NoNextType):
             rng = self.span_from(None)
             self._errors.add(
@@ -107,9 +107,9 @@ class TokenStream(LL1Stream[Token]):
                     actual=tok.raw.type.name,
                 )
             )
-            await self.advance()
+            self.advance()
             return self._synthetic(token_cls, source=tok.raw.source)
-        await self.advance()
+        self.advance()
         return tok
 
     def _synthetic(self, token_cls: type[_TToken], *, source: SourceRange | None = None) -> _TToken:

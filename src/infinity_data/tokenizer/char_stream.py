@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterable
+from collections.abc import Iterable
 
 from infinity_data.infra.ll1_stream import LL1Stream
 from infinity_data.tokenizer.models.raw_tokens import SourceInfo
@@ -39,7 +39,7 @@ class LineCounter:
 class CharStream(LL1Stream[str]):
     """字符流：在 LL(1) 流基础上附加行列位置跟踪。"""
 
-    def __init__(self, source: AsyncIterable[str]) -> None:
+    def __init__(self, source: Iterable[str]) -> None:
         super().__init__(source)
         self._counter: LineCounter = LineCounter()
 
@@ -67,6 +67,6 @@ class CharStream(LL1Stream[str]):
 
     # ── 内部钩子 ──────────────────────────────────────────
 
-    async def _on_advance(self, item: str) -> None:
+    def _on_advance(self, item: str) -> None:
         """消费字符时同步更新行列计数器。"""
         self._counter.step(item)

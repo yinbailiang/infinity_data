@@ -44,11 +44,19 @@ class Document(AstNode):
 
 
 @dataclass
+class TemplateImportItem(AstNode):
+    """模板导入项: Name [as Alias]。"""
+
+    name: str  # 被导入文件中的模板名
+    alias: str | None = None  # 本地别名（可选）
+
+
+@dataclass
 class TemplateImportStmt(AstNode):
-    """模板导入: !from "path" import Name1, Name2"""
+    """模板导入: !from "path" import Name1, Name2 as N2"""
 
     from_path: str  # 文件路径（unix 风格）
-    names: list[str]  # 导入的模板名列表
+    items: list[TemplateImportItem]  # 导入项列表
 
 
 @dataclass

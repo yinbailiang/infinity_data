@@ -1,12 +1,12 @@
 """导入语句解析：``!env`` / ``!file`` / ``!from``。
 
-M2 提供基础实现：
+M3 授权模型：
 
-- ``!env import``：从进程环境变量或显式 env 映射取值
-- ``!file``：本地文件读取（json / toml 内建；yaml 需可选依赖 PyYAML）
-- ``!from``（模板导入）：占位警告，M3 与 SandboxConfig 一并实现
-
-M3 将引入授权模型（env 白名单、allow_files/allow_templates glob、strict 模式）。
+- ``!env import``：变量必须列于 ``SandboxConfig.env``（否则 strict 抛
+  :class:`SandboxError`，非 strict 警告）
+- ``!file``：目标路径必须命中 ``allow_files`` glob 白名单
+- ``!from``（模板导入）：目标路径必须命中 ``allow_templates`` glob 白名单；
+  模板定义的实际加载由 :class:`SemanticAnalyzer` 完成
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from infinity_data.parser.models import (
     FileImportStmt,
     JsonPathIndex,
     JsonPathKey,
-    TemplateImportStmt,
 )
+from infinity_data.sandbox import SandboxConfig, SandboxError
 from infinity_data.semantic.models import Severity
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
@@ -47,32 +47,56 @@ class ImportResolver:
         *,
         env: Mapping[str, str] | None = None,
         base_dir: str | os.PathLike[str] | None = None,
+        sandbox: SandboxConfig | None = None,
     ) -> None:
-        self._env: Mapping[str, str] = env if env is not None else os.environ
+        # env 兼容旧调用方式：直接提供映射时视为该映射即授权全集
+        if sandbox is None:
+            sandbox = SandboxConfig(env=dict(env)) if env is not None else SandboxConfig.deny_all()
+        elif env is not None:
+            sandbox = SandboxConfig(
+                env={**sandbox.env, **dict(env)},
+                allow_files=sandbox.allow_files,
+                allow_templates=sandbox.allow_templates,
+                strict=sandbox.strict,
+            )
+        self._sandbox: SandboxConfig = sandbox
         self._base_dir: Path = Path(base_dir) if base_dir is not None else Path.cwd()
 
+    @property
+    def sandbox(self) -> SandboxConfig:
+        return self._sandbox
+
+    @property
+    def base_dir(self) -> Path:
+        return self._base_dir
+
     def resolve(self, doc: Document, report: ReportFn) -> dict[str, Any]:
-        """解析所有导入语句，返回 namespace。"""
+        """解析所有导入语句（env/file），返回 namespace。"""
         namespace: dict[str, Any] = {}
         for stmt in doc.statements:
             if isinstance(stmt, EnvImportStmt):
-                self._resolve_env(stmt, namespace)
+                self._resolve_env(stmt, namespace, report)
             elif isinstance(stmt, FileImportStmt):
                 self._resolve_file(stmt, namespace, report)
-            elif isinstance(stmt, TemplateImportStmt):
-                report(
-                    Severity.WARNING,
-                    f'模板导入 !from 尚未实现（M3）: {stmt.from_path}',
-                    stmt.source,
-                )
         return namespace
 
     # ── 各类导入 ──────────────────────────────────────
 
-    def _resolve_env(self, stmt: EnvImportStmt, namespace: dict[str, Any]) -> None:
+    def _resolve_env(
+        self,
+        stmt: EnvImportStmt,
+        namespace: dict[str, Any],
+        report: ReportFn,
+    ) -> None:
         """!env import NAME [as NEW_NAME]"""
         name = stmt.alias or stmt.name
-        namespace[name] = self._env.get(stmt.name, '')
+        if stmt.name in self._sandbox.env:
+            namespace[name] = self._sandbox.env[stmt.name]
+            return
+        if self._sandbox.strict:
+            raise SandboxError(f'环境变量 {stmt.name!r} 未在沙盒授权（!env import）', stmt.source)
+        report(Severity.WARNING, f'环境变量 {stmt.name!r} 未在沙盒授权，已忽略', stmt.source)
+        namespace[name] = ''
 
     def _resolve_file(
         self,
@@ -84,6 +108,13 @@ class ImportResolver:
         path = Path(stmt.file_path)
         if not path.is_absolute():
             path = self._base_dir / path
+
+        if not self._sandbox.authorize_file(path, self._base_dir):
+            if self._sandbox.strict:
+                raise SandboxError(f'文件导入超出沙盒授权: {stmt.file_path}', stmt.source)
+            report(Severity.WARNING, f'文件导入超出沙盒授权，已忽略: {stmt.file_path}', stmt.source)
+            return
+
         if not path.exists():
             report(Severity.WARNING, f'导入文件不存在: {path}', stmt.source)
             return
@@ -100,6 +131,34 @@ class ImportResolver:
                 report(Severity.WARNING, f'无法解析导入路径: {path}', item.source)
                 continue
             namespace[item.alias] = value
+
+    # ── 模板导入路径解析（!from 由 SemanticAnalyzer 使用）──
+
+    def resolve_template_path(
+        self,
+        from_path: str,
+        *,
+        base_dir: Path | None,
+        source: SourceRange | None,
+        report: ReportFn,
+    ) -> Path | None:
+        """解析 !from 目标路径并做沙盒授权检查。
+
+        - 相对路径以 base_dir（导入所在文件目录）为基准
+        - strict 授权失败 → 抛 :class:`SandboxError`
+        - 非 strict 授权失败 → 警告 + None
+        """
+        base = base_dir if base_dir is not None else self._base_dir
+        path = Path(from_path)
+        if not path.is_absolute():
+            path = base / path
+
+        if not self._sandbox.authorize_template(path, base):
+            if self._sandbox.strict:
+                raise SandboxError(f'模板导入超出沙盒授权: {from_path}', source)
+            report(Severity.WARNING, f'模板导入超出沙盒授权，已忽略: {from_path}', source)
+            return None
+        return path
 
     # ── 辅助 ──────────────────────────────────────────
 

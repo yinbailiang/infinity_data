@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 
 from infinity_data.infra.errors import ErrorCollector, InfinityDataError
-from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 # ═══════════════════════════════════════════════════════════
 # 错误类型
@@ -11,7 +10,7 @@ from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 
 @dataclass
-class ParseError(InfinityDataError[SourceRange]):
+class ParseError(InfinityDataError):
     """语法分析阶段错误基类。
 
     ``source`` 字段和 ``message`` 属性 / ``__str__`` 方法
@@ -31,16 +30,6 @@ class UnexpectedTokenError(ParseError):
 
     def _format_message(self) -> str:
         return f'[{self.location}] 期望 {self.expected}，实际为 {self.actual}'
-
-
-@dataclass
-class InvalidImportKeywordError(ParseError):
-    """! 导入语句后跟非法关键字（非 env/file/from）。"""
-
-    actual: str
-
-    def _format_message(self) -> str:
-        return f'[{self.location}] ! 后期望 env/file/from，实际为 {self.actual}'
 
 
 @dataclass

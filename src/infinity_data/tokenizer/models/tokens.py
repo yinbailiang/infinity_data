@@ -206,36 +206,22 @@ class IdentifierToken(Token):
 
 
 @dataclass
-class FromToken(Token):
-    """from"""
+class EnvImportToken(Token):
+    """!env"""
 
     pass
 
 
 @dataclass
-class ImportToken(Token):
-    """import"""
+class FileImportToken(Token):
+    """!file"""
 
     pass
 
 
 @dataclass
-class EnvToken(Token):
-    """env"""
-
-    pass
-
-
-@dataclass
-class FileToken(Token):
-    """file"""
-
-    pass
-
-
-@dataclass
-class AsToken(Token):
-    """as"""
+class FromImportToken(Token):
+    """!from"""
 
     pass
 
