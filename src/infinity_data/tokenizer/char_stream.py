@@ -57,9 +57,9 @@ class CharStream(LL1Stream[str]):
     def col(self) -> int:
         return self._counter.col
 
-    def info(self, file_path: str) -> SourceInfo:
+    def info(self) -> SourceInfo:
+        """当前位置（纯位置，来源由 tokenizer 持有）。"""
         return SourceInfo(
-            file_path=file_path,
             index=self.index,
             line=self.line,
             col=self.col,

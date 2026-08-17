@@ -20,11 +20,11 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Protocol, cast
 from urllib.parse import urlparse
 
-from infinity_data.semantic.converter import reduce_value
 from infinity_data.semantic.models import (
     Diagnostic,
     Severity,
     StdArray,
+    StdField,
     StdLiteral,
     StdObject,
     StdValue,
@@ -146,6 +146,63 @@ def _safe_equal(a: Any, b: Any) -> bool:
         return bool(a == b)
     except InvalidOperation:
         return False
+
+
+def _std_equal(a: StdValue | None, b: StdValue | None) -> bool:
+    """StdValue 结构相等（直接工作在 Std 节点上，不经 Python 降维）。
+
+    语义：
+    - 字面量：kind 相同且值相等；int/float 数值交叉相等（eq(42) 对 float 42 成立）
+    - bool 与 int 不相等（避免 Python ``True == 1`` 陷阱）
+    - NaN 与任何值不相等（IEEE 754）
+    - 数组：等长且逐元素相等
+    - 对象：等字段集且逐字段值相等（与字段顺序无关）
+    """
+    if a is None or b is None:
+        return a is b
+    if isinstance(a, StdLiteral) and isinstance(b, StdLiteral):
+        if a.kind == b.kind:
+            return _safe_equal(a.value, b.value)
+        if {a.kind, b.kind} == {'int', 'float'}:
+            na = _as_number(a)
+            nb = _as_number(b)
+            if na is not None and nb is not None:
+                return _safe_equal(na, nb)
+        return False
+    if isinstance(a, StdArray) and isinstance(b, StdArray):
+        if len(a.elements) != len(b.elements):
+            return False
+        return all(_std_equal(x, y) for x, y in zip(a.elements, b.elements))
+    if isinstance(a, StdObject) and isinstance(b, StdObject):
+        if len(a.fields) != len(b.fields):
+            return False
+        for f in a.fields:
+            other = b.get(f.name)
+            if other is None or not _std_equal(f.value, other.value):
+                return False
+        return True
+    return False
+
+
+def _as_std_value(v: Any) -> StdValue:
+    """约束参数（Python 值）→ StdValue（与值同构后比较）。"""
+    if v is None:
+        return StdLiteral(kind='null', value=None)
+    if isinstance(v, bool):
+        return StdLiteral(kind='bool', value=v)
+    if isinstance(v, int):
+        return StdLiteral(kind='int', value=v)
+    if isinstance(v, Decimal):
+        return StdLiteral(kind='float', value=v)
+    if isinstance(v, str):
+        return StdLiteral(kind='str', value=v)
+    if isinstance(v, (list, tuple)):
+        items = cast(list[Any], v)
+        return StdArray(elements=[_as_std_value(e) for e in items])
+    if isinstance(v, dict):
+        mapping = cast(dict[Any, Any], v)
+        return StdObject(fields=[StdField(name=str(k), value=_as_std_value(e)) for k, e in mapping.items()])
+    return StdLiteral(kind='str', value=str(v))
 
 
 def _as_spec(arg: Any) -> ResolvedConstraint | None:
@@ -476,10 +533,9 @@ def _check_in(
     executor: Executor,
 ) -> ConstraintResult:
     choices: list[Any] = cast(list[Any], args[0]) if len(args) == 1 and isinstance(args[0], list) else args
-    actual = reduce_value(val) if val is not None else None
-    if any(_safe_equal(actual, c) for c in choices):
+    if any(_std_equal(val, _as_std_value(c)) for c in choices):
         return ok_result()
-    return fail_result(f'{path}: 值 {actual!r} 不在允许的值 {choices!r} 中', source, path)
+    return fail_result(f'{path}: 值 {describe(val)} 不在允许的值 {choices!r} 中', source, path)
 
 
 def _check_ip(
@@ -673,10 +729,9 @@ def _check_eq(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
-    actual = reduce_value(val) if val is not None else None
-    if _safe_equal(actual, args[0]):
+    if _std_equal(val, _as_std_value(args[0])):
         return ok_result()
-    return fail_result(f'{path}: 值 {actual!r} 不等于 {args[0]!r}', source, path)
+    return fail_result(f'{path}: 值 {describe(val)} 不等于 {args[0]!r}', source, path)
 
 
 def _check_unique(
@@ -688,12 +743,10 @@ def _check_unique(
 ) -> ConstraintResult:
     if not isinstance(val, StdArray):
         return fail_result(f'{path}: unique 约束只适用于 list', source, path)
-    seen: list[Any] = []
-    for e in val.elements:
-        v = reduce_value(e)
-        if any(_safe_equal(v, s) for s in seen):
-            return fail_result(f'{path}: 元素 {v!r} 重复', source, path)
-        seen.append(v)
+    for i in range(len(val.elements)):
+        for j in range(i):
+            if _std_equal(val.elements[i], val.elements[j]):
+                return fail_result(f'{path}: 元素 {describe(val.elements[i])} 重复', source, path)
     return ok_result()
 
 

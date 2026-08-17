@@ -13,7 +13,6 @@ from infinity_data.parser.errors import ParseErrorCollector, UnexpectedTokenErro
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
-    SourceInfo,
     SourceRange,
 )
 from infinity_data.tokenizer.models.tokens import (
@@ -68,17 +67,14 @@ class TokenStream(LL1Stream[Token]):
         if isinstance(first, NoNextType) or first is None:
             first = self._last
         if isinstance(first, NoNextType) or first is None:
-            return SourceRange(
-                start=SourceInfo(file_path='', line=0, col=0, index=0),
-                end=SourceInfo(file_path='', line=0, col=0, index=0),
-            )
+            return SourceRange.empty()
         last = self._last if self._last else first
-        return SourceRange(start=first.raw.source.start, end=last.raw.source.end)
+        return SourceRange(file=first.raw.source.file, start=first.raw.source.start, end=last.raw.source.end)
 
     @staticmethod
     def single_span(token: Token) -> SourceRange:
         """为单个 token 创建 SourceRange。"""
-        return SourceRange(start=token.raw.source.start, end=token.raw.source.end)
+        return SourceRange(file=token.raw.source.file, start=token.raw.source.start, end=token.raw.source.end)
 
     # ── 期望 / 错误恢复 ─────────────────────────────
 

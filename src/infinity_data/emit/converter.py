@@ -1,4 +1,4 @@
-"""降维器：StandardAst → 纯 Python 值（dict / list / 标量）。
+"""降维器：StdAst → 纯 Python 值（dict / list / 标量）。
 
 - ``noexist`` 字段不出现在输出中
 - ``null`` 字段保留键（值为 None），``keep_null=False`` 时跳过

@@ -40,7 +40,7 @@ from infinity_data.parser.models import (
     Value,
 )
 from infinity_data.parser.token_stream import TokenStream
-from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceInfo, SourceRange
+from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
     ColonToken,
@@ -96,12 +96,8 @@ class Parser:
         # 懒初始化：预读第一个 token
         first_tok = self._stream.peek()
         if isinstance(first_tok, NoNextType) or self._stream.eof():
-            dummy = SourceRange(
-                start=SourceInfo(file_path='', line=0, col=0, index=0),
-                end=SourceInfo(file_path='', line=0, col=0, index=0),
-            )
-            self._errors.add(EmptyTokenListError(source=dummy))
-            return Document(source=dummy)
+            self._errors.add(EmptyTokenListError(source=SourceRange.empty()))
+            return Document(source=SourceRange.empty())
         doc = Document(source=first_tok.raw.source)
         while True:
             stmt = self._parse_statement()
@@ -621,10 +617,7 @@ class Parser:
                 self._stream.advance()
                 if isinstance(tok, NoNextType):
                     return ErrorValue(
-                        source=SourceRange(
-                            start=SourceInfo(file_path='', line=0, col=0, index=0),
-                            end=SourceInfo(file_path='', line=0, col=0, index=0),
-                        ),
+                        source=SourceRange.empty(),
                         message='无法解析的值: EOF',
                     )
                 return ErrorValue(

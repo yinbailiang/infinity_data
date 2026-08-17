@@ -20,7 +20,7 @@ class InfinityDataError(Exception):
     - 语法/语义阶段：区间 range
     - 无源码位置的安全异常（如顶层 schema 校验失败）：None
 
-    消息协议：子类统一重写 ``_format_message()`` 提供人类可读的中文描述；
+    消息协议：子类统一重写 ``_format_message()`` 提供人类可读的描述；
     携带现成消息的安全异常在重写中直接返回它。
     """
 
@@ -39,7 +39,7 @@ class InfinityDataError(Exception):
         if self.source is None:
             return '<unknown>'
         s = self.source.start
-        return f'{s.file_path}:{s.line}:{s.col}'
+        return f'{self.source.file.name}:{s.line}:{s.col}'
 
     def _format_message(self) -> str:
         """格式化错误消息，子类应重写此方法。"""
@@ -63,7 +63,7 @@ class ErrorCollector(Generic[E]):
     用法::
 
         collector = TokenizeErrorCollector()
-        tokenizer = RawTokenizer(source, error_collector=collector)
+        tokenizer = RawTokenizer(file, error_collector=collector)
         ...
         for err in collector:
             print(err.message)

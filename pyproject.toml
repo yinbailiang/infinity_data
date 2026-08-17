@@ -26,7 +26,6 @@ where = ["src"]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-exclude = ["tests"]
 
 [tool.ruff.lint]
 select = [
@@ -53,6 +52,6 @@ line-ending = "lf"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
 reportMissingImports = "error"
-exclude = ["tests", "**/node_modules", "**/__pycache__", "**/.*", ".venv"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv"]
 venvPath = "."
 venv = ".venv"

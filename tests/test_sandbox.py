@@ -111,17 +111,24 @@ def test_template_import_from_inft(tmp_path: Path) -> None:
 
 
 def test_template_import_with_alias(tmp_path: Path) -> None:
-    """!from ... import Name as Alias：别名可用，原名保留。"""
+    """!from ... import Name as Alias：别名可用，原名不可见。"""
     tpl = tmp_path / 'templates' / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '!from "templates/extra.inft" import Extra as Ex\na = Ex(name="y")\nb = Extra(name="z")\n',
+        '!from "templates/extra.inft" import Extra as Ex\na = Ex(name="y")\n',
     )
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'a': {'name': 'y'}, 'b': {'name': 'z'}}
+    assert result.value == {'a': {'name': 'y'}}
+
+    # 原名不可见（按需导入语义）
+    f2 = tmp_path / 'app2.infd'
+    _write(f2, '!from "templates/extra.inft" import Extra as Ex\nb = Extra(name="z")\n')
+    result2 = load(f2, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
+    assert result2.has_errors
+    assert any('未定义的模板' in d.message for d in result2.diagnostics)
 
 
 def test_template_import_multiple_with_mixed_alias(tmp_path: Path) -> None:
@@ -158,12 +165,14 @@ def test_template_import_alias_missing_source(tmp_path: Path) -> None:
 
 
 def test_template_import_nested(tmp_path: Path) -> None:
+    """嵌套导入：mid 引用 base 的模板（定义点可见）；主文件只见 Mid。"""
     base = tmp_path / 'templates' / 'base.inft'
     _write(base, '~Base {\n    id: int = 0\n}\n')
     mid = tmp_path / 'templates' / 'mid.inft'
     _write(mid, '!from "base.inft" import Base\n~Mid {\n    base: Base = Base()\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/mid.inft" import Mid\nm = Mid(base=Base(id=7))\n')
+    # Base 对主文件不可见，参数值按调用点可见性解析 → 用 dict 字面量（模板即约束校验）
+    _write(f, '!from "templates/mid.inft" import Mid\nm = Mid(base={ id = 7 })\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'m': {'base': {'id': 7}}}
@@ -198,6 +207,21 @@ def test_template_import_cyclic_is_safe(tmp_path: Path) -> None:
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'x': {'b': {'a': None}}}
+
+
+def test_same_content_different_files_is_rejected(tmp_path: Path) -> None:
+    """内容 hash 真名相同但来源文件不同 → 显式报错（依赖上下文可能不同）。"""
+    shared = '~Shared {\n    id: int = 0\n}\n'
+    _write(tmp_path / 'a' / 'shared.inft', shared)
+    _write(tmp_path / 'b' / 'shared.inft', shared)
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!from "a/shared.inft" import Shared as A\n!from "b/shared.inft" import Shared as B\n',
+    )
+    result = load(f, sandbox=SandboxConfig.development())
+    assert result.has_errors
+    assert any('来源文件不同' in d.message for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════

@@ -1,16 +1,17 @@
 """约束引擎单元测试：类型约束、一般约束、逻辑约束、模板即约束。"""
 
 from decimal import Decimal
+from typing import Any
 
-from infinity_data import compile_source
+from infinity_data import CompilationResult, compile_source
 from infinity_data.semantic.models import Severity
 
 
-def errors_of(result) -> list[str]:
+def errors_of(result: CompilationResult) -> list[str]:
     return [d.message for d in result.diagnostics if d.severity is Severity.ERROR]
 
 
-def compile_ok(source: str) -> dict:
+def compile_ok(source: str) -> dict[str, Any]:
     result = compile_source(source)
     assert not errors_of(result), errors_of(result)
     return result.value
@@ -114,6 +115,21 @@ def test_sign_constraints() -> None:
 def test_eq() -> None:
     compile_ok('x: eq(42) = 42\n')
     assert compile_source('x: eq(42) = 43\n').has_errors
+
+
+def test_eq_works_on_std_nodes() -> None:
+    """eq 直接在 Std 节点上比较：int/float 数值交叉相等，bool 与 int 不相等。"""
+    compile_ok('x: <float, eq(42)> = 42\n')  # float 提升后数值交叉
+    compile_ok('x: <int, eq(1)> = 1\n')
+    # Python True == 1 的陷阱被 Std 语义排除
+    assert compile_source('x: eq(1) = true\n').has_errors
+    assert compile_source('x: eq(true) = 1\n').has_errors
+
+
+def test_eq_object_and_array_structure() -> None:
+    """约束比较直接工作在 Std 节点：数组结构相等（unique 走 Std 比较）。"""
+    compile_ok('x: <list, unique> = [1, 2, 3]\n')
+    assert compile_source('x: <list, unique> = [1, 2, 1]\n').has_errors
 
 
 def test_unique() -> None:

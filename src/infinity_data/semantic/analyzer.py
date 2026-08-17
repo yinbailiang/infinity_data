@@ -8,6 +8,12 @@
 4. 模板名注册为同名校验器（**模板即约束**）
 5. 逐语句分析：模板展开、约束语法糖展开、约束链执行
 6. 顶层 schema 校验（strict/lenient/strip）
+
+模板身份与可见性模型：
+- 模板真名 :class:`TemplateKey`（来源文件内容 hash + 本地名），全局唯一
+- 每个文件一张可见名表 scope（可见名 → 真名）；``!from ... import A as S``
+  只把 ``S`` 映射进导入方 scope，原名不可见
+- 名字解析（模板调用、约束里的模板名）在解析点经 scope 翻译成真名
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import decimal
 from pathlib import Path
 from typing import Any, cast
 
+from infinity_data.infra.file import File
 from infinity_data.parser.errors import ParseErrorCollector
 from infinity_data.parser.models import (
     ArrayValue,
@@ -35,7 +42,6 @@ from infinity_data.parser.models import (
     LiteralValue,
     TemplateCallValue,
     TemplateDef,
-    TemplateImportItem,
     TemplateImportStmt,
     Value,
 )
@@ -51,6 +57,7 @@ from infinity_data.semantic.models import (
     StdLiteral,
     StdObject,
     StdValue,
+    TemplateKey,
 )
 from infinity_data.semantic.registry import (
     ConstraintFn,
@@ -83,6 +90,9 @@ MAX_IMPORT_DEPTH = 32
 
 _INVALID_CONSTRAINT = '@invalid'
 
+Scope = dict[str, TemplateKey]
+"""文件级可见名表：可见名 → 模板真名。"""
+
 
 class SemanticAnalyzer:
     """语义分析器：将 RawAst 转换为 StandardAst。"""
@@ -97,8 +107,14 @@ class SemanticAnalyzer:
         self._registry = registry or ConstraintRegistry()
         self._imports = import_resolver or ImportResolver()
         self._schema = schema
-        self._templates: dict[str, TemplateDef] = {}
-        self._local_template_names: set[str] = set()
+        self._templates: dict[TemplateKey, TemplateDef] = {}
+        self._template_scopes: dict[TemplateKey, Scope] = {}
+        self._template_files: dict[TemplateKey, str] = {}  # key → 来源文件 identity（同真名异文件保护）
+        self._scopes_by_file: dict[str, Scope] = {}  # 文件 identity → 已构建 scope（循环导入防护）
+        self._root_file: File | None = None
+        self._root_scope: Scope = {}
+        self._root_local_names: set[str] = set()
+        self._schema_scope: Scope | None = None
         self._namespace: dict[str, Any] = {}  # $ 引用解析目标
         self._diagnostics: list[Diagnostic] = []
         self._depth = 0
@@ -107,29 +123,40 @@ class SemanticAnalyzer:
     # 公开入口
     # ═══════════════════════════════════════════════════════
 
-    def analyze(self, doc: Document) -> StdDocument:
-        """主入口：分析 RawAst，返回 StandardAst。"""
+    def analyze(self, doc: Document, file: File) -> StdDocument:
+        """主入口：分析 RawAst，返回 StandardAst。
+
+        Args:
+            doc: 语法分析产物
+            file: 源码来源（诊断名 / 相对导入基准 / 内容 hash 均由它提供）
+        """
         self._templates = {}
-        self._local_template_names = set()
+        self._template_scopes = {}
+        self._template_files = {}
+        self._scopes_by_file = {}
+        self._root_file = file
+        self._root_scope = {}
+        self._root_local_names = set()
+        self._schema_scope = None
         self._namespace = {}
         self._diagnostics = []
         self._depth = 0
 
-        # 第一遍：收集本地模板定义
-        self._collect_templates(doc)
+        # 第一遍：收集本地模板定义（key 键控）
+        self._collect_templates(doc, file.content_hash())
 
-        # 解析模板导入（!from，含 schema.from_file 隐式导入）
-        self._load_imported_templates(doc)
+        # 解析模板导入（!from，含 schema.from_file 隐式导入）→ 构建主文件 scope
+        self._root_scope = self._load_imported_templates(doc)
 
         # 解析数据导入语句（!env / !file）
         self._namespace = self._imports.resolve(doc, self._report)
 
-        # 模板名注册为约束（模板即约束）
-        for name, tpl in self._templates.items():
+        # 模板名注册为约束（模板即约束，注册表键为真名字符串）
+        for key, tpl in self._templates.items():
             self._registry.register(
-                name,
-                self._make_template_constraint(name, tpl),
-                description=f'模板 {name} 结构约束',
+                str(key),
+                self._make_template_constraint(key, tpl),
+                description=f'模板 {key.name} 结构约束',
             )
 
         # 第二遍：分析语句
@@ -139,7 +166,7 @@ class SemanticAnalyzer:
                 case TemplateDef() | TemplateImportStmt() | EnvImportStmt() | FileImportStmt():
                     continue  # 模板定义与导入不产生输出
                 case Field():
-                    f = self._analyze_field(stmt, path=stmt.name)
+                    f = self._analyze_field(stmt, path=stmt.name, scope=self._root_scope)
                     if f is not None:
                         root_fields.append(f)
                 case _:
@@ -158,11 +185,12 @@ class SemanticAnalyzer:
     # 模板收集
     # ═══════════════════════════════════════════════════════
 
-    def _collect_templates(self, doc: Document) -> None:
+    def _collect_templates(self, doc: Document, root_hash: str) -> None:
         for stmt in doc.statements:
             if not isinstance(stmt, TemplateDef):
                 continue
-            if stmt.name in self._templates:
+            key = TemplateKey(content_hash=root_hash, name=stmt.name)
+            if key in self._templates:
                 self._diagnostics.append(
                     Diagnostic(
                         Severity.WARNING,
@@ -184,34 +212,82 @@ class SemanticAnalyzer:
                         )
                 else:
                     seen_optional = True
-            self._templates[stmt.name] = stmt
-            self._local_template_names.add(stmt.name)
+            self._templates[key] = stmt
+            assert self._root_file is not None
+            self._template_files[key] = self._root_file.identity
+            self._root_local_names.add(stmt.name)
 
     # ═══════════════════════════════════════════════════════
     # 模板导入（!from）
     # ═══════════════════════════════════════════════════════
 
-    def _load_imported_templates(self, doc: Document) -> None:
-        """解析 !from 导入（含 schema.from_file 隐式导入）。"""
-        loaded: set[Path] = set()
+    def _load_imported_templates(self, doc: Document) -> Scope:
+        """构建主文件 scope（含 schema.from_file 隐式导入）。"""
+        assert self._root_file is not None
+        root_id = self._root_file.identity
+        loaded: set[str] = set()
+        root_scope: Scope = {
+            tpl.name: key for key, tpl in self._templates.items() if self._template_files.get(key) == root_id
+        }
+
+        # schema.from_file 隐式导入：独立 scope 供顶层校验使用
         if self._schema is not None and self._schema.from_file:
-            self._import_template_path(
+            self._schema_scope = self._import_template_path(
                 self._schema.from_file,
                 base_dir=self._imports.base_dir,
                 source=None,
                 loaded=loaded,
                 depth=0,
             )
+
         for stmt in doc.statements:
-            if isinstance(stmt, TemplateImportStmt):
-                self._import_template_path(
-                    stmt.from_path,
-                    base_dir=self._imports.base_dir,
-                    source=stmt.source,
-                    loaded=loaded,
-                    depth=0,
-                    items=stmt.items,
-                )
+            if not isinstance(stmt, TemplateImportStmt):
+                continue
+            dep_scope = self._import_template_path(
+                stmt.from_path,
+                base_dir=self._imports.base_dir,
+                source=stmt.source,
+                loaded=loaded,
+                depth=0,
+            )
+            for item in stmt.items:
+                dep_key = dep_scope.get(item.name)
+                if dep_key is None:
+                    self._diagnostics.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f'导入文件中不存在模板 {item.name!r}',
+                            item.source,
+                        )
+                    )
+                    continue
+                visible = item.alias or item.name
+                if visible in root_scope:
+                    if visible in self._root_local_names:
+                        self._diagnostics.append(
+                            Diagnostic(
+                                Severity.ERROR,
+                                f'导入的模板 {visible!r} 与文件内定义冲突',
+                                item.source,
+                            )
+                        )
+                    else:
+                        self._diagnostics.append(
+                            Diagnostic(
+                                Severity.WARNING,
+                                f'可见名 {visible!r} 重复导入，后者覆盖前者',
+                                item.source,
+                            )
+                        )
+                        root_scope[visible] = dep_key
+                else:
+                    root_scope[visible] = dep_key
+
+        # 主文件本地模板的 scope 登记（模板展开/约束校验按此解析名字）
+        for key in self._templates:
+            if self._template_files.get(key) == root_id:
+                self._template_scopes[key] = root_scope
+        return root_scope
 
     def _import_template_path(
         self,
@@ -219,11 +295,10 @@ class SemanticAnalyzer:
         *,
         base_dir: Path,
         source: SourceRange | None,
-        loaded: set[Path],
+        loaded: set[str],
         depth: int,
-        items: list[TemplateImportItem] | None = None,
-    ) -> None:
-        """加载单个模板文件并合并其模板定义（递归解析嵌套 !from）。"""
+    ) -> Scope:
+        """加载单个模板文件，返回该文件的可见 scope（递归解析嵌套 !from）。"""
         if depth > MAX_IMPORT_DEPTH:
             self._diagnostics.append(
                 Diagnostic(
@@ -232,45 +307,108 @@ class SemanticAnalyzer:
                     source,
                 )
             )
-            return
+            return {}
 
-        path = self._imports.resolve_template_path(
+        file = self._imports.resolve_template_path(
             from_path,
             base_dir=base_dir,
             source=source,
             report=self._report,
         )
-        if path is None:
-            return
+        if file is None:
+            return {}
 
-        resolved = path.resolve()
-        if resolved in loaded:
-            return  # 已加载（含循环导入防护）
-        loaded.add(resolved)
+        file_id = file.identity
+        if file_id in loaded:
+            # 循环导入：返回已构建的本地名部分（本地模板先注册）
+            return self._scopes_by_file.get(file_id, {})
+        loaded.add(file_id)
 
         try:
-            text = resolved.read_text(encoding='utf-8')
+            content_hash = file.content_hash()
         except OSError as e:
-            self._diagnostics.append(Diagnostic(Severity.ERROR, f'读取模板文件失败 {resolved}: {e}', source))
-            return
+            self._diagnostics.append(Diagnostic(Severity.ERROR, f'读取模板文件失败 {file.name}: {e}', source))
+            return {}
 
-        imported_doc = self._parse_document(text, str(resolved))
+        imported_doc = self._parse_document(file)
+
+        # 1) 本地模板：先注册（循环导入时依赖文件的本地名部分已可见）
+        scope: Scope = {}
+        local_names: set[str] = set()
+        for s in imported_doc.statements:
+            if not isinstance(s, TemplateDef):
+                continue
+            key = TemplateKey(content_hash=content_hash, name=s.name)
+            existing_file = self._template_files.get(key)
+            if existing_file is not None and existing_file != file_id:
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        f'模板 {s.name!r} 内容与 {existing_file} 中的定义相同，'
+                        '但来源文件不同，其导入依赖上下文可能不同',
+                        s.source,
+                    )
+                )
+                continue
+            self._templates[key] = s
+            self._template_files[key] = file_id
+            scope[s.name] = key
+            local_names.add(s.name)
+        self._scopes_by_file[file_id] = scope
+
+        # 2) 嵌套 !from：可见名映射
+        for s in imported_doc.statements:
+            if not isinstance(s, TemplateImportStmt):
+                continue
+            dep_scope = self._import_template_path(
+                s.from_path,
+                base_dir=file.root_path,
+                source=s.source,
+                loaded=loaded,
+                depth=depth + 1,
+            )
+            for item in s.items:
+                dep_key = dep_scope.get(item.name)
+                if dep_key is None:
+                    self._diagnostics.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f'导入文件中不存在模板 {item.name!r}',
+                            item.source,
+                        )
+                    )
+                    continue
+                visible = item.alias or item.name
+                if visible in scope:
+                    if visible in local_names:
+                        self._diagnostics.append(
+                            Diagnostic(
+                                Severity.ERROR,
+                                f'导入的模板 {visible!r} 与文件内定义冲突',
+                                item.source,
+                            )
+                        )
+                    else:
+                        self._diagnostics.append(
+                            Diagnostic(
+                                Severity.WARNING,
+                                f'可见名 {visible!r} 重复导入，后者覆盖前者',
+                                item.source,
+                            )
+                        )
+                        scope[visible] = dep_key
+                else:
+                    scope[visible] = dep_key
+
+        # 3) 非模板语句校验 + 模板 scope 登记
         for s in imported_doc.statements:
             match s:
                 case TemplateDef():
-                    self._merge_imported_template(s)
+                    self._template_scopes[TemplateKey(content_hash=content_hash, name=s.name)] = scope
                 case TemplateImportStmt():
-                    # 递归：相对路径以被导入文件所在目录为基准
-                    self._import_template_path(
-                        s.from_path,
-                        base_dir=resolved.parent,
-                        source=s.source,
-                        loaded=loaded,
-                        depth=depth + 1,
-                        items=s.items,
-                    )
+                    pass
                 case _:
-                    if resolved.suffix == '.inft':
+                    if file.name.endswith('.inft'):
                         self._diagnostics.append(
                             Diagnostic(
                                 Severity.ERROR,
@@ -279,76 +417,14 @@ class SemanticAnalyzer:
                             )
                         )
 
-        # 别名注册（!from ... import Name as Alias）
-        if items is not None:
-            for item in items:
-                self._register_import_alias(item)
+        return scope
 
-    def _register_import_alias(self, item: TemplateImportItem) -> None:
-        """注册 ``!from ... import Name as Alias`` 的别名（原名保留可用）。"""
-        if item.alias is None or item.alias == item.name:
-            return
-        source_tpl = self._templates.get(item.name)
-        if source_tpl is None:
-            self._diagnostics.append(
-                Diagnostic(
-                    Severity.ERROR,
-                    f'导入文件中不存在模板 {item.name!r}，无法以别名 {item.alias!r} 引用',
-                    item.source,
-                )
-            )
-            return
-        if item.alias in self._templates:
-            if item.alias in self._local_template_names:
-                self._diagnostics.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        f'模板别名 {item.alias!r} 与文件内定义冲突',
-                        item.source,
-                    )
-                )
-            else:
-                self._diagnostics.append(
-                    Diagnostic(
-                        Severity.WARNING,
-                        f'模板别名 {item.alias!r} 已存在，后者覆盖前者',
-                        item.source,
-                    )
-                )
-                self._templates[item.alias] = source_tpl
-            return
-        self._templates[item.alias] = source_tpl
-
-    def _merge_imported_template(self, tpl: TemplateDef) -> None:
-        """合并导入的模板定义（与本地定义冲突时报错）。"""
-        if tpl.name in self._templates:
-            if tpl.name in self._local_template_names:
-                self._diagnostics.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        f'导入的模板 {tpl.name!r} 与文件内定义冲突',
-                        tpl.source,
-                    )
-                )
-            else:
-                self._diagnostics.append(
-                    Diagnostic(
-                        Severity.WARNING,
-                        f'模板 {tpl.name!r} 被多次导入，后者覆盖前者',
-                        tpl.source,
-                    )
-                )
-                self._templates[tpl.name] = tpl
-            return
-        self._templates[tpl.name] = tpl
-
-    def _parse_document(self, text: str, file_path: str) -> Document:
+    def _parse_document(self, file: File) -> Document:
         """词法 + 语法分析一段源码（用于外部模板文件），诊断并入当前分析。"""
         tokenize_collector = TokenizeErrorCollector()
         parse_collector = ParseErrorCollector()
         raw_tokens = RawTokenizer(
-            iter(text),
-            file_path=file_path,
+            file=file,
             error_collector=tokenize_collector,
         )
         tokens = FinalTokenizer(raw_tokens)
@@ -367,12 +443,15 @@ class SemanticAnalyzer:
     def _apply_schema(self, root: StdObject) -> StdObject:
         """对顶层对象执行 schema 模板约束（strict/lenient/strip）。"""
         assert self._schema is not None
-        tpl = self._templates.get(self._schema.template)
-        if tpl is None:
+        schema_scope = self._schema_scope
+        scope = schema_scope if self._schema.from_file and schema_scope is not None else self._root_scope
+        key = scope.get(self._schema.template)
+        if key is None:
             raise SchemaError(f'未定义的 schema 模板 {self._schema.template!r}')
-        return self._check_schema_object(root, tpl, self._schema.mode)
+        tpl = self._templates[key]
+        return self._check_schema_object(root, tpl, self._schema.mode, self._template_scopes[key])
 
-    def _check_schema_object(self, obj: StdObject, tpl: TemplateDef, mode: str) -> StdObject:
+    def _check_schema_object(self, obj: StdObject, tpl: TemplateDef, mode: str, scope: Scope) -> StdObject:
         """按模板校验顶层对象。失败抛 :class:`SchemaError`（strip 先过滤再校验）。"""
         declared = {tf.name for tf in tpl.fields}
         diags: list[Diagnostic] = []
@@ -415,13 +494,13 @@ class SemanticAnalyzer:
         for tf in tpl.fields:
             f = obj.get(tf.name)
             if f is not None and f.value is not None:
-                result = self._execute_constraints(tf.constraints, f.value, tf.source, tf.name)
+                result = self._execute_constraints(tf.constraints, f.value, tf.source, tf.name, scope)
                 if not result.ok:
                     diags.extend(result.diagnostics)
 
         # 模板级约束
         for c in tpl.constraints:
-            result = self._execute_spec(self._resolve_constraint(c), obj, None, '')
+            result = self._execute_spec(self._resolve_constraint(c, scope), obj, None, '')
             if not result.ok:
                 diags.extend(result.diagnostics)
 
@@ -433,10 +512,16 @@ class SemanticAnalyzer:
     # 模板即约束
     # ═══════════════════════════════════════════════════════
 
-    def _make_template_constraint(self, name: str, tpl: TemplateDef) -> ConstraintFn:
-        """生成把模板当约束用的校验函数（校验手写 dict）。"""
+    def _make_template_constraint(self, key: TemplateKey, tpl: TemplateDef) -> ConstraintFn:
+        """生成把模板当约束用的校验函数（校验手写 dict）。
+
+        闭包捕获：模板 key（显示名用 key.name）、定义、allow_extra、声明字段集、
+        以及模板所在文件的 scope（约束里的模板名按定义点可见性解析）。
+        """
         allow_extra = self._resolve_config_bool(tpl, 'allow_extra')
         declared = {tf.name for tf in tpl.fields}
+        display = key.name
+        scope = self._template_scopes[key]
 
         def check(
             value: StdValue | None,
@@ -446,17 +531,17 @@ class SemanticAnalyzer:
             executor: Any,
         ) -> ConstraintResult:
             if value is None:
-                return fail_result(f'{path}: 期望 {name}（模板约束），实际没有值', source, path)
+                return fail_result(f'{path}: 期望 {display}（模板约束），实际没有值', source, path)
             if isinstance(value, StdLiteral):
                 if value.kind == 'null':
                     return fail_result(
-                        f'{path}: 期望 {name}，实际 null（使用 {name}? 允许可空）',
+                        f'{path}: 期望 {display}，实际 null（使用 {display}? 允许可空）',
                         source,
                         path,
                     )
-                return fail_result(f'{path}: 期望 {name}（对象），实际 {describe(value)}', source, path)
+                return fail_result(f'{path}: 期望 {display}（对象），实际 {describe(value)}', source, path)
             if not isinstance(value, StdObject):
-                return fail_result(f'{path}: 期望 {name}（对象），实际 {describe(value)}', source, path)
+                return fail_result(f'{path}: 期望 {display}（对象），实际 {describe(value)}', source, path)
 
             diags: list[Diagnostic] = []
             field_map = {f.name: f for f in value.fields}
@@ -470,14 +555,14 @@ class SemanticAnalyzer:
                         diags.append(
                             Diagnostic(
                                 Severity.ERROR,
-                                f'{child}: 模板 {name} 的必填字段 {tf.name!r} 缺失',
+                                f'{child}: 模板 {display} 的必填字段 {tf.name!r} 缺失',
                                 source,
                                 child,
                             )
                         )
                     continue
                 if f.value is not None:
-                    result = self._execute_constraints(tf.constraints, f.value, tf.source, child)
+                    result = self._execute_constraints(tf.constraints, f.value, tf.source, child, scope)
                     if not result.ok:
                         diags.extend(result.diagnostics)
 
@@ -489,7 +574,7 @@ class SemanticAnalyzer:
                         diags.append(
                             Diagnostic(
                                 Severity.ERROR,
-                                f'{child}: 模板 {name} 不允许额外字段 {f.name!r}',
+                                f'{child}: 模板 {display} 不允许额外字段 {f.name!r}',
                                 f.source or source,
                                 child,
                             )
@@ -497,7 +582,7 @@ class SemanticAnalyzer:
 
             # 模板级约束
             for c in tpl.constraints:
-                result = self._execute_spec(self._resolve_constraint(c), value, source, path)
+                result = self._execute_spec(self._resolve_constraint(c, scope), value, source, path)
                 if not result.ok:
                     diags.extend(result.diagnostics)
 
@@ -542,10 +627,10 @@ class SemanticAnalyzer:
     # 字段分析
     # ═══════════════════════════════════════════════════════
 
-    def _analyze_field(self, field: Field, path: str) -> StdField | None:
+    def _analyze_field(self, field: Field, path: str, scope: Scope) -> StdField | None:
         """分析单个字段，返回 StdField。"""
         # 1. 解析值
-        value = self._resolve_value(field.value, path)
+        value = self._resolve_value(field.value, path, scope)
 
         # 2. 值缺失：设计文档未定义「裸 key」，noexist 需显式字面量
         if value is None:
@@ -560,7 +645,7 @@ class SemanticAnalyzer:
 
         # 3. 约束执行
         if field.constraints is not None:
-            result = self._execute_constraints(field.constraints, value, field.source, path)
+            result = self._execute_constraints(field.constraints, value, field.source, path, scope)
             if not result.ok:
                 self._diagnostics.extend(result.diagnostics)
             if result.coerced_value is not None:
@@ -572,7 +657,7 @@ class SemanticAnalyzer:
     # 值解析
     # ═══════════════════════════════════════════════════════
 
-    def _resolve_value(self, raw: Value | None, path: str) -> StdValue | None:
+    def _resolve_value(self, raw: Value | None, path: str, scope: Scope) -> StdValue | None:
         """将 RawAst Value 转换为 StdValue。"""
         if raw is None:
             return None
@@ -598,14 +683,14 @@ class SemanticAnalyzer:
                     std_fields: list[StdField] = []
                     for f in fs:
                         child = f'{path}.{f.name}' if path else f.name
-                        sf = self._analyze_field(f, path=child)
+                        sf = self._analyze_field(f, path=child, scope=scope)
                         if sf is not None:
                             std_fields.append(sf)
                     return StdObject(fields=std_fields)
                 case ArrayValue(elements=els):
                     std_elements: list[StdValue] = []
                     for i, e in enumerate(els):
-                        rv = self._resolve_value(e, f'{path}[{i}]')
+                        rv = self._resolve_value(e, f'{path}[{i}]', scope)
                         if rv is not None:
                             std_elements.append(rv)
                     return StdArray(elements=std_elements)
@@ -614,7 +699,7 @@ class SemanticAnalyzer:
                     positional_args=pa,
                     named_args=na,
                 ):
-                    return self._expand_template_call(tn, pa, na, path, raw.source)
+                    return self._expand_template_call(tn, pa, na, path, raw.source, scope)
                 case ErrorValue(message=m):
                     self._diagnostics.append(Diagnostic(Severity.ERROR, f'{path}: {m}', raw.source))
                     return None
@@ -730,10 +815,11 @@ class SemanticAnalyzer:
         named_args: dict[str, Value],
         path: str,
         source: SourceRange | None,
+        scope: Scope,
     ) -> StdValue:
-        """展开模板调用为 StdObject。"""
-        template = self._templates.get(template_name)
-        if template is None:
+        """展开模板调用为 StdObject（名字经调用点 scope 翻译，展开用模板定义点 scope）。"""
+        key = scope.get(template_name)
+        if key is None:
             self._diagnostics.append(
                 Diagnostic(
                     Severity.ERROR,
@@ -742,6 +828,8 @@ class SemanticAnalyzer:
                 )
             )
             return StdObject()
+        template = self._templates[key]
+        inner_scope = self._template_scopes[key]
 
         required = [tf for tf in template.fields if tf.default_value is None]
 
@@ -782,19 +870,20 @@ class SemanticAnalyzer:
                 )
 
         # 展开所有字段（参数覆盖 > 默认值 > 缺失）
+        # 参数值按调用点 scope 解析；默认值按模板定义点 scope（inner_scope）解析
         std_fields: list[StdField] = []
         for tf in template.fields:
             child = f'{path}.{tf.name}' if path else tf.name
 
             if tf.name in param_values:
-                v = self._resolve_value(param_values[tf.name], child)
+                v = self._resolve_value(param_values[tf.name], child, scope)
             elif tf.default_value is not None:
-                v = self._resolve_value(tf.default_value, child)
+                v = self._resolve_value(tf.default_value, child, inner_scope)
             else:
                 continue  # 必填且未提供 → 已在上面报错
 
             if v is not None:
-                result = self._execute_constraints(tf.constraints, v, tf.source, child)
+                result = self._execute_constraints(tf.constraints, v, tf.source, child, inner_scope)
                 if not result.ok:
                     self._diagnostics.extend(result.diagnostics)
                 if result.coerced_value is not None:
@@ -805,7 +894,7 @@ class SemanticAnalyzer:
 
         # 模板级约束（: 起始，约束整个 dict）
         for c in template.constraints:
-            result = self._execute_spec(self._resolve_constraint(c), obj, source, path)
+            result = self._execute_spec(self._resolve_constraint(c, inner_scope), obj, source, path)
             if not result.ok:
                 self._diagnostics.extend(result.diagnostics)
 
@@ -821,12 +910,13 @@ class SemanticAnalyzer:
         value: StdValue | None,
         source: SourceRange | None,
         path: str,
+        scope: Scope,
     ) -> ConstraintResult:
         """对值依次执行约束链（语法糖展开 → 逐约束执行 → 值强制转换）。"""
         expanded = self._expand_annotation(annotation)
         current = value
         for c in expanded.constraints:
-            result = self._execute_spec(self._resolve_constraint(c), current, source, path)
+            result = self._execute_spec(self._resolve_constraint(c, scope), current, source, path)
             if not result.ok:
                 return result  # 一个失败即短路
             if result.coerced_value is not None:
@@ -855,15 +945,15 @@ class SemanticAnalyzer:
         """嵌套约束执行回调（Executor 协议）。"""
         return self._registry.apply(constraint, value, source, path, self._apply_nested)
 
-    def _resolve_constraint(self, c: Constraint) -> ResolvedConstraint:
-        """解析约束 AST 为约束规格（顶层位置）。"""
+    def _resolve_constraint(self, c: Constraint, scope: Scope) -> ResolvedConstraint:
+        """解析约束 AST 为约束规格（名字经 scope 翻译为真名）。"""
         match c:
             case ConstraintIdent(name=n):
-                return ResolvedConstraint(name=n, source=c.source)
+                return ResolvedConstraint(name=self._translate_name(n, scope), source=c.source)
             case ConstraintCall(name=n, arguments=args):
                 return ResolvedConstraint(
-                    name=n,
-                    args=[self._resolve_constraint_arg(a) for a in args],
+                    name=self._translate_name(n, scope),
+                    args=[self._resolve_constraint_arg(a, scope) for a in args],
                     source=c.source,
                 )
             case ConstraintLiteral():
@@ -873,15 +963,15 @@ class SemanticAnalyzer:
                 return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
         return ResolvedConstraint(name=_INVALID_CONSTRAINT)
 
-    def _resolve_constraint_arg(self, c: Constraint) -> Any:
+    def _resolve_constraint_arg(self, c: Constraint, scope: Scope) -> Any:
         """解析约束参数：嵌套约束 → ResolvedConstraint；字面量 → Python 值。"""
         match c:
             case ConstraintIdent(name=n):
-                return ResolvedConstraint(name=n, source=c.source)
+                return ResolvedConstraint(name=self._translate_name(n, scope), source=c.source)
             case ConstraintCall(name=n, arguments=args):
                 return ResolvedConstraint(
-                    name=n,
-                    args=[self._resolve_constraint_arg(a) for a in args],
+                    name=self._translate_name(n, scope),
+                    args=[self._resolve_constraint_arg(a, scope) for a in args],
                     source=c.source,
                 )
             case ConstraintLiteral(value=lit):
@@ -890,6 +980,12 @@ class SemanticAnalyzer:
                 self._diagnostics.append(Diagnostic(Severity.ERROR, m, c.source))
                 return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
         return ResolvedConstraint(name=_INVALID_CONSTRAINT)
+
+    @staticmethod
+    def _translate_name(name: str, scope: Scope) -> str:
+        """可见名 → 真名字符串。未命中（如 has(field) 的裸字段名）保留原名。"""
+        key = scope.get(name)
+        return str(key) if key is not None else name
 
     @staticmethod
     def _literal_python_value(lit: LiteralValue) -> Any:

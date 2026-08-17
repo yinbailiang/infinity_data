@@ -16,12 +16,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from infinity_data.emit import reduce_object
+from infinity_data.infra.file import DiskFile, File, MemFile
 from infinity_data.parser.errors import ParseErrorCollector
 from infinity_data.parser.models import Document
 from infinity_data.parser.parser import Parser
-from infinity_data.sandbox import SandboxConfig, SandboxError, Schema, SchemaError
+from infinity_data.sandbox import Sandbox, SandboxConfig, SandboxError, Schema, SchemaError
 from infinity_data.semantic.analyzer import SemanticAnalyzer
-from infinity_data.semantic.converter import reduce_object
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import Diagnostic, Severity, StdDocument, StdObject
 from infinity_data.semantic.registry import ConstraintRegistry
@@ -48,14 +49,13 @@ class CompilationResult:
         return [d for d in self.diagnostics if d.severity is Severity.WARNING]
 
 
-def _tokenize_and_parse(source: str, file_path: str) -> tuple[Document, list[Diagnostic]]:
-    """词法 + 语法分析。"""
+def _tokenize_and_parse(file: File) -> tuple[Document, list[Diagnostic]]:
+    """词法 + 语法分析（字符流由 file.chars() 提供）。"""
     tokenize_collector = TokenizeErrorCollector()
     parse_collector = ParseErrorCollector()
 
     raw_tokens = RawTokenizer(
-        iter(source),
-        file_path=file_path,
+        file=file,
         error_collector=tokenize_collector,
     )
     tokens = FinalTokenizer(raw_tokens)
@@ -87,6 +87,47 @@ def _effective_sandbox(
     return sandbox
 
 
+def _compile_file(
+    file: File,
+    *,
+    env: Mapping[str, str] | None = None,
+    registry: ConstraintRegistry | None = None,
+    sandbox: SandboxConfig | None = None,
+    schema: Schema | None = None,
+) -> CompilationResult:
+    """编译统一入口：File（磁盘/内存）→ CompilationResult。"""
+    text = file.read()
+    # 空源码 → 空配置
+    if not text.strip():
+        return CompilationResult(
+            document=None,
+            root=StdObject(),
+            value={},
+            diagnostics=[],
+        )
+
+    doc, front_diagnostics = _tokenize_and_parse(file)
+
+    sandbox_impl = Sandbox(
+        config=_effective_sandbox(sandbox, env),
+        base_dir=file.root_path,
+    )
+    resolver = ImportResolver(sandbox=sandbox_impl)
+    analyzer = SemanticAnalyzer(registry=registry, import_resolver=resolver, schema=schema)
+    document = analyzer.analyze(doc, file)
+
+    diagnostics = sorted(
+        [*front_diagnostics, *document.diagnostics],
+        key=lambda d: d.sort_key(),
+    )
+    return CompilationResult(
+        document=document,
+        root=document.root,
+        value=reduce_object(document.root),
+        diagnostics=diagnostics,
+    )
+
+
 def compile_source(
     source: str,
     *,
@@ -110,34 +151,8 @@ def compile_source(
         SandboxError: 导入超出沙盒授权（strict 模式）
         SchemaError: 输出不符合顶层 schema 约束
     """
-    # 空源码 → 空配置
-    if not source.strip():
-        return CompilationResult(
-            document=None,
-            root=StdObject(),
-            value={},
-            diagnostics=[],
-        )
-
-    doc, front_diagnostics = _tokenize_and_parse(source, file_path)
-
-    resolver = ImportResolver(
-        base_dir=Path(file_path).parent,
-        sandbox=_effective_sandbox(sandbox, env),
-    )
-    analyzer = SemanticAnalyzer(registry=registry, import_resolver=resolver, schema=schema)
-    document = analyzer.analyze(doc)
-
-    diagnostics = sorted(
-        [*front_diagnostics, *document.diagnostics],
-        key=lambda d: d.sort_key(),
-    )
-    return CompilationResult(
-        document=document,
-        root=document.root,
-        value=reduce_object(document.root),
-        diagnostics=diagnostics,
-    )
+    file = MemFile(name=file_path, root_path=Path(file_path).parent, content=source)
+    return _compile_file(file, env=env, registry=registry, sandbox=sandbox, schema=schema)
 
 
 def load(
@@ -162,18 +177,11 @@ def load(
         SchemaError: 输出不符合顶层 schema 约束
     """
     p = Path(path)
-    text = p.read_text(encoding='utf-8')
-    result = compile_source(
-        text,
-        file_path=str(p),
-        env=env,
-        registry=registry,
-        sandbox=sandbox,
-        schema=schema,
-    )
+    file = DiskFile.from_fullpath(p)
+    result = _compile_file(file, env=env, registry=registry, sandbox=sandbox, schema=schema)
 
     # 规范要求 utf-8 NO BOM
-    if text.startswith('\ufeff'):
+    if file.read().startswith('\ufeff'):
         result.diagnostics.append(
             Diagnostic(
                 severity=Severity.WARNING,

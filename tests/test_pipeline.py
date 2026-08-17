@@ -1,12 +1,15 @@
 """流水线端到端测试：词法 → 语法 → 语义 → 降维。"""
 
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 from infinity_data import SandboxConfig, compile_source, load
+from infinity_data.infra.file import MemFile
 from infinity_data.semantic.models import Severity
 
 
-def compile_ok(source: str) -> dict:
+def compile_ok(source: str) -> dict[str, Any]:
     """编译无错误断言，返回降维 dict。"""
     result = compile_source(source)
     errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
@@ -24,6 +27,13 @@ def test_empty_source() -> None:
     assert compile_source('').value == {}
     assert compile_source('   \n  \n').value == {}
     assert compile_source('# 只有注释\n#+ 多行注释\n#-\n').value == {}
+
+
+def test_mem_file_chars_stream() -> None:
+    """MemFile.chars()：O(1) 构造的逐字符迭代流（词法分析输入），可重复构造。"""
+    mem = MemFile(name='mem.infd', root_path=Path('.'), content='a = 1\n')
+    assert list(mem.chars()) == list('a = 1\n')
+    assert ''.join(mem.chars()) == 'a = 1\n'  # 每次构造新迭代器
 
 
 def test_scalar_fields() -> None:

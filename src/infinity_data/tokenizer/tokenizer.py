@@ -1,7 +1,6 @@
 """词法分析器"""
 
-from collections.abc import Iterable
-
+from infinity_data.infra.file import File
 from infinity_data.infra.ll1_stream import NoNextType
 from infinity_data.tokenizer.char_stream import CharStream
 from infinity_data.tokenizer.errors import (
@@ -52,12 +51,11 @@ class RawTokenizer:
 
     def __init__(
         self,
-        source: Iterable[str],
-        file_path: str = 'unknown',
+        file: File,
         error_collector: TokenizeErrorCollector | None = None,
     ) -> None:
-        self._file_path: str = file_path
-        self._stream: CharStream = CharStream(source)
+        self._file: File = file
+        self._stream: CharStream = CharStream(file.chars())
         # 注意：不能用 `or` —— 空 ErrorCollector 的 __bool__ 为 False，会静默丢弃传入的收集器
         self._errors = error_collector if error_collector is not None else TokenizeErrorCollector()
         self._eof_sent: bool = False
@@ -78,21 +76,11 @@ class RawTokenizer:
         return self._errors
 
     @property
-    def file_path(self) -> str:
-        return self._file_path
+    def file(self) -> File:
+        return self._file
 
     def _current_source_info(self) -> SourceInfo:
-        return self._stream.info(file_path=self._file_path)
-
-    def _current_range(self) -> SourceRange:
-        """当前位置的零宽 range（错误定位用）。"""
-        info = self._current_source_info()
-        return SourceRange(start=info, end=info)
-
-    @staticmethod
-    def _range_at(info: SourceInfo) -> SourceRange:
-        """单点位置 → 零宽 range（错误定位用）。"""
-        return SourceRange(start=info, end=info)
+        return self._stream.info()
 
     def next(self) -> RawToken:
         """返回下一个 token。"""
@@ -131,7 +119,7 @@ class RawTokenizer:
             self._errors.add(
                 UnknownCharError(
                     char=ch,
-                    source=self._current_range(),
+                    source=SourceRange.at(self._file, self._current_source_info()),
                 )
             )
             self._stream.advance()
@@ -146,6 +134,7 @@ class RawTokenizer:
             type=token_type,
             raw=raw,
             source=SourceRange(
+                file=self._file,
                 start=start,
                 end=self._current_source_info(),
             ),
@@ -189,7 +178,7 @@ class RawTokenizer:
             if self._stream.eof():
                 self._errors.add(
                     UnterminatedCommentError(
-                        self._current_range(),
+                        SourceRange.at(self._file, self._current_source_info()),
                         flag='#' + '-' * plus_count,
                     )
                 )
@@ -228,7 +217,7 @@ class RawTokenizer:
 
         self._errors.add(
             UnterminatedCommentError(
-                self._current_range(),
+                SourceRange.at(self._file, self._current_source_info()),
                 flag='#' + '-' * depth,
             )
         )
@@ -253,12 +242,12 @@ class RawTokenizer:
         self._stream.advance()  # 消费 '!'
 
         if self._stream.eof():
-            self._errors.add(InvalidBangError(actual='EOF', source=self._range_at(start)))
+            self._errors.add(InvalidBangError(actual='EOF', source=SourceRange.at(self._file, start)))
             return None
         ch = self._stream.peek()
         assert not isinstance(ch, NoNextType)
         if not (ch.isalpha() or ch == '_'):
-            self._errors.add(InvalidBangError(actual=repr(ch), source=self._range_at(start)))
+            self._errors.add(InvalidBangError(actual=repr(ch), source=SourceRange.at(self._file, start)))
             return None
 
         ident_tok = self._read_identifier_or_keyword()
@@ -270,7 +259,7 @@ class RawTokenizer:
             case 'from':
                 return self._make_token(RawTokenType.FROM_IMPORT, '!from', start=start)
             case _:
-                self._errors.add(InvalidBangError(actual=repr(ident_tok.raw), source=self._range_at(start)))
+                self._errors.add(InvalidBangError(actual=repr(ident_tok.raw), source=SourceRange.at(self._file, start)))
                 return None
 
     # ── 单行字符串 ────────────────────────────────────
@@ -290,7 +279,7 @@ class RawTokenizer:
                     self._errors.add(
                         UnterminatedStringError(
                             str_type=RawTokenType.STRING,
-                            source=self._range_at(start),
+                            source=SourceRange.at(self._file, start),
                         )
                     )
                     return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
@@ -306,7 +295,7 @@ class RawTokenizer:
                 self._errors.add(
                     UnterminatedStringError(
                         str_type=RawTokenType.STRING,
-                        source=self._range_at(start),
+                        source=SourceRange.at(self._file, start),
                     )
                 )
                 return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
@@ -314,7 +303,9 @@ class RawTokenizer:
             raw_parts.append(ch)
             self._stream.advance()
 
-        self._errors.add(UnterminatedStringError(str_type=RawTokenType.STRING, source=self._range_at(start)))
+        self._errors.add(
+            UnterminatedStringError(str_type=RawTokenType.STRING, source=SourceRange.at(self._file, start))
+        )
         raw_parts.append('"')  # 补上缺失的结束引号
         return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
 
@@ -360,7 +351,9 @@ class RawTokenizer:
             raw += ch
             self._stream.advance()
 
-        self._errors.add(UnterminatedStringError(str_type=RawTokenType.MULTILINE_STRING, source=self._range_at(start)))
+        self._errors.add(
+            UnterminatedStringError(str_type=RawTokenType.MULTILINE_STRING, source=SourceRange.at(self._file, start))
+        )
         raw += '`' * backtick_count
         return self._make_token(RawTokenType.MULTILINE_STRING, raw, start=start)
 
@@ -403,7 +396,7 @@ class RawTokenizer:
                     return self._make_token(RawTokenType.FLOAT, full, start=start)
                 if full == '-inf':
                     return self._make_token(RawTokenType.FLOAT, full, start=start)
-                self._errors.add(InvalidNumberError(raw=full, source=self._range_at(start)))
+                self._errors.add(InvalidNumberError(raw=full, source=SourceRange.at(self._file, start)))
                 return self._make_token(RawTokenType.IDENTIFIER, full, start=start)
 
         # ── 2. 整数部分 ──
@@ -439,7 +432,9 @@ class RawTokenizer:
                             break
                 else:
                     # 有前置数字但 . 后无数字 (如 "42.") → 记录错误
-                    self._errors.add(InvalidNumberError(raw=''.join(raw_parts) + '.', source=self._range_at(start)))
+                    self._errors.add(
+                        InvalidNumberError(raw=''.join(raw_parts) + '.', source=SourceRange.at(self._file, start))
+                    )
 
         # ── 4. 可选指数部分 ──
         ch = self._stream.peek()
@@ -455,7 +450,7 @@ class RawTokenizer:
                     self._stream.advance()
 
             if self._stream.eof():
-                self._errors.add(InvalidNumberError(raw=''.join(raw_parts), source=self._range_at(start)))
+                self._errors.add(InvalidNumberError(raw=''.join(raw_parts), source=SourceRange.at(self._file, start)))
             else:
                 ch = self._stream.peek()
                 if not isinstance(ch, NoNextType) and ch.isdigit():
@@ -469,12 +464,14 @@ class RawTokenizer:
                         else:
                             break
                 else:
-                    self._errors.add(InvalidNumberError(raw=''.join(raw_parts), source=self._range_at(start)))
+                    self._errors.add(
+                        InvalidNumberError(raw=''.join(raw_parts), source=SourceRange.at(self._file, start))
+                    )
 
         # ── 5. 确保至少有一位数字 ──
         raw = ''.join(raw_parts)
         if not any(c.isdigit() for c in raw):
-            self._errors.add(InvalidNumberError(raw=''.join(raw_parts), source=self._range_at(start)))
+            self._errors.add(InvalidNumberError(raw=''.join(raw_parts), source=SourceRange.at(self._file, start)))
 
         token_type = RawTokenType.FLOAT if is_float else RawTokenType.INTEGER
         return self._make_token(token_type, raw, start=start)

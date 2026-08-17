@@ -154,18 +154,20 @@ MD风格多行字符串，可变长起始串。
 - 默认值 `= default` 可选，省略表示该字段为**必填字段**（实例化时必须提供）。
 - 必填字段和非必填字段不可交错且必填字段必须在非必填字段前
 - 模板内部允许嵌套字典、数组、甚至其他模板调用。
-- 同一个文件中，模板名不可重复定义（后者覆盖前者并产生警告）。
+- 同一个文件中，模板名不可重复定义。
 - 支持配置模板的一些行为
 
 示例:
 ```infd
+~Features {
+    caching: <?> = noexist,
+    compression: bool = true,
+}
+
 ~Server {
     host: str = "0.0.0.0",
     port: <int, range(1, 65535)> = 80,
-    features: <dict> {
-        caching: <?> = noexist,
-        compression: bool = true,
-    }, # 注意，这里的内部dict作为默认值。模板不会为内嵌的dict默认值生成递归的校验
+    features: <Features> = Features(),
     tags: <list, each(str)> = ["web"],
 }
 

@@ -44,14 +44,14 @@ class Diagnostic:
         if self.source is None:
             return '<unknown>'
         s = self.source.start
-        return f'{s.file_path}:{s.line}:{s.col}'
+        return f'{self.source.file.name}:{s.line}:{s.col}'
 
     def sort_key(self) -> tuple[str, int, int]:
         """按源码位置排序。"""
         if self.source is None:
             return ('\uffff', 0, 0)
         s = self.source.start
-        return (s.file_path, s.line, s.col)
+        return (self.source.file.name, s.line, s.col)
 
     @classmethod
     def from_error(cls, error: InfinityDataError) -> Diagnostic:
@@ -139,3 +139,25 @@ class StdDocument:
     @property
     def has_errors(self) -> bool:
         return any(d.severity is Severity.ERROR for d in self.diagnostics)
+
+
+# ═══════════════════════════════════════════════════════════
+# 模板身份
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class TemplateKey:
+    """模板唯一身份：来源文件内容 hash + 模板本地名。
+
+    - ``content_hash``：来源文件内容的 sha256 前缀（机器无关，内容寻址）
+    - ``name``：模板在来源文件中的本地名（诊断显示用）
+
+    frozen 保证可哈希，直接作为 ``_templates`` 等表的键。
+    """
+
+    content_hash: str
+    name: str
+
+    def __str__(self) -> str:
+        return f'{self.content_hash}:{self.name}'

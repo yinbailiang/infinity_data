@@ -1,11 +1,10 @@
 """导入语句解析：``!env`` / ``!file`` / ``!from``。
 
-M3 授权模型：
+所有系统访问经 :class:`Sandbox` 中介：
 
-- ``!env import``：变量必须列于 ``SandboxConfig.env``（否则 strict 抛
-  :class:`SandboxError`，非 strict 警告）
-- ``!file``：目标路径必须命中 ``allow_files`` glob 白名单
-- ``!from``（模板导入）：目标路径必须命中 ``allow_templates`` glob 白名单；
+- ``!env import``：变量经 ``Sandbox.getenv`` 授权查询
+- ``!file``：数据文件经 ``Sandbox.open_file`` 产出 File 后解析
+- ``!from``（模板导入）：模板文件经 ``Sandbox.open_template`` 产出 File，
   模板定义的实际加载由 :class:`SemanticAnalyzer` 完成
 """
 
@@ -18,6 +17,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from infinity_data.infra.file import File
 from infinity_data.parser.models import (
     Document,
     EnvImportStmt,
@@ -25,7 +25,7 @@ from infinity_data.parser.models import (
     JsonPathIndex,
     JsonPathKey,
 )
-from infinity_data.sandbox import SandboxConfig, SandboxError
+from infinity_data.sandbox import Sandbox, SandboxConfig
 from infinity_data.semantic.models import Severity
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
@@ -47,28 +47,32 @@ class ImportResolver:
         *,
         env: Mapping[str, str] | None = None,
         base_dir: str | os.PathLike[str] | None = None,
-        sandbox: SandboxConfig | None = None,
+        sandbox: Sandbox | None = None,
     ) -> None:
         # env 兼容旧调用方式：直接提供映射时视为该映射即授权全集
         if sandbox is None:
-            sandbox = SandboxConfig(env=dict(env)) if env is not None else SandboxConfig.deny_all()
-        elif env is not None:
-            sandbox = SandboxConfig(
-                env={**sandbox.env, **dict(env)},
-                allow_files=sandbox.allow_files,
-                allow_templates=sandbox.allow_templates,
-                strict=sandbox.strict,
+            config = SandboxConfig(env=dict(env)) if env is not None else SandboxConfig.deny_all()
+            sandbox = Sandbox(
+                config=config,
+                base_dir=Path(base_dir) if base_dir is not None else Path.cwd(),
             )
-        self._sandbox: SandboxConfig = sandbox
-        self._base_dir: Path = Path(base_dir) if base_dir is not None else Path.cwd()
+        elif env is not None:
+            config = SandboxConfig(
+                env={**sandbox.config.env, **dict(env)},
+                allow_files=sandbox.config.allow_files,
+                allow_templates=sandbox.config.allow_templates,
+                strict=sandbox.config.strict,
+            )
+            sandbox = Sandbox(config=config, base_dir=sandbox.base_dir)
+        self._sandbox: Sandbox = sandbox
 
     @property
-    def sandbox(self) -> SandboxConfig:
+    def sandbox(self) -> Sandbox:
         return self._sandbox
 
     @property
     def base_dir(self) -> Path:
-        return self._base_dir
+        return self._sandbox.base_dir
 
     def resolve(self, doc: Document, report: ReportFn) -> dict[str, Any]:
         """解析所有导入语句（env/file），返回 namespace。"""
@@ -90,13 +94,12 @@ class ImportResolver:
     ) -> None:
         """!env import NAME [as NEW_NAME]"""
         name = stmt.alias or stmt.name
-        if stmt.name in self._sandbox.env:
-            namespace[name] = self._sandbox.env[stmt.name]
+        value = self._sandbox.getenv(stmt.name, source=stmt.source)
+        if value is None:
+            report(Severity.WARNING, f'环境变量 {stmt.name!r} 未在沙盒授权，已忽略', stmt.source)
+            namespace[name] = ''
             return
-        if self._sandbox.strict:
-            raise SandboxError(f'环境变量 {stmt.name!r} 未在沙盒授权（!env import）', stmt.source)
-        report(Severity.WARNING, f'环境变量 {stmt.name!r} 未在沙盒授权，已忽略', stmt.source)
-        namespace[name] = ''
+        namespace[name] = value
 
     def _resolve_file(
         self,
@@ -105,22 +108,19 @@ class ImportResolver:
         report: ReportFn,
     ) -> None:
         """!file "path" [as fmt] import .path.to.key as alias, ..."""
-        path = Path(stmt.file_path)
-        if not path.is_absolute():
-            path = self._base_dir / path
-
-        if not self._sandbox.authorize_file(path, self._base_dir):
-            if self._sandbox.strict:
-                raise SandboxError(f'文件导入超出沙盒授权: {stmt.file_path}', stmt.source)
+        file = self._sandbox.open_file(stmt.file_path, source=stmt.source)
+        if file is None:
             report(Severity.WARNING, f'文件导入超出沙盒授权，已忽略: {stmt.file_path}', stmt.source)
             return
 
-        if not path.exists():
-            report(Severity.WARNING, f'导入文件不存在: {path}', stmt.source)
+        fmt = stmt.format or _FORMAT_MAP.get(Path(stmt.file_path).suffix.lower(), 'json')
+        try:
+            text = file.read()
+        except OSError:
+            report(Severity.WARNING, f'导入文件不存在: {file.name}', stmt.source)
             return
 
-        fmt = stmt.format or _FORMAT_MAP.get(path.suffix.lower(), 'json')
-        data = self._read_data(path, fmt, report, stmt.source)
+        data = self._parse_data(text, fmt, report, stmt.source)
         if data is None:
             return
 
@@ -128,7 +128,7 @@ class ImportResolver:
             try:
                 value = self._resolve_json_path(data, item.json_path)
             except (KeyError, IndexError, TypeError):
-                report(Severity.WARNING, f'无法解析导入路径: {path}', item.source)
+                report(Severity.WARNING, f'无法解析导入路径: {file.name}', item.source)
                 continue
             namespace[item.alias] = value
 
@@ -141,55 +141,42 @@ class ImportResolver:
         base_dir: Path | None,
         source: SourceRange | None,
         report: ReportFn,
-    ) -> Path | None:
-        """解析 !from 目标路径并做沙盒授权检查。
-
-        - 相对路径以 base_dir（导入所在文件目录）为基准
-        - strict 授权失败 → 抛 :class:`SandboxError`
-        - 非 strict 授权失败 → 警告 + None
-        """
-        base = base_dir if base_dir is not None else self._base_dir
-        path = Path(from_path)
-        if not path.is_absolute():
-            path = base / path
-
-        if not self._sandbox.authorize_template(path, base):
-            if self._sandbox.strict:
-                raise SandboxError(f'模板导入超出沙盒授权: {from_path}', source)
+    ) -> File | None:
+        """!from 目标：经沙盒授权产出 File（相对路径以导入所在文件目录解析）。"""
+        file = self._sandbox.open_template(from_path, base_dir=base_dir, source=source)
+        if file is None:
             report(Severity.WARNING, f'模板导入超出沙盒授权，已忽略: {from_path}', source)
-            return None
-        return path
+        return file
 
     # ── 辅助 ──────────────────────────────────────────
 
-    def _read_data(
+    def _parse_data(
         self,
-        path: Path,
+        text: str,
         fmt: str,
         report: ReportFn,
         source: SourceRange,
     ) -> Any | None:
-        """按格式读取文件内容。"""
+        """按格式解析数据内容（文本 loads）。"""
         try:
             if fmt == 'json':
-                with path.open(encoding='utf-8') as f:
-                    return json.load(f)
+                return json.loads(text)
             if fmt in ('yaml', 'yml'):
                 try:
                     import yaml  # pyright: ignore[reportMissingModuleSource]
                 except ImportError:
-                    report(Severity.WARNING, f'yaml 支持需要安装 PyYAML: {path}', source)
+                    report(Severity.WARNING, 'yaml 支持需要安装 PyYAML', source)
                     return None
-                with path.open(encoding='utf-8') as f:
-                    return yaml.safe_load(f)
+                return yaml.safe_load(text)
             if fmt == 'toml':
-                with path.open('rb') as f:
-                    return tomllib.load(f)
+                return tomllib.loads(text)
             report(Severity.WARNING, f'不支持的文件格式: {fmt}', source)
             return None
         except Exception as e:
-            report(Severity.ERROR, f'读取文件失败 {path}: {e}', source)
+            report(Severity.ERROR, f'解析数据失败: {e}', source)
             return None
+
+    # ── 辅助 ──────────────────────────────────────────
 
     @staticmethod
     def _resolve_json_path(data: Any, segments: list[JsonPathKey | JsonPathIndex]) -> Any:
