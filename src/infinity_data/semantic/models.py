@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import decimal
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.infra.location import SourceRange
+from infinity_data.parser.models import TemplateDef
 
 LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
 """字面量 kind 枚举。"""
@@ -74,9 +75,15 @@ class StdArray:
 
 @dataclass
 class StdObject:
-    """标准对象值。"""
+    """标准对象值。
+
+    - ``fields``：字段列表
+    - ``template``：可选的来源模板（:class:`TemplateKey`）。模板展开的实例，
+      或经「模板即约束」校验的手写 dict 会携带；None = 无关联模板（纯字面量）
+    """
 
     fields: list[StdField] = field(default_factory=list[StdField])
+    template: TemplateKey | None = None
 
     def get(self, name: str) -> StdField | None:
         """按名称查找字段（无则 None）。"""
@@ -93,14 +100,52 @@ class StdObject:
 
 @dataclass
 class StdDocument:
-    """标准文档：顶层对象 + 诊断信息。"""
+    """标准文档：顶层对象 + 诊断信息 + 模板表与可见名表。
+
+    - ``root``：编译产物（顶层对象）
+    - ``diagnostics``：统一诊断
+    - ``templates``：全部已加载模板（:class:`TemplateKey` → 定义，含 ``!from`` 导入的）
+    - ``scope``：**入口文件**的可见名表（可见名 → :class:`TemplateKey`），
+      与 ``templates`` 配合可完整解析：可见名 → TemplateKey → TemplateDef
+    """
 
     root: StdObject = field(default_factory=StdObject)
     diagnostics: list[Diagnostic] = field(default_factory=list[Diagnostic])
+    templates: dict[TemplateKey, TemplateDef] = field(default_factory=lambda: {})
+    scope: Scope = field(default_factory=lambda: {})
 
     @property
     def has_errors(self) -> bool:
         return any(d.severity is Severity.ERROR for d in self.diagnostics)
+
+
+# ═══════════════════════════════════════════════════════════
+# 导入解析上下文（Phase 1 产物）
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class ResolvedContext:
+    """导入解析（Phase 1）产物：模板图 + 可见名表 + 数据命名空间。
+
+    由 :class:`infinity_data.semantic.resolver.TemplateGraphResolver` 产出，
+    供 :class:`infinity_data.semantic.analyzer.SemanticAnalyzer`（Phase 2）消费。
+    只含名字与模板定义，不含任何约束执行结果（约束求值属 Phase 2）。
+
+    - ``templates``：全部已加载模板（本地 + ``!from`` 导入）
+    - ``template_scopes``：每个模板定义点的可见名表（展开/校验按定义点可见性解析）
+    - ``root_scope``：入口文件可见名表（可见名 → :class:`TemplateKey`）
+    - ``schema_scope``：schema.from_file 隐式导入的可见名表（无则 None）
+    - ``namespace``：``$`` 引用命名空间（``!env`` / ``!file`` 解析结果）
+    - ``diagnostics``：Phase 1 诊断（``import.*`` / ``template.*`` 域）
+    """
+
+    templates: dict[TemplateKey, TemplateDef]
+    template_scopes: dict[TemplateKey, Scope]
+    root_scope: Scope
+    schema_scope: Scope | None
+    namespace: dict[str, Any]
+    diagnostics: tuple[Diagnostic, ...]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -123,3 +168,7 @@ class TemplateKey:
 
     def __str__(self) -> str:
         return f'{self.content_hash}:{self.name}'
+
+
+Scope = dict[str, TemplateKey]
+"""文件级可见名表：可见名 → 模板真名（:class:`TemplateKey`）。"""

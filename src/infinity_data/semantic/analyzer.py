@@ -1,14 +1,16 @@
-"""语义分析器：RawAst → StdAst。
+"""语义分析器（Phase 2）：RawAst → StdAst，消费导入解析产物。
 
-执行顺序（对应 neo_desg.md）：
+两阶段执行（对应 neo_desg.md）：
 
-1. 收集模板定义（重复定义错误、必填字段排序校验）
-2. 解析模板导入（``!from``，沙盒授权 + 递归加载外部 .inft/.infd 模板）
-3. 解析数据导入（``!env`` / ``!file``）
-4. 模板名注册为同名校验器（**模板即约束**）
-5. 逐语句分析：模板展开、约束语法糖展开、约束链执行
-6. 顶层结构级约束校验（``: <...>``，作用于编译产物 root）
-7. 顶层 schema 校验（strict/lenient/strip）
+Phase 1（:mod:`infinity_data.semantic.resolver`，本模块不负责）：
+  模板定义收集 / ``!from`` 模板导入 / ``!env``/``!file`` 数据导入
+  → 产出不可变 :class:`ResolvedContext`（模板图 + 可见名表 + 命名空间）
+
+Phase 2（本模块）：
+  1. 模板名注册为同名校验器（**模板即约束**）
+  2. 逐语句分析：模板展开、约束语法糖展开、约束链执行
+  3. 顶层结构级约束校验（``: <...>``，作用于编译产物 root）
+  4. 顶层 schema 校验（strict/lenient/strip）
 
 模板身份与可见性模型：
 - 模板真名 :class:`TemplateKey`（来源文件内容 hash + 本地名），全局唯一
@@ -21,10 +23,8 @@ from __future__ import annotations
 
 import decimal
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any, cast
 
-from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.infra.file import File
 from infinity_data.parser.models import (
@@ -46,13 +46,12 @@ from infinity_data.parser.models import (
     LiteralValue,
     TemplateCallValue,
     TemplateDef,
-    TemplateImportItem,
     TemplateImportStmt,
     Value,
 )
-from infinity_data.sandbox import Schema, SchemaError
-from infinity_data.semantic.imports import ImportResolver
+from infinity_data.sandbox import SchemaError
 from infinity_data.semantic.models import (
+    Scope,
     StdArray,
     StdDocument,
     StdField,
@@ -63,13 +62,13 @@ from infinity_data.semantic.models import (
 )
 from infinity_data.semantic.registry import (
     ConstraintFn,
-    ConstraintRegistry,
     ConstraintResult,
     ResolvedConstraint,
     describe,
     fail_result,
     ok_result,
 )
+from infinity_data.semantic.resolver import TemplateGraphResolver
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
@@ -84,35 +83,24 @@ from infinity_data.tokenizer.models.tokens import (
 MAX_NESTING_DEPTH = 200
 """值嵌套深度上限，防止递归下降导致 RecursionError。"""
 
-MAX_IMPORT_DEPTH = 32
-"""模板导入递归深度上限（防止循环导入无限递归）。"""
-
 _INVALID_CONSTRAINT = '@invalid'
-
-Scope = dict[str, TemplateKey]
-"""文件级可见名表：可见名 → 模板真名。"""
 
 
 class SemanticAnalyzer:
-    """语义分析器：将 RawAst 转换为 StandardAst。"""
+    """语义分析器（Phase 2）：消费 :class:`ResolvedContext`，执行约束。
 
-    def __init__(
-        self,
-        *,
-        registry: ConstraintRegistry | None = None,
-        import_resolver: ImportResolver | None = None,
-        schema: Schema | None = None,
-    ) -> None:
-        self._registry = registry or ConstraintRegistry()
-        self._imports = import_resolver or ImportResolver()
-        self._schema = schema
+    显式依赖 :class:`TemplateGraphResolver`（Phase 1）：注册表与顶层 schema
+    均从解析器共享获取，本层不自建任何 Phase 1 依赖（导入解析 / 沙盒 / 模板图）。
+    """
+
+    def __init__(self, *, resolver: TemplateGraphResolver) -> None:
+        self._resolver = resolver
+        self._registry = resolver.registry
+        self._schema = resolver.schema
+        # Phase 2 执行期状态（每次 analyze 重置）
         self._templates: dict[TemplateKey, TemplateDef] = {}
         self._template_scopes: dict[TemplateKey, Scope] = {}
-        self._template_files: dict[TemplateKey, str] = {}  # key → 来源文件 identity（同真名异文件保护）
-        self._scopes_by_file: dict[str, Scope] = {}  # 文件 identity → 已构建 scope（循环导入防护）
-        self._root_file: File | None = None
         self._root_scope: Scope = {}
-        self._root_local_names: set[str] = set()
         self._schema_scope: Scope | None = None
         self._namespace: dict[str, Any] = {}  # $ 引用解析目标
         self._diagnostics: list[Diagnostic] = []
@@ -125,30 +113,31 @@ class SemanticAnalyzer:
     def analyze(self, doc: Document, file: File) -> StdDocument:
         """主入口：分析 RawAst，返回 StandardAst。
 
+        Phase 1（导入解析）委托给 :attr:`_resolver`，产出不可变上下文；
+        本方法只做 Phase 2（模板即约束注册 + 逐语句分析 + schema 校验）。
+
         Args:
             doc: 语法分析产物
             file: 源码来源（诊断名 / 相对导入基准 / 内容 hash 均由它提供）
         """
         self._templates = {}
         self._template_scopes = {}
-        self._template_files = {}
-        self._scopes_by_file = {}
-        self._root_file = file
         self._root_scope = {}
-        self._root_local_names = set()
         self._schema_scope = None
         self._namespace = {}
         self._diagnostics = []
         self._depth = 0
 
-        # 第一遍：收集本地模板定义（key 键控）
-        self._collect_templates(doc, file.content_hash())
+        # Phase 1：导入解析（独立对象，产出不可变上下文）
+        context = self._resolver.resolve(doc, file)
 
-        # 解析模板导入（!from，含 schema.from_file 隐式导入）→ 构建主文件 scope
-        self._root_scope = self._load_imported_templates(doc)
-
-        # 解析数据导入语句（!env / !file）
-        self._namespace = self._imports.resolve(doc, self._report)
+        # Phase 1 产物注入执行期状态
+        self._templates = context.templates
+        self._template_scopes = context.template_scopes
+        self._root_scope = context.root_scope
+        self._schema_scope = context.schema_scope
+        self._namespace = context.namespace
+        self._diagnostics = list(context.diagnostics)
 
         # 模板名注册为约束（模板即约束，注册表键为真名字符串）
         for key, tpl in self._templates.items():
@@ -187,236 +176,12 @@ class SemanticAnalyzer:
             root = self._apply_schema(root)
 
         diagnostics = sorted(self._diagnostics, key=lambda d: d.sort_key())
-        return StdDocument(root=root, diagnostics=diagnostics)
-
-    # ═══════════════════════════════════════════════════════
-    # 模板收集
-    # ═══════════════════════════════════════════════════════
-
-    def _check_template_name_conflict(self, name: str, source: SourceRange | None) -> bool:
-        """模板名与已注册约束（内置/自定义）同名 → ERROR 并返回 True。
-
-        模板即约束：定义 ``~int`` / ``~range`` 会遮蔽同名内置约束（``int`` 类型
-        标注、``range(1, 100)`` 调用等语义被静默劫持），因此同名模板禁止定义，
-        内置约束保持可用。
-        """
-        if name in self._registry.names:
-            self._diagnostics.append(Diagnostic(Severity.ERROR, 'template.shadows_builtin', {'template': name}, source))
-            return True
-        return False
-
-    def _check_required_order(self, stmt: TemplateDef) -> None:
-        """模板内部校验：必填字段必须全部在可选字段之前。"""
-        seen_optional = False
-        for tf in stmt.fields:
-            if tf.default_value is None:
-                if seen_optional:
-                    self._diagnostics.append(
-                        Diagnostic(
-                            Severity.ERROR,
-                            'template.required_order',
-                            {'template': stmt.name, 'field': tf.name},
-                            tf.source,
-                        )
-                    )
-            else:
-                seen_optional = True
-
-    def _collect_templates(self, doc: Document, root_hash: str) -> None:
-        for stmt in doc.statements:
-            if not isinstance(stmt, TemplateDef):
-                continue
-            rejected = self._check_template_name_conflict(stmt.name, stmt.source)
-            key = TemplateKey(content_hash=root_hash, name=stmt.name)
-            if not rejected and key in self._templates:
-                self._diagnostics.append(
-                    Diagnostic(Severity.ERROR, 'template.duplicate', {'template': stmt.name}, stmt.source)
-                )
-                rejected = True
-            # 无论是否被拒绝都校验内部（一次暴露所有错误，避免多轮修复）
-            self._check_required_order(stmt)
-            if rejected:
-                continue  # 保留首次定义，拒绝隐式的"后者覆盖前者"
-            self._templates[key] = stmt
-            assert self._root_file is not None
-            self._template_files[key] = self._root_file.identity
-            self._root_local_names.add(stmt.name)
-
-    # ═══════════════════════════════════════════════════════
-    # 模板导入（!from）
-    # ═══════════════════════════════════════════════════════
-
-    def _map_import_items(
-        self,
-        items: list[TemplateImportItem],
-        dep_scope: Scope,
-        scope: Scope,
-        local_names: set[str],
-    ) -> None:
-        """把 ``!from`` 的导入项映射进目标 scope；冲突一律 ERROR。
-
-        - 导入文件中不存在该模板 → ERROR
-        - 可见名与文件内定义同名 → ERROR（与文件内定义冲突）
-        - 可见名已存在（重复导入）→ ERROR，保留先到者（拒绝隐式覆盖）
-        """
-        for item in items:
-            dep_key = dep_scope.get(item.name)
-            if dep_key is None:
-                self._diagnostics.append(
-                    Diagnostic(Severity.ERROR, 'template.import_not_found', {'template': item.name}, item.source)
-                )
-                continue
-            visible = item.alias or item.name
-            if visible in scope:
-                if visible in local_names:
-                    self._diagnostics.append(
-                        Diagnostic(Severity.ERROR, 'template.import_conflict_local', {'visible': visible}, item.source)
-                    )
-                else:
-                    self._diagnostics.append(
-                        Diagnostic(Severity.ERROR, 'template.import_duplicate', {'visible': visible}, item.source)
-                    )
-            else:
-                scope[visible] = dep_key
-
-    def _load_imported_templates(self, doc: Document) -> Scope:
-        """构建主文件 scope（含 schema.from_file 隐式导入）。"""
-        assert self._root_file is not None
-        root_id = self._root_file.identity
-        loaded: set[str] = set()
-        root_scope: Scope = {
-            tpl.name: key for key, tpl in self._templates.items() if self._template_files.get(key) == root_id
-        }
-
-        # schema.from_file 隐式导入：独立 scope 供顶层校验使用
-        if self._schema is not None and self._schema.from_file:
-            self._schema_scope = self._import_template_path(
-                self._schema.from_file,
-                base_dir=self._imports.base_dir,
-                source=None,
-                loaded=loaded,
-                depth=0,
-            )
-
-        for stmt in doc.statements:
-            if not isinstance(stmt, TemplateImportStmt):
-                continue
-            dep_scope = self._import_template_path(
-                stmt.from_path,
-                base_dir=self._imports.base_dir,
-                source=stmt.source,
-                loaded=loaded,
-                depth=0,
-            )
-            self._map_import_items(stmt.items, dep_scope, root_scope, self._root_local_names)
-        # 主文件本地模板的 scope 登记（模板展开/约束校验按此解析名字）
-        for key in self._templates:
-            if self._template_files.get(key) == root_id:
-                self._template_scopes[key] = root_scope
-        return root_scope
-
-    def _import_template_path(
-        self,
-        from_path: str,
-        *,
-        base_dir: Path,
-        source: SourceRange | None,
-        loaded: set[str],
-        depth: int,
-    ) -> Scope:
-        """加载单个模板文件，返回该文件的可见 scope（递归解析嵌套 !from）。"""
-        if depth > MAX_IMPORT_DEPTH:
-            self._diagnostics.append(
-                Diagnostic(
-                    Severity.ERROR, 'template.import_depth', {'max': MAX_IMPORT_DEPTH, 'path_src': from_path}, source
-                )
-            )
-            return {}
-
-        file = self._imports.resolve_template_path(
-            from_path,
-            base_dir=base_dir,
-            source=source,
-            report=self._report,
+        return StdDocument(
+            root=root,
+            diagnostics=diagnostics,
+            templates=dict(self._templates),
+            scope=dict(self._root_scope),
         )
-        if file is None:
-            return {}
-
-        file_id = file.identity
-        if file_id in loaded:
-            # 循环导入：返回已构建的本地名部分（本地模板先注册）
-            return self._scopes_by_file.get(file_id, {})
-        loaded.add(file_id)
-
-        try:
-            content_hash = file.content_hash()
-        except OSError as e:
-            self._diagnostics.append(
-                Diagnostic(Severity.ERROR, 'template.read_failed', {'file': file.name, 'error': e}, source)
-            )
-            return {}
-
-        imported_doc = self._parse_document(file)
-
-        # 1) 本地模板：先注册（循环导入时依赖文件的本地名部分已可见）
-        scope: Scope = {}
-        local_names: set[str] = set()
-        for s in imported_doc.statements:
-            if not isinstance(s, TemplateDef):
-                continue
-            if self._check_template_name_conflict(s.name, s.source):
-                continue
-            key = TemplateKey(content_hash=content_hash, name=s.name)
-            existing_file = self._template_files.get(key)
-            if existing_file is not None and existing_file != file_id:
-                self._diagnostics.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        'template.same_content_diff_file',
-                        {'template': s.name, 'other': existing_file},
-                        s.source,
-                    )
-                )
-                continue
-            self._templates[key] = s
-            self._template_files[key] = file_id
-            scope[s.name] = key
-            local_names.add(s.name)
-        self._scopes_by_file[file_id] = scope
-
-        # 2) 嵌套 !from：可见名映射
-        for s in imported_doc.statements:
-            if not isinstance(s, TemplateImportStmt):
-                continue
-            dep_scope = self._import_template_path(
-                s.from_path,
-                base_dir=file.root_path,
-                source=s.source,
-                loaded=loaded,
-                depth=depth + 1,
-            )
-            self._map_import_items(s.items, dep_scope, scope, local_names)
-
-        # 3) 非模板语句校验 + 模板 scope 登记
-        for s in imported_doc.statements:
-            match s:
-                case TemplateDef():
-                    key = TemplateKey(content_hash=content_hash, name=s.name)
-                    if key in self._templates:  # 同名冲突被拒绝的模板不登记 scope
-                        self._template_scopes[key] = scope
-                case TemplateImportStmt():
-                    pass
-                case _:
-                    if file.name.endswith('.inft'):
-                        self._diagnostics.append(Diagnostic(Severity.ERROR, 'inft.not_allowed', {}, s.source))
-
-        return scope
-
-    def _parse_document(self, file: File) -> Document:
-        """词法 + 语法分析一段源码（用于外部模板文件），诊断并入当前分析。"""
-        doc, diagnostics = parse_source(file)
-        self._diagnostics.extend(diagnostics)
-        return doc
 
     # ═══════════════════════════════════════════════════════
     # 顶层 schema 约束
@@ -448,7 +213,7 @@ class SemanticAnalyzer:
                     Diagnostic(Severity.WARNING, 'schema.extra_fields_lenient', {'fields': extra_names}, None)
                 )
             else:  # strip
-                obj = StdObject(fields=[f for f in obj.fields if f.name in declared])
+                obj = StdObject(fields=[f for f in obj.fields if f.name in declared], template=obj.template)
 
         # 必填字段缺失 → 报错
         for tf in tpl.fields:
@@ -515,6 +280,10 @@ class SemanticAnalyzer:
                 return fail_result(
                     'template.expect_object', {'template': display, 'actual': describe(value)}, source, path
                 )
+
+            # 标记来源模板：这个手写 dict 被判定为模板 display 的结构（供下游引用）
+            if value.template is None:
+                value.template = key
 
             diags: list[Diagnostic] = []
             field_map = {f.name: f for f in value.fields}
@@ -863,7 +632,7 @@ class SemanticAnalyzer:
                     v = result.coerced_value
             std_fields.append(StdField(name=tf.name, value=v, source=tf.source))
 
-        obj = StdObject(fields=std_fields)
+        obj = StdObject(fields=std_fields, template=key)
 
         # 模板级约束（: 起始，约束整个 dict）
         for c in template.constraints:

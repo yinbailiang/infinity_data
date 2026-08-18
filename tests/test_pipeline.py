@@ -6,7 +6,7 @@ from typing import Any
 
 from infinity_data import SandboxConfig, compile_source, load
 from infinity_data.infra.file import MemFile
-from infinity_data.semantic.models import Severity
+from infinity_data.semantic.models import Severity, StdObject
 
 
 def compile_ok(source: str) -> dict[str, Any]:
@@ -140,6 +140,52 @@ other Server()
         'api': {'host': 'api.example.com', 'port': 443},
         'other': {'host': '0.0.0.0', 'port': 80},
     }
+
+
+def test_document_carries_templates_and_scope() -> None:
+    """StdDocument 携带模板表与入口文件可见名表（可见名 → 模板）。"""
+    result = compile_source("""
+~Server {
+    host: str = "0.0.0.0"
+}
+s = Server()
+""")
+    doc = result.document
+    assert doc is not None
+    assert not doc.has_errors
+    # scope：入口文件可见名 → TemplateKey
+    assert 'Server' in doc.scope
+    # templates：TemplateKey → 定义，能完整解析
+    key = doc.scope['Server']
+    assert key in doc.templates
+    assert doc.templates[key].name == 'Server'
+
+
+def test_std_object_carries_source_template() -> None:
+    """StdObject 携带来源模板：模板展开的实例、模板即约束校验的 dict 均有。"""
+    result = compile_source("""
+~Server {
+    host: str = "0.0.0.0"
+}
+s = Server()
+hand: Server = { host = "x" }
+plain = { host = "y" }
+""")
+    doc = result.document
+    assert doc is not None and not doc.has_errors
+    key = doc.scope['Server']
+
+    def template_of(name: str):
+        f = doc.root.get(name)
+        assert f is not None and isinstance(f.value, StdObject)
+        return f.value.template
+
+    # 模板展开的实例 → 携带来源模板
+    assert template_of('s') == key
+    # 模板即约束校验的手写 dict → 携带来源模板
+    assert template_of('hand') == key
+    # 纯 dict 字面量 → 无模板
+    assert template_of('plain') is None
 
 
 def test_template_required_field_missing() -> None:

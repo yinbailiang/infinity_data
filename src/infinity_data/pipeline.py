@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -25,20 +26,36 @@ from infinity_data.semantic.analyzer import SemanticAnalyzer
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import StdDocument, StdObject
 from infinity_data.semantic.registry import ConstraintRegistry
+from infinity_data.semantic.resolver import TemplateGraphResolver
 
 register_diagnostic_define(
-    diagnostic_define('file.bom', '文件包含 BOM，规范要求 UTF-8 NO BOM 编码', en='file contains a BOM; UTF-8 NO BOM is required'),
+    diagnostic_define(
+        'file.bom', '文件包含 BOM，规范要求 UTF-8 NO BOM 编码', en='file contains a BOM; UTF-8 NO BOM is required'
+    ),
 )
 
 
 @dataclass
 class CompilationResult:
-    """一次编译的完整产物。"""
+    """一次编译的完整产物（根产物 + 诊断）。
+
+    - ``document``：:class:`StdDocument`（root / templates / scope / diagnostics）
+    - ``root`` / ``value``：由 ``document`` 派生（惰性）——降维属 emit 层职责，
+      编译阶段不急于产出，访问时经 :mod:`infinity_data.emit` 计算
+    """
 
     document: StdDocument | None
-    root: StdObject
-    value: dict[str, Any]  # 降维后的纯 Python dict（尽力而为，即使有错误）
     diagnostics: list[Diagnostic] = field(default_factory=lambda: [])
+
+    @property
+    def root(self) -> StdObject:
+        """顶层对象（= ``document.root``；无 document 时为空对象）。"""
+        return self.document.root if self.document is not None else StdObject()
+
+    @cached_property
+    def value(self) -> dict[str, Any]:
+        """降维后的纯 Python dict（惰性，由 emit 层负责；尽力而为）。"""
+        return reduce_object(self.root)
 
     @property
     def has_errors(self) -> bool:
@@ -78,12 +95,7 @@ def _compile_file(
     text = file.read()
     # 空源码 → 空配置
     if not text.strip():
-        return CompilationResult(
-            document=None,
-            root=StdObject(),
-            value={},
-            diagnostics=[],
-        )
+        return CompilationResult(document=None)
 
     doc, front_diagnostics = parse_source(file)
 
@@ -91,8 +103,13 @@ def _compile_file(
         config=_effective_sandbox(sandbox, env),
         base_dir=file.root_path,
     )
-    resolver = ImportResolver(sandbox=sandbox_impl)
-    analyzer = SemanticAnalyzer(registry=registry, import_resolver=resolver, schema=schema)
+    import_resolver = ImportResolver(sandbox=sandbox_impl)
+    resolver = TemplateGraphResolver(
+        registry=registry,
+        import_resolver=import_resolver,
+        schema=schema,
+    )
+    analyzer = SemanticAnalyzer(resolver=resolver)
     document = analyzer.analyze(doc, file)
 
     diagnostics = sorted(
@@ -101,8 +118,6 @@ def _compile_file(
     )
     return CompilationResult(
         document=document,
-        root=document.root,
-        value=reduce_object(document.root),
         diagnostics=diagnostics,
     )
 
@@ -161,9 +176,7 @@ def load(
 
     # 规范要求 utf-8 NO BOM
     if file.read().startswith('\ufeff'):
-        result.diagnostics.append(
-            Diagnostic(severity=Severity.WARNING, code='file.bom')
-        )
+        result.diagnostics.append(Diagnostic(severity=Severity.WARNING, code='file.bom'))
         result.diagnostics.sort(key=lambda d: d.sort_key())
     return result
 

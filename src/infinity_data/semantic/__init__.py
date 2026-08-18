@@ -11,6 +11,7 @@ from infinity_data.semantic.analyzer import SemanticAnalyzer
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import (
     Diagnostic,
+    ResolvedContext,
     Severity,
     StdArray,
     StdDocument,
@@ -24,13 +25,16 @@ from infinity_data.semantic.registry import (
     ConstraintResult,
     ResolvedConstraint,
 )
+from infinity_data.semantic.resolver import TemplateGraphResolver
 
 __all__ = [
     'SemanticAnalyzer',
     'ImportResolver',
+    'TemplateGraphResolver',
     'ConstraintRegistry',
     'ConstraintResult',
     'ResolvedConstraint',
+    'ResolvedContext',
     'Diagnostic',
     'Severity',
     'StdArray',
@@ -39,5 +43,5 @@ __all__ = [
     'StdLiteral',
     'StdObject',
     'StdValue',
-    'diagnostics'
+    'diagnostics',
 ]
