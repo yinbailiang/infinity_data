@@ -7,7 +7,8 @@
 3. 解析数据导入（``!env`` / ``!file``）
 4. 模板名注册为同名校验器（**模板即约束**）
 5. 逐语句分析：模板展开、约束语法糖展开、约束链执行
-6. 顶层 schema 校验（strict/lenient/strip）
+6. 顶层结构级约束校验（``: <...>``，作用于编译产物 root）
+7. 顶层 schema 校验（strict/lenient/strip）
 
 模板身份与可见性模型：
 - 模板真名 :class:`TemplateKey`（来源文件内容 hash + 本地名），全局唯一
@@ -31,6 +32,7 @@ from infinity_data.parser.models import (
     ConstraintIdent,
     ConstraintLiteral,
     Constraints,
+    ConstraintStmt,
     DictValue,
     Document,
     DollarValue,
@@ -161,6 +163,7 @@ class SemanticAnalyzer:
 
         # 第二遍：分析语句
         root_fields: list[StdField] = []
+        root_constraints: list[Constraint] = []
         for stmt in doc.statements:
             match stmt:
                 case TemplateDef() | TemplateImportStmt() | EnvImportStmt() | FileImportStmt():
@@ -169,10 +172,18 @@ class SemanticAnalyzer:
                     f = self._analyze_field(stmt, path=stmt.name, scope=self._root_scope)
                     if f is not None:
                         root_fields.append(f)
+                case ConstraintStmt(constraints=cs):
+                    root_constraints.extend(cs)
                 case _:
                     pass  # ErrorStatement 已在语法阶段诊断
 
         root = StdObject(fields=root_fields)
+
+        # 顶层结构级约束（作用于编译产物 root）
+        for c in root_constraints:
+            result = self._execute_spec(self._resolve_constraint(c, self._root_scope), root, c.source, '')
+            if not result.ok:
+                self._diagnostics.extend(result.diagnostics)
 
         # 顶层 schema 约束（strict/lenient/strip）
         if self._schema is not None:
@@ -679,14 +690,20 @@ class SemanticAnalyzer:
                     return self._convert_literal(tok)
                 case DollarValue(name=n, type_cast=tc):
                     return self._resolve_dollar(n, tc, path)
-                case DictValue(fields=fs):
+                case DictValue(fields=fs, constraints=cs):
                     std_fields: list[StdField] = []
                     for f in fs:
                         child = f'{path}.{f.name}' if path else f.name
                         sf = self._analyze_field(f, path=child, scope=scope)
                         if sf is not None:
                             std_fields.append(sf)
-                    return StdObject(fields=std_fields)
+                    obj = StdObject(fields=std_fields)
+                    # dict 结构级约束（作用于该字面量整体）
+                    for c in cs:
+                        result = self._execute_spec(self._resolve_constraint(c, scope), obj, c.source, path)
+                        if not result.ok:
+                            self._diagnostics.extend(result.diagnostics)
+                    return obj
                 case ArrayValue(elements=els):
                     std_elements: list[StdValue] = []
                     for i, e in enumerate(els):

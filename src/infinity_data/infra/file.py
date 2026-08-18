@@ -68,7 +68,7 @@ class DiskFile(File):
 @dataclass(frozen=True)
 class MemFile(File):
     """内存源码（测试/嵌入式场景）。身份按内容寻址。"""
-    
+
     content: str
 
     def read(self) -> str:
@@ -81,4 +81,3 @@ class MemFile(File):
     @property
     def identity(self) -> str:
         return 'mem:' + self.content_hash()
-

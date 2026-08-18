@@ -22,6 +22,7 @@
 
 基础语法:
 - 简单键值对 `name = default,`
+
 复合值语法:
 - `a_list = [a, b, c,]` 值之后必须有逗号，尾值后的逗号可选
 - `a_dict = {a = 1, b = 2,}` 键值对后必须有逗号，尾值后的逗号可选
@@ -32,12 +33,11 @@
 
 ### 1.2 约束
 
+#### 1.2.1 字段约束
+
 基础语法:
 - `key: constraint = default,`
 - `key: <constraint, ...> = default,`
-- `key: constraint [...],`
-- `key: <constraint, ...> {...},`
-
 
 内置类型约束:
 - `?` 值只能是 `null` 或者 `noexist`
@@ -78,6 +78,77 @@
 - **默认all**: <a, b, c> 等价 all(a, b, c)
 - **可空约束**：`任意类型约束type_c`+`?` 等价 one(type_c, ?)
 
+#### 1.2.2 结构级约束（dict 级约束）
+
+> 以 `:` 起始，约束目标为所在 dict 的**整体**，而非某个字段。
+> 可在任意 dict 构造位置使用；全局是隐式 dict，故顶层默认可用。
+
+基础语法:
+- `: <constraint, ...>`
+- `: constraint` 单约束可省略尖括号
+
+规则:
+- `:` 可在以下位置使用：
+  - 模板（`~Template { ... }`）内部 → 约束每次实例化出的整个 dict
+  - 任意 dict 字面量（`{ ... }`）内部 → 约束该字面量 dict
+  - 顶层（隐式 dict）→ 约束编译产物 root
+- 约束目标是所在 dict 的整体，而非某个字段。
+- 约束函数与字段级约束完全共用（同一注册表）。
+- 约束中的模板名按**书写位置的可见性**（scope）解析。
+
+模板内示例:
+```infd
+~Server {
+    host: str?
+    ip: str?
+    port: <int, range(1, 65535)> = 80,
+    tls: bool = false,
+    debug: bool = false,
+    mode: <str, in("production", "staging")> = "production",
+
+    # 互斥字段：要么有 host 要么有 ip
+    : <one(has(host), has(ip))>,
+
+    # port=443 时必须启用 TLS
+    : <when(field(port, eq(443)), field(tls, eq(true)))>,
+
+    # debug 模式下端口必须大于 1024
+    : <when(field(debug, eq(true)), field(port, range(1025, 65535)))>,
+
+    # 生产环境必须启用 TLS
+    : <when(field(mode, eq("production")), field(tls, eq(true)))>,
+}
+
+# 实例化：所有 : 约束在语义分析时校验
+my_server = Server(port=443, tls=true)
+# ✅ 通过
+
+# 违反时获得明确的错误信息
+bad_server = Server(port=443, tls=false)
+# ❌ 约束违反: when(field(port, eq(443)), field(tls, eq(true)))
+```
+
+dict 字面量内示例（无需先定义模板）:
+```infd
+server {
+    host = "node-1"
+    port = 443
+    : <one(has(host), has(ip))>
+    : <when(field(port, eq(443)), field(tls, eq(true)))>
+}
+```
+
+顶层示例（根级交叉校验，文件内自我声明）:
+```infd
+!env import MODE
+mode = $MODE
+tls = false
+
+# 生产环境必须启用 TLS（作用于编译产物 root）
+: <when(field(mode, eq("prod")), field(tls, eq(true)))>
+```
+
+
 ### 1.3 注释
 
 单行:
@@ -92,7 +163,7 @@
 ### 1.4 基础类型
 
 内置类型:
-- `object` 所有类型都是object
+- `object` 所有类型都是object，除了 `?`
 - `?` 纯可空类型，值可以是 noexist 或者 null
 - `bool` 布尔值， true 或者 false
 - `int` 有符号整数，无限精度
@@ -127,10 +198,14 @@
 ???? aabbcc "??" ```
 ````
 `````
-MD风格多行字符串，可变长起始串。
-起始串所在行后续内容会被视为空白分割的tags
-起始符后的空白和换行会被丢弃。同时结束符前的最后一个换行和空白会被丢弃
+类似 "MD代码块风格" 的多行字符串，可变长起始串。
+起始串开始后直到第一个换行之间的内容被视为空白分割的tags。同时，该换行会被丢弃。且tags不会进入内容。
+若起始围栏后没有换行符，则该行内容全部视为 tags（按空白分割），多行字符串的内容为空字符串。
+多行字符串的内容截取到结束围栏之前。随后，先移除内容末尾的所有空格和制表符（' ' 和 '\t'），若剩余内容以换行符 '\n' 结尾，则再移除该换行符。
+结束围栏的匹配规则为: 遇到与起始围栏等长的连续反引号序列立即结束，不附加任何上下文限制。
+tags可为空，内容不做约束
 
+> 匹配结束不是看到一个完整连续序列然后决定，而是字符流+计数器，一计数器达标就结束
 > 需要注意的是，和MD不同，>=1 个反引号即能开始多行字符串
 
 ### 1.6 三态可空
@@ -242,7 +317,7 @@ backend {
 1. 验证值必须是字典。
 2. 验证模板声明的所有字段存在。
 3. 对每个字段，递归执行该字段的类型约束。
-5. 不允许值中存在模板未声明的额外字段。可配置
+4. 不允许值中存在模板未声明的额外字段。可配置
 
 示例:
 ```infd
@@ -297,54 +372,6 @@ user_service Service(
     ],
 )
 ```
-
-### 2.5 模板级约束
-
-> 以 `:` 起始，约束目标为模板实例化出的整个 dict。
-
-基础语法:
-- `: <constraint, ...>`
-- `: constraint` 单约束可省略尖括号
-
-规则:
-- `:` 只能在模板（`~Template { ... }`）内部使用。
-- 约束目标是模板对应的整个 dict，而非某个字段。
-- 约束函数与字段级约束完全共用（同一注册表）。
-- 所有 `:` 约束均需通过，否则为语义错误。
-
-示例:
-```infd
-~Server {
-    host: str?
-    ip: str?
-    port: <int, range(1, 65535)> = 80,
-    tls: bool = false,
-    debug: bool = false,
-    mode: <str, in("production", "staging")> = "production",
-
-    # 互斥字段：要么有 host 要么有 ip
-    : <one(has(host), has(ip))>,
-
-    # port=443 时必须启用 TLS
-    : <when(field(port, eq(443)), field(tls, eq(true)))>,
-
-    # debug 模式下端口必须大于 1024
-    : <when(field(debug, eq(true)), field(port, range(1025, 65535)))>,
-
-    # 生产环境必须启用 TLS
-    : <when(field(mode, eq("production")), field(tls, eq(true)))>,
-}
-
-# 实例化：所有 : 约束在语义分析时校验
-my_server = Server(port=443, tls=true)
-# ✅ 通过
-
-# 违反时获得明确的错误信息
-bad_server = Server(port=443, tls=false)
-# ❌ 约束违反: when(field(port, eq(443)), field(tls, eq(true)))
-```
-
----
 
 ## 3. 外部导入
 

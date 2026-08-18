@@ -98,11 +98,15 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
         return raw, []
 
     # 2. 提取 tags（起始行剩余部分）
-    rest_start = backtick_count
-    newline_idx = raw.find('\n', rest_start)
-    if newline_idx == -1:
-        # 无换行：整个内容在同一行（没有 tags，没有 body）
-        return '', []
+    rest_start: int = backtick_count
+    newline_idx: int = raw.find('\n', rest_start)
+    if newline_idx == -1: # 无换行：整个同一行为 tags，无内容
+        tags_part: str = raw[rest_start:]  # 排除结束围栏
+        # 找到结束围栏位置（应从尾部去除 backtick_count 个反引号）
+        if raw.endswith('`' * backtick_count):
+            tags_part = raw[rest_start:-backtick_count]
+        tags: list[str] = tags_part.split() if tags_part.strip() else []
+        return '', tags
 
     tags_part = raw[rest_start:newline_idx]
     tags = tags_part.split() if tags_part.strip() else []
@@ -121,7 +125,7 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
             while idx >= content_start and raw[idx] == '`':
                 idx -= 1
             seq_len = seq_end - idx
-            if seq_len >= backtick_count:
+            if seq_len == backtick_count:
                 closing_start = idx + 1
                 break
         else:

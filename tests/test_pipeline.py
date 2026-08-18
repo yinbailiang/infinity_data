@@ -190,6 +190,113 @@ good Server(port=80, tls=false)
     assert any('tls' in d.message for d in result.diagnostics)
 
 
+def test_template_level_constraint_trailing_comma() -> None:
+    """模板内 : 约束后允许尾随逗号（与字段一致）。"""
+    result = compile_source("""
+~Server {
+    port: int = 80,
+    tls: bool = false,
+    : <when(field(port, eq(443)), field(tls, eq(true)))>,
+}
+bad Server(port=443, tls=false)
+""")
+    assert result.has_errors
+    assert any('tls' in d.message for d in result.diagnostics)
+
+
+# ═══════════════════════════════════════════════════════════
+# 结构级约束（dict 级约束）
+# ═══════════════════════════════════════════════════════════
+
+
+def test_dict_literal_structure_constraint_violation() -> None:
+    """dict 字面量内 : 约束作用于整体，违反时报错。"""
+    result = compile_source("""
+server {
+    host = "node-1"
+    port = 443
+    : <one(has(host), has(ip))>
+    : <when(field(port, eq(443)), field(tls, eq(true)))>
+}
+""")
+    assert result.has_errors
+    assert any('tls' in d.message for d in result.diagnostics)
+
+
+def test_dict_literal_structure_constraint_pass() -> None:
+    """dict 字面量内 : 约束通过时正常产出。"""
+    value = compile_ok("""
+server {
+    host = "node-1"
+    port = 80
+    : <one(has(host), has(ip))>
+}
+""")
+    assert value == {'server': {'host': 'node-1', 'port': 80}}
+
+
+def test_dict_literal_structure_constraint_in_template_default() -> None:
+    """模板默认值中的 dict 字面量也执行其结构约束。"""
+    result = compile_source("""
+~App {
+    server: dict = {
+        port = 443
+        : <when(field(port, eq(443)), field(tls, eq(true)))>
+    }
+}
+a App()
+""")
+    assert result.has_errors
+    assert any('tls' in d.message for d in result.diagnostics)
+
+
+def test_top_level_structure_constraint_violation() -> None:
+    """顶层 : 约束作用于编译产物 root。"""
+    result = compile_source("""
+mode = "prod"
+tls = false
+: <when(field(mode, eq("prod")), field(tls, eq(true)))>
+""")
+    assert result.has_errors
+    assert any('tls' in d.message for d in result.diagnostics)
+
+
+def test_top_level_structure_constraint_pass() -> None:
+    """顶层 : 约束通过时正常产出。"""
+    value = compile_ok("""
+mode = "dev"
+tls = false
+: <when(field(mode, eq("prod")), field(tls, eq(true)))>
+""")
+    assert value == {'mode': 'dev', 'tls': False}
+
+
+def test_top_level_structure_constraint_interleaved() -> None:
+    """顶层 : 约束可与字段交错书写。"""
+    result = compile_source("""
+name = "demo"
+: has(name)
+port = 443
+: <when(field(port, eq(443)), field(tls, eq(true)))>
+""")
+    assert result.has_errors
+    assert any('tls' in d.message for d in result.diagnostics)
+
+
+def test_dict_structure_constraint_with_template_name() -> None:
+    """dict 字面量结构约束中的模板名按书写位置 scope 解析（模板即约束）。"""
+    value = compile_ok("""
+~Server {
+    host: str = "0.0.0.0"
+}
+srv = {
+    host = "x"
+    : Server
+}
+""")
+    assert value['srv'] == {'host': 'x'}
+
+
 def test_template_as_constraint() -> None:
     value = compile_ok("""
 ~Server {

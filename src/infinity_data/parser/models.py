@@ -33,7 +33,11 @@ class AstNode:
 
 @dataclass
 class Document(AstNode):
-    """顶层文档，包含一组语句。"""
+    """顶层文档，包含一组语句。
+
+    顶层是隐式 dict；``: <constraint, ...>`` 以 :class:`ConstraintStmt`
+    形式出现在 statements 中，语义分析阶段作用于编译产物 root。
+    """
 
     statements: list[Statement] = field(default_factory=lambda: [])
 
@@ -137,6 +141,17 @@ class Field(AstNode):
     value: Value | None = None
 
 
+@dataclass
+class ConstraintStmt(AstNode):
+    """顶层结构级约束: ``: <constraint, ...>``（作用于编译产物 root）。
+
+    顶层是隐式 dict，``:`` 起始的语句约束整个 root，而非某个字段。
+    约束函数与字段级约束共用同一注册表。
+    """
+
+    constraints: list[Constraint]
+
+
 # ═══════════════════════════════════════════════════════════
 # 约束
 # ═══════════════════════════════════════════════════════════
@@ -203,9 +218,13 @@ class DollarValue(AstNode):
 
 @dataclass
 class DictValue(AstNode):
-    """对象值: { ... }"""
+    """对象值: { ... }
+
+    ``: <constraint, ...>`` 结构级约束作用于该字面量 dict 的整体。
+    """
 
     fields: list[Field]
+    constraints: list[Constraint] = field(default_factory=lambda: [])
 
 
 @dataclass
@@ -254,5 +273,13 @@ class ErrorConstraint(AstNode):
 # 联合类型
 # ═══════════════════════════════════════════════════════════
 
-type Statement = TemplateImportStmt | EnvImportStmt | FileImportStmt | TemplateDef | Field | ErrorStatement
+type Statement = (
+    TemplateImportStmt
+    | EnvImportStmt
+    | FileImportStmt
+    | TemplateDef
+    | Field
+    | ConstraintStmt
+    | ErrorStatement
+)
 type Value = LiteralValue | DollarValue | DictValue | ArrayValue | TemplateCallValue | ErrorValue

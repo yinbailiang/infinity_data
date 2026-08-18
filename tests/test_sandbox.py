@@ -297,17 +297,17 @@ def test_schema_field_constraint_violation(tmp_path: Path) -> None:
 
 
 # ═══════════════════════════════════════════════════════
-# 自举：SandboxConfig.from_dict + compile_to_dict
+# 自举：SandboxConfig(**safe_load) + compile_to_dict
 # ═══════════════════════════════════════════════════════
 
 
-def test_sandbox_config_from_dict_bootstrap(tmp_path: Path) -> None:
+def test_sandbox_config_bootstrap(tmp_path: Path) -> None:
     sandbox_def = tmp_path / 'sandbox.infd'
     _write(
         sandbox_def,
         'env = { USER = "alice" }\nallow_files ["./configs/*.json"]\nstrict = true\n',
     )
-    sb = SandboxConfig.from_dict(safe_load(sandbox_def).value)
+    sb = SandboxConfig(**safe_load(sandbox_def).value)
     assert sb.env == {'USER': 'alice'}
     assert sb.allow_files == ['./configs/*.json']
     assert sb.strict is True

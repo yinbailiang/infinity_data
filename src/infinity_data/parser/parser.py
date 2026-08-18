@@ -17,6 +17,7 @@ from infinity_data.parser.models import (
     ConstraintIdent,
     ConstraintLiteral,
     Constraints,
+    ConstraintStmt,
     DictValue,
     Document,
     DollarValue,
@@ -127,6 +128,8 @@ class Parser:
                 return self._parse_template_def()
             case IdentifierToken():
                 return self._parse_field()
+            case ColonToken():
+                return self._parse_constraint_stmt()
             case _:
                 bad_tok = self._stream.advance()
                 return ErrorStatement(
@@ -340,6 +343,24 @@ class Parser:
         )
 
     # ═══════════════════════════════════════════════════════
+    # 结构级约束语句（顶层）
+    # ═══════════════════════════════════════════════════════
+
+    def _parse_constraint_stmt(self) -> ConstraintStmt:
+        """顶层结构级约束: ``: <constraint, ...>`` 或 ``: constraint``。
+
+        顶层是隐式 dict，``:`` 起始的语句约束编译产物 root 的整体。
+        """
+        first = self._stream.peek()
+        self._stream.advance()  # 消费 ':'
+        parsed = self._parse_constraints()
+        self._stream.skip_separators()
+        return ConstraintStmt(
+            source=self._stream.span_from(first),
+            constraints=parsed.constraints,
+        )
+
+    # ═══════════════════════════════════════════════════════
     # 模板定义
     # ═══════════════════════════════════════════════════════
 
@@ -367,14 +388,14 @@ class Parser:
         fields: list[TemplateField] = []
         constraints: list[Constraint] = []
         while not self._stream.check(RawTokenType.RBRACE) and not self._stream.eof():
-            # 模板级约束: : <...>
+            # 结构级约束: : <...>
             if isinstance(self._stream.peek(), ColonToken):
                 self._stream.advance()
                 parsed = self._parse_constraints()
                 constraints.extend(parsed.constraints)
             else:
                 fields.append(self._parse_template_field())
-            self._stream.skip_newlines()
+            self._stream.skip_separators()
 
         self._stream.expect(RbraceToken)
         self._stream.skip_newlines()
@@ -652,17 +673,27 @@ class Parser:
         )
 
     def _parse_object(self) -> DictValue:
-        """{ field, ... }"""
+        """{ field, ... }
+
+        dict 结构级约束: ``: <constraint, ...>`` 作用于该字面量 dict 的整体。
+        """
         lbrace_tok = self._stream.expect(LbraceToken)
         self._stream.skip_separators()
 
         fields: list[Field] = []
+        constraints: list[Constraint] = []
         while not self._stream.check(RawTokenType.RBRACE) and not self._stream.eof():
-            fields.append(self._parse_field())
+            # 结构级约束: : <...>
+            if isinstance(self._stream.peek(), ColonToken):
+                self._stream.advance()
+                parsed = self._parse_constraints()
+                constraints.extend(parsed.constraints)
+            else:
+                fields.append(self._parse_field())
             self._stream.skip_separators()
 
         self._stream.expect(RbraceToken)
-        return DictValue(source=self._stream.span_from(lbrace_tok), fields=fields)
+        return DictValue(source=self._stream.span_from(lbrace_tok), fields=fields, constraints=constraints)
 
     def _parse_array(self) -> ArrayValue:
         """[ value, ... ] 换行等价于逗号。"""

@@ -338,10 +338,14 @@ class RawTokenizer:
             if ch == '`':
                 # 检查是否有足够的反引号匹配
                 temp_count = 0
-                while not self._stream.eof() and self._stream.peek() == '`':
+                while (
+                    temp_count < backtick_count and 
+                    not self._stream.eof() and 
+                    self._stream.peek() == '`'
+                ):
                     temp_count += 1
                     self._stream.advance()
-                if temp_count >= backtick_count:
+                if temp_count == backtick_count:
                     raw += '`' * temp_count
                     return self._make_token(RawTokenType.MULTILINE_STRING, raw, start=start)
                 else:
