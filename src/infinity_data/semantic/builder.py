@@ -48,6 +48,7 @@ from infinity_data.semantic.constraints import resolve_constraint_list, resolve_
 from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.models import (
     ResolvedConstraint,
+    ResolvedContext,
     Scope,
     StdArray,
     StdDocument,
@@ -123,12 +124,7 @@ class AstBuilder:
         context = self._resolver.resolve(doc, file)
 
         # Phase 1 产物注入执行期状态
-        self._templates = context.templates
-        self._template_scopes = context.template_scopes
-        self._root_scope = context.root_scope
-        self._schema_scope = context.schema_scope
-        self._namespace = context.namespace
-        self._diagnostics = list(context.diagnostics)
+        self._adopt(context)
 
         # Phase 2a：构建 root（顶层结构约束挂在 root.constraints，不执行）
         root_fields: list[StdField] = []
@@ -176,6 +172,15 @@ class AstBuilder:
             templates=dict(self._templates),
             scope=dict(self._root_scope),
         )
+
+    def _adopt(self, context: ResolvedContext) -> None:
+        """采纳 Phase 1 产物：模板图 / 可见名表 / 命名空间 / 诊断。"""
+        self._templates = context.templates
+        self._template_scopes = context.template_scopes
+        self._root_scope = context.root_scope
+        self._schema_scope = context.schema_scope
+        self._namespace = context.namespace
+        self._diagnostics = list(context.diagnostics)
 
     # ═══════════════════════════════════════════════════════
     # 字段构建

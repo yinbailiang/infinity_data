@@ -2,7 +2,7 @@
 
 将「模板导入（``!from``）、数据导入（``!env`` / ``!file``）、模板定义收集」
 从语义分析中独立出来，产出不可变的 :class:`ResolvedContext` 供
-:class:`infinity_data.semantic.analyzer.AstBuilder`（Phase 2a）消费。
+:class:`infinity_data.semantic.builder.AstBuilder`（Phase 2a）消费。
 
 - 本层**不执行任何约束**：只解析名字、加载模板定义、构建 scope；
   模板展开 / 约束求值 / schema 校验全部留在 Phase 2。

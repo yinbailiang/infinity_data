@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -40,32 +39,15 @@ _FORMAT_MAP: dict[str, str] = {
 
 
 class ImportResolver:
-    """解析导入语句，产出 ``$`` 引用命名空间（alias → Python 值）。"""
+    """解析导入语句，产出 ``$`` 引用命名空间（alias → Python 值）。
 
-    def __init__(
-        self,
-        *,
-        env: Mapping[str, str] | None = None,
-        base_dir: str | os.PathLike[str] | None = None,
-        sandbox: Sandbox | None = None,
-    ) -> None:
-        # env 兼容旧调用方式：直接提供映射时视为该映射即授权全集
-        if sandbox is None:
-            config = SandboxConfig(env=dict(env)) if env is not None else SandboxConfig.deny_all()
-            sandbox = Sandbox(
-                config=config,
-                base_dir=Path(base_dir) if base_dir is not None else Path.cwd(),
-            )
-        elif env is not None:
-            config = SandboxConfig(
-                env={**sandbox.config.env, **dict(env)},
-                allow_env=sandbox.config.allow_env,
-                allow_files=sandbox.config.allow_files,
-                allow_templates=sandbox.config.allow_templates,
-                strict=sandbox.config.strict,
-            )
-            sandbox = Sandbox(config=config, base_dir=sandbox.base_dir)
-        self._sandbox: Sandbox = sandbox
+    Args:
+        sandbox: 沙盒中介（授权 / 拒绝一切系统访问）。None = 零信任 deny_all。
+    """
+
+    def __init__(self, *, sandbox: Sandbox | None = None) -> None:
+        # 零信任默认：未提供沙盒时拒绝一切系统访问（库默认 deny_all）
+        self._sandbox = sandbox or Sandbox(config=SandboxConfig.deny_all(), base_dir=Path.cwd())
 
     @property
     def sandbox(self) -> Sandbox:

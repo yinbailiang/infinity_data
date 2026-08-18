@@ -157,7 +157,7 @@ class ResolvedContext:
     """导入解析（Phase 1）产物：模板图 + 可见名表 + 数据命名空间。
 
     由 :class:`infinity_data.semantic.resolver.TemplateGraphResolver` 产出，
-    供 :class:`infinity_data.semantic.analyzer.AstBuilder`（Phase 2a）消费。
+    供 :class:`infinity_data.semantic.builder.AstBuilder`（Phase 2a）消费。
     只含名字与模板定义，不含任何约束执行结果（约束求值属 Phase 2）。
 
     - ``templates``：全部已加载模板（本地 + ``!from`` 导入）

@@ -22,7 +22,7 @@ from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import Diagnostic, Severity, diagnostic_define, register_diagnostic_define
 from infinity_data.infra.file import DiskFile, File, MemFile
 from infinity_data.sandbox import Sandbox, SandboxConfig, SandboxError, Schema
-from infinity_data.semantic.analyzer import AstBuilder
+from infinity_data.semantic.builder import AstBuilder
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import StdDocument, StdObject
 from infinity_data.semantic.registry import ConstraintRegistry
