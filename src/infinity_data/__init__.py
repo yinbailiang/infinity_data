@@ -17,8 +17,8 @@
 from infinity_data.pipeline import (
     CompilationResult,
     check,
+    compile_document,
     compile_source,
-    compile_to_dict,
     load,
     safe_load,
 )
@@ -30,7 +30,7 @@ __all__ = [
     'load',
     'safe_load',
     'check',
-    'compile_to_dict',
+    'compile_document',
     'CompilationResult',
     'SandboxConfig',
     'SandboxError',

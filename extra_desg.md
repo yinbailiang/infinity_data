@@ -249,14 +249,14 @@ if not result.equivalent:
 ### 2.9 便捷函数
 
 ```python
-from infinity_data import check, compile_to_dict
+from infinity_data import check, compile_document
 
 # 仅校验，不输出
 diagnostics = check("app.infd", sandbox=sandbox, schema=...)
 # → list[Diagnostic]
 
-# 编译为 dict（不经过 JSON 字符串）
-result = compile_to_dict("app.infd", sandbox=sandbox, schema=...)
+# 编译为 StdDocument（不经过降维，不输出字符串）
+result = compile_document("app.infd", sandbox=sandbox, schema=...)
 # → StdDocument，含 .root (StdObject) 和 .diagnostics
 ```
 

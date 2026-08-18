@@ -8,8 +8,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TypeVar
 
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.ll1_stream import LL1Stream, NoNextType
-from infinity_data.parser.errors import ParseErrorCollector, UnexpectedTokenError
+from infinity_data.parser.diagnostics import diag
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
@@ -30,10 +31,10 @@ class TokenStream(LL1Stream[Token]):
     def __init__(
         self,
         source: Iterable[Token],
-        error_collector: ParseErrorCollector,
+        error_collector: DiagnosticCollector,
     ) -> None:
         super().__init__(source)
-        self._errors: ParseErrorCollector = error_collector
+        self._errors: DiagnosticCollector = error_collector
         self._last: Token | None = None
 
     # ── LL1Stream 钩子 ────────────────────────────────────
@@ -87,21 +88,11 @@ class TokenStream(LL1Stream[Token]):
         tok = self.peek()
         if isinstance(tok, NoNextType):
             rng = self.span_from(None)
-            self._errors.add(
-                UnexpectedTokenError(
-                    source=rng,
-                    expected=token_cls.__name__,
-                    actual='EOF',
-                )
-            )
+            self._errors.add(diag('parse.unexpected_token', {'expected': token_cls.__name__, 'actual': 'EOF'}, rng))
             return self._synthetic(token_cls, source=rng)
         if not isinstance(tok, token_cls):
             self._errors.add(
-                UnexpectedTokenError(
-                    source=tok.raw.source,
-                    expected=token_cls.__name__,
-                    actual=tok.raw.type.name,
-                )
+                diag('parse.unexpected_token', {'expected': token_cls.__name__, 'actual': tok.raw.type.name}, tok.raw.source)
             )
             self.advance()
             return self._synthetic(token_cls, source=tok.raw.source)

@@ -6,7 +6,7 @@
 - :func:`compile_source` / :func:`load`：编译入口，返回 :class:`CompilationResult`
 - :func:`safe_load`：零信任加载（deny_all 沙盒，禁止一切导入）
 - :func:`check`：仅校验，返回诊断列表
-- :func:`compile_to_dict`：编译为 StdDocument（不降维）
+- :func:`compile_document`：编译为 StdDocument（不降维）
 """
 
 from __future__ import annotations
@@ -17,18 +17,18 @@ from pathlib import Path
 from typing import Any
 
 from infinity_data.emit import reduce_object
+from infinity_data.frontend import parse_source
+from infinity_data.infra.diagnostics import Diagnostic, Severity, diagnostic_define, register_diagnostic_define
 from infinity_data.infra.file import DiskFile, File, MemFile
-from infinity_data.parser.errors import ParseErrorCollector
-from infinity_data.parser.models import Document
-from infinity_data.parser.parser import Parser
-from infinity_data.sandbox import Sandbox, SandboxConfig, SandboxError, Schema, SchemaError
+from infinity_data.sandbox import Sandbox, SandboxConfig, SandboxError, Schema
 from infinity_data.semantic.analyzer import SemanticAnalyzer
 from infinity_data.semantic.imports import ImportResolver
-from infinity_data.semantic.models import Diagnostic, Severity, StdDocument, StdObject
+from infinity_data.semantic.models import StdDocument, StdObject
 from infinity_data.semantic.registry import ConstraintRegistry
-from infinity_data.tokenizer.errors import TokenizeErrorCollector
-from infinity_data.tokenizer.finalizer import FinalTokenizer
-from infinity_data.tokenizer.tokenizer import RawTokenizer
+
+register_diagnostic_define(
+    diagnostic_define('file.bom', '文件包含 BOM，规范要求 UTF-8 NO BOM 编码', en='file contains a BOM; UTF-8 NO BOM is required'),
+)
 
 
 @dataclass
@@ -47,27 +47,6 @@ class CompilationResult:
     @property
     def warnings(self) -> list[Diagnostic]:
         return [d for d in self.diagnostics if d.severity is Severity.WARNING]
-
-
-def _tokenize_and_parse(file: File) -> tuple[Document, list[Diagnostic]]:
-    """词法 + 语法分析（字符流由 file.chars() 提供）。"""
-    tokenize_collector = TokenizeErrorCollector()
-    parse_collector = ParseErrorCollector()
-
-    raw_tokens = RawTokenizer(
-        file=file,
-        error_collector=tokenize_collector,
-    )
-    tokens = FinalTokenizer(raw_tokens)
-    parser = Parser(tokens, error_collector=parse_collector)
-    doc = parser.parse()
-
-    diagnostics: list[Diagnostic] = []
-    for err in tokenize_collector:
-        diagnostics.append(Diagnostic.from_error(err))
-    for err in parse_collector:
-        diagnostics.append(Diagnostic.from_error(err))
-    return doc, diagnostics
 
 
 def _effective_sandbox(
@@ -106,7 +85,7 @@ def _compile_file(
             diagnostics=[],
         )
 
-    doc, front_diagnostics = _tokenize_and_parse(file)
+    doc, front_diagnostics = parse_source(file)
 
     sandbox_impl = Sandbox(
         config=_effective_sandbox(sandbox, env),
@@ -183,10 +162,7 @@ def load(
     # 规范要求 utf-8 NO BOM
     if file.read().startswith('\ufeff'):
         result.diagnostics.append(
-            Diagnostic(
-                severity=Severity.WARNING,
-                message='文件包含 BOM，规范要求 UTF-8 NO BOM 编码',
-            )
+            Diagnostic(severity=Severity.WARNING, code='file.bom')
         )
         result.diagnostics.sort(key=lambda d: d.sort_key())
     return result
@@ -222,18 +198,13 @@ def check(
     """仅校验，不输出。沙盒/schema 违规转为 ERROR 诊断返回而非抛出。"""
     try:
         result = load(path, env=env, registry=registry, sandbox=sandbox, schema=schema)
-    except (SandboxError, SchemaError) as e:
-        return [
-            Diagnostic(
-                severity=Severity.ERROR,
-                message=e.message,
-                source=e.source,
-            )
-        ]
+    except SandboxError as e:
+        # 沙盒异常（含 SchemaError）→ 统一为 Diagnostic
+        return [Diagnostic(Severity.ERROR, e.code, dict(e.params), e.source)]
     return result.diagnostics
 
 
-def compile_to_dict(
+def compile_document(
     path: str | Path,
     *,
     env: Mapping[str, str] | None = None,

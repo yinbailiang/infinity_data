@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from infinity_data.infra.diagnostics import Severity
 from infinity_data.infra.file import File
 from infinity_data.parser.models import (
     Document,
@@ -26,10 +27,9 @@ from infinity_data.parser.models import (
     JsonPathKey,
 )
 from infinity_data.sandbox import Sandbox, SandboxConfig
-from infinity_data.semantic.models import Severity
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
-ReportFn = Callable[[Severity, str, SourceRange | None], None]
+ReportFn = Callable[[Severity, str, Mapping[str, Any], SourceRange | None], None]
 
 _FORMAT_MAP: dict[str, str] = {
     '.json': 'json',
@@ -98,7 +98,7 @@ class ImportResolver:
         与模板 scope 一致：``$`` 命名空间内不允许隐式的"后者覆盖前者"。
         """
         if name in namespace:
-            report(Severity.ERROR, f'导入别名 {name!r} 重复绑定（$ 命名空间内不允许重复），后者被拒绝', source)
+            report(Severity.ERROR, 'namespace.duplicate', {'name': name}, source)
             return
         namespace[name] = value
 
@@ -127,14 +127,14 @@ class ImportResolver:
         """!file "path" [as fmt] import .path.to.key as alias, ..."""
         file = self._sandbox.open_file(stmt.file_path, source=stmt.source)
         if file is None:
-            report(Severity.WARNING, f'文件导入超出沙盒授权，已忽略: {stmt.file_path}', stmt.source)
+            report(Severity.WARNING, 'import.file_denied', {'path_src': stmt.file_path}, stmt.source)
             return
 
         fmt = stmt.format or _FORMAT_MAP.get(Path(stmt.file_path).suffix.lower(), 'json')
         try:
             text = file.read()
         except OSError:
-            report(Severity.WARNING, f'导入文件不存在: {file.name}', stmt.source)
+            report(Severity.WARNING, 'import.file_missing', {'name': file.name}, stmt.source)
             return
 
         data = self._parse_data(text, fmt, report, stmt.source)
@@ -145,7 +145,7 @@ class ImportResolver:
             try:
                 value = self._resolve_json_path(data, item.json_path)
             except (KeyError, IndexError, TypeError):
-                report(Severity.WARNING, f'无法解析导入路径: {file.name}', item.source)
+                report(Severity.WARNING, 'import.path_failed', {'name': file.name}, item.source)
                 continue
             self._bind(namespace, item.alias, value, report, item.source)
 
@@ -162,7 +162,7 @@ class ImportResolver:
         """!from 目标：经沙盒授权产出 File（相对路径以导入所在文件目录解析）。"""
         file = self._sandbox.open_template(from_path, base_dir=base_dir, source=source)
         if file is None:
-            report(Severity.WARNING, f'模板导入超出沙盒授权，已忽略: {from_path}', source)
+            report(Severity.WARNING, 'import.template_denied', {'path_src': from_path}, source)
         return file
 
     # ── 辅助 ──────────────────────────────────────────
@@ -182,15 +182,15 @@ class ImportResolver:
                 try:
                     import yaml  # pyright: ignore[reportMissingModuleSource]
                 except ImportError:
-                    report(Severity.WARNING, 'yaml 支持需要安装 PyYAML', source)
+                    report(Severity.WARNING, 'import.yaml_missing', {}, source)
                     return None
                 return yaml.safe_load(text)
             if fmt == 'toml':
                 return tomllib.loads(text)
-            report(Severity.WARNING, f'不支持的文件格式: {fmt}', source)
+            report(Severity.WARNING, 'import.unsupported_format', {'format': fmt}, source)
             return None
         except Exception as e:
-            report(Severity.ERROR, f'解析数据失败: {e}', source)
+            report(Severity.ERROR, 'import.parse_failed', {'error': e}, source)
             return None
 
     # ── 辅助 ──────────────────────────────────────────

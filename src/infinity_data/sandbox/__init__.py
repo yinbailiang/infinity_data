@@ -10,8 +10,23 @@
 """
 
 from infinity_data.sandbox.config import SandboxConfig
-from infinity_data.sandbox.errors import SandboxError, SchemaError
+from infinity_data.sandbox.errors import (
+    AccessDeniedError,
+    EnvNotAuthorizedError,
+    EnvNotSetError,
+    SandboxError,
+    SchemaError,
+)
 from infinity_data.sandbox.mediator import Sandbox
 from infinity_data.sandbox.schema import Schema
 
-__all__ = ['Sandbox', 'SandboxConfig', 'SandboxError', 'SchemaError', 'Schema']
+__all__ = [
+    'Sandbox',
+    'SandboxConfig',
+    'SandboxError',
+    'EnvNotAuthorizedError',
+    'EnvNotSetError',
+    'AccessDeniedError',
+    'SchemaError',
+    'Schema',
+]

@@ -12,8 +12,8 @@ from infinity_data import (
     Schema,
     SchemaError,
     check,
+    compile_document,
     compile_source,
-    compile_to_dict,
     load,
     safe_load,
 )
@@ -225,7 +225,7 @@ def test_imported_template_shadowing_builtin_is_error(tmp_path: Path) -> None:
     _write(f, '!from "bad.inft" import str\ns: str = "ok"\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
-    assert any('内置约束' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.shadows_builtin' for d in result.diagnostics)
     # 内置 str 保持可用
     assert result.value == {'s': 'ok'}
 
@@ -241,7 +241,7 @@ def test_duplicate_import_visible_name_is_error(tmp_path: Path) -> None:
     )
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
-    assert any('重复导入' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.import_duplicate' for d in result.diagnostics)
     # 首个可见名映射被保留（a.inft 的 Server）
     assert result.value == {'s': {'a': 1}}
 
@@ -252,7 +252,7 @@ def test_duplicate_env_alias_is_error(tmp_path: Path) -> None:
     _write(f, '!env import USER\n!env import HOME as USER\nuser = $USER\n')
     result = load(f, sandbox=SandboxConfig(env={'USER': 'alice', 'HOME': '/home/alice'}))
     assert result.has_errors
-    assert any('重复绑定' in d.message for d in result.diagnostics)
+    assert any(d.code == 'namespace.duplicate' for d in result.diagnostics)
     # 先到者生效：$USER = alice
     assert result.value == {'user': 'alice'}
 
@@ -268,7 +268,7 @@ def test_duplicate_alias_env_and_file_is_error(tmp_path: Path) -> None:
         sandbox=SandboxConfig(env={'USER': 'alice'}, allow_files=['./data.json']),
     )
     assert result.has_errors
-    assert any('重复绑定' in d.message for d in result.diagnostics)
+    assert any(d.code == 'namespace.duplicate' for d in result.diagnostics)
     # 先到者生效：$USER = alice（env 在前）
     assert result.value == {'v': 'alice'}
 
@@ -291,7 +291,7 @@ def test_template_import_with_alias(tmp_path: Path) -> None:
     _write(f2, '!from "templates/extra.inft" import Extra as Ex\nb = Extra(name="z")\n')
     result2 = load(f2, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert result2.has_errors
-    assert any('未定义的模板' in d.message for d in result2.diagnostics)
+    assert any(d.code == 'template.undefined' for d in result2.diagnostics)
 
 
 def test_template_import_multiple_with_mixed_alias(tmp_path: Path) -> None:
@@ -314,7 +314,7 @@ def test_template_import_alias_conflict_with_local(tmp_path: Path) -> None:
     )
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
-    assert any('冲突' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.import_conflict_local' for d in result.diagnostics)
 
 
 def test_template_import_alias_missing_source(tmp_path: Path) -> None:
@@ -324,7 +324,7 @@ def test_template_import_alias_missing_source(tmp_path: Path) -> None:
     _write(f, '!from "extra.inft" import DoesNotExist as X\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
-    assert any('不存在' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.import_not_found' for d in result.diagnostics)
 
 
 def test_template_import_nested(tmp_path: Path) -> None:
@@ -357,7 +357,7 @@ def test_template_import_conflict_with_local(tmp_path: Path) -> None:
     _write(f, '~Server {\n    port: int = 80\n}\n!from "extra.inft" import Server\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
-    assert any('冲突' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.import_conflict_local' for d in result.diagnostics)
 
 
 def test_template_import_cyclic_is_safe(tmp_path: Path) -> None:
@@ -384,7 +384,7 @@ def test_same_content_different_files_is_rejected(tmp_path: Path) -> None:
     )
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
-    assert any('来源文件不同' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.same_content_diff_file' for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════
@@ -460,7 +460,7 @@ def test_schema_field_constraint_violation(tmp_path: Path) -> None:
 
 
 # ═══════════════════════════════════════════════════════
-# 自举：SandboxConfig(**safe_load) + compile_to_dict
+# 自举：SandboxConfig(**safe_load) + compile_document
 # ═══════════════════════════════════════════════════════
 
 
@@ -476,10 +476,10 @@ def test_sandbox_config_bootstrap(tmp_path: Path) -> None:
     assert sb.strict is True
 
 
-def test_compile_to_dict(tmp_path: Path) -> None:
+def test_compile_document(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, 'name = "demo"\n')
-    doc = compile_to_dict(f)
+    doc = compile_document(f)
     assert doc.root.get('name') is not None
     assert not doc.has_errors
 

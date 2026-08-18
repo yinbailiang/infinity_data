@@ -12,51 +12,13 @@ from __future__ import annotations
 
 import decimal
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Literal
 
-from infinity_data.infra.errors import InfinityDataError
-from infinity_data.tokenizer.models.raw_tokens import SourceRange
+from infinity_data.infra.diagnostics import Diagnostic, Severity
+from infinity_data.infra.location import SourceRange
 
 LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
 """字面量 kind 枚举。"""
-
-
-class Severity(Enum):
-    """诊断严重级别。"""
-
-    ERROR = 'error'
-    WARNING = 'warning'
-    INFO = 'info'
-
-
-@dataclass(frozen=True)
-class Diagnostic:
-    """统一诊断：语义阶段产生，流水线聚合词法/语法错误也使用此结构。"""
-
-    severity: Severity
-    message: str
-    source: SourceRange | None = None
-    path: str = ''
-
-    @property
-    def location(self) -> str:
-        if self.source is None:
-            return '<unknown>'
-        s = self.source.start
-        return f'{self.source.file.name}:{s.line}:{s.col}'
-
-    def sort_key(self) -> tuple[str, int, int]:
-        """按源码位置排序。"""
-        if self.source is None:
-            return ('\uffff', 0, 0)
-        s = self.source.start
-        return (self.source.file.name, s.line, s.col)
-
-    @classmethod
-    def from_error(cls, error: InfinityDataError) -> Diagnostic:
-        """将各阶段异常式错误转换为统一诊断（唯一转换口）。"""
-        return cls(severity=Severity.ERROR, message=error.message, source=error.source)
 
 
 # ═══════════════════════════════════════════════════════════

@@ -14,12 +14,12 @@ from pathlib import Path, PurePosixPath
 from infinity_data.infra.file import DiskFile, File
 from infinity_data.infra.location import SourceRange
 from infinity_data.sandbox.config import SandboxConfig
-from infinity_data.sandbox.errors import SandboxError
+from infinity_data.sandbox.errors import AccessDeniedError, EnvNotAuthorizedError, EnvNotSetError
 
 __all__ = ['Sandbox']
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=128)
 def _translate_segment(segment: str) -> re.Pattern[str] | None:
     """单个路径段 glob → 编译正则（``**`` 段返回 None = 匹配任意多段）。
 
@@ -166,9 +166,9 @@ class Sandbox:
         if self._config.allow_env is None or name in self._config.allow_env:
             value = os.environ.get(name)
             if value is None:
-                raise SandboxError(f'环境变量 {name!r} 已授权但当前进程未设置', source)
+                raise EnvNotSetError(name, source)
             return value
-        raise SandboxError(f'环境变量 {name!r} 未在沙盒授权（!env import）', source)
+        raise EnvNotAuthorizedError(name, source)
 
     # ── 文件来源 ──────────────────────────────────────
 
@@ -208,6 +208,6 @@ class Sandbox:
 
         if not match_globs(path, patterns, self._base_dir):
             if self._config.strict:
-                raise SandboxError(f'{label}超出沙盒授权: {from_path}', source)
+                raise AccessDeniedError(label, from_path, source)
             return None
         return DiskFile.from_fullpath(path)

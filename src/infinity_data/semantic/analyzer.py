@@ -20,11 +20,13 @@
 from __future__ import annotations
 
 import decimal
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+from infinity_data.frontend import parse_source
+from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.infra.file import File
-from infinity_data.parser.errors import ParseErrorCollector
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
@@ -44,15 +46,13 @@ from infinity_data.parser.models import (
     LiteralValue,
     TemplateCallValue,
     TemplateDef,
+    TemplateImportItem,
     TemplateImportStmt,
     Value,
 )
-from infinity_data.parser.parser import Parser
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import (
-    Diagnostic,
-    Severity,
     StdArray,
     StdDocument,
     StdField,
@@ -70,8 +70,6 @@ from infinity_data.semantic.registry import (
     fail_result,
     ok_result,
 )
-from infinity_data.tokenizer.errors import TokenizeErrorCollector
-from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
@@ -82,7 +80,6 @@ from infinity_data.tokenizer.models.tokens import (
     NullToken,
     StringToken,
 )
-from infinity_data.tokenizer.tokenizer import RawTokenizer
 
 MAX_NESTING_DEPTH = 200
 """值嵌套深度上限，防止递归下降导致 RecursionError。"""
@@ -204,13 +201,7 @@ class SemanticAnalyzer:
         内置约束保持可用。
         """
         if name in self._registry.names:
-            self._diagnostics.append(
-                Diagnostic(
-                    Severity.ERROR,
-                    f'模板 {name!r} 与内置约束同名，禁止定义（避免遮蔽 {name} 约束）',
-                    source,
-                )
-            )
+            self._diagnostics.append(Diagnostic(Severity.ERROR, 'template.shadows_builtin', {'template': name}, source))
             return True
         return False
 
@@ -223,7 +214,8 @@ class SemanticAnalyzer:
                     self._diagnostics.append(
                         Diagnostic(
                             Severity.ERROR,
-                            f'模板 {stmt.name!r} 中必填字段 {tf.name!r} 出现在可选字段之后',
+                            'template.required_order',
+                            {'template': stmt.name, 'field': tf.name},
                             tf.source,
                         )
                     )
@@ -238,11 +230,7 @@ class SemanticAnalyzer:
             key = TemplateKey(content_hash=root_hash, name=stmt.name)
             if not rejected and key in self._templates:
                 self._diagnostics.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        f'模板 {stmt.name!r} 重复定义（同一文件内不允许同名模板），后者被拒绝',
-                        stmt.source,
-                    )
+                    Diagnostic(Severity.ERROR, 'template.duplicate', {'template': stmt.name}, stmt.source)
                 )
                 rejected = True
             # 无论是否被拒绝都校验内部（一次暴露所有错误，避免多轮修复）
@@ -257,6 +245,39 @@ class SemanticAnalyzer:
     # ═══════════════════════════════════════════════════════
     # 模板导入（!from）
     # ═══════════════════════════════════════════════════════
+
+    def _map_import_items(
+        self,
+        items: list[TemplateImportItem],
+        dep_scope: Scope,
+        scope: Scope,
+        local_names: set[str],
+    ) -> None:
+        """把 ``!from`` 的导入项映射进目标 scope；冲突一律 ERROR。
+
+        - 导入文件中不存在该模板 → ERROR
+        - 可见名与文件内定义同名 → ERROR（与文件内定义冲突）
+        - 可见名已存在（重复导入）→ ERROR，保留先到者（拒绝隐式覆盖）
+        """
+        for item in items:
+            dep_key = dep_scope.get(item.name)
+            if dep_key is None:
+                self._diagnostics.append(
+                    Diagnostic(Severity.ERROR, 'template.import_not_found', {'template': item.name}, item.source)
+                )
+                continue
+            visible = item.alias or item.name
+            if visible in scope:
+                if visible in local_names:
+                    self._diagnostics.append(
+                        Diagnostic(Severity.ERROR, 'template.import_conflict_local', {'visible': visible}, item.source)
+                    )
+                else:
+                    self._diagnostics.append(
+                        Diagnostic(Severity.ERROR, 'template.import_duplicate', {'visible': visible}, item.source)
+                    )
+            else:
+                scope[visible] = dep_key
 
     def _load_imported_templates(self, doc: Document) -> Scope:
         """构建主文件 scope（含 schema.from_file 隐式导入）。"""
@@ -287,38 +308,7 @@ class SemanticAnalyzer:
                 loaded=loaded,
                 depth=0,
             )
-            for item in stmt.items:
-                dep_key = dep_scope.get(item.name)
-                if dep_key is None:
-                    self._diagnostics.append(
-                        Diagnostic(
-                            Severity.ERROR,
-                            f'导入文件中不存在模板 {item.name!r}',
-                            item.source,
-                        )
-                    )
-                    continue
-                visible = item.alias or item.name
-                if visible in root_scope:
-                    if visible in self._root_local_names:
-                        self._diagnostics.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                f'导入的模板 {visible!r} 与文件内定义冲突',
-                                item.source,
-                            )
-                        )
-                    else:
-                        self._diagnostics.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                f'可见名 {visible!r} 重复导入（同一 scope 内不允许重复可见名），后者被拒绝',
-                                item.source,
-                            )
-                        )
-                else:
-                    root_scope[visible] = dep_key
-
+            self._map_import_items(stmt.items, dep_scope, root_scope, self._root_local_names)
         # 主文件本地模板的 scope 登记（模板展开/约束校验按此解析名字）
         for key in self._templates:
             if self._template_files.get(key) == root_id:
@@ -338,9 +328,7 @@ class SemanticAnalyzer:
         if depth > MAX_IMPORT_DEPTH:
             self._diagnostics.append(
                 Diagnostic(
-                    Severity.ERROR,
-                    f'模板导入嵌套深度超过上限 {MAX_IMPORT_DEPTH}: {from_path}',
-                    source,
+                    Severity.ERROR, 'template.import_depth', {'max': MAX_IMPORT_DEPTH, 'path_src': from_path}, source
                 )
             )
             return {}
@@ -363,7 +351,9 @@ class SemanticAnalyzer:
         try:
             content_hash = file.content_hash()
         except OSError as e:
-            self._diagnostics.append(Diagnostic(Severity.ERROR, f'读取模板文件失败 {file.name}: {e}', source))
+            self._diagnostics.append(
+                Diagnostic(Severity.ERROR, 'template.read_failed', {'file': file.name, 'error': e}, source)
+            )
             return {}
 
         imported_doc = self._parse_document(file)
@@ -382,8 +372,8 @@ class SemanticAnalyzer:
                 self._diagnostics.append(
                     Diagnostic(
                         Severity.ERROR,
-                        f'模板 {s.name!r} 内容与 {existing_file} 中的定义相同，'
-                        '但来源文件不同，其导入依赖上下文可能不同',
+                        'template.same_content_diff_file',
+                        {'template': s.name, 'other': existing_file},
                         s.source,
                     )
                 )
@@ -405,37 +395,7 @@ class SemanticAnalyzer:
                 loaded=loaded,
                 depth=depth + 1,
             )
-            for item in s.items:
-                dep_key = dep_scope.get(item.name)
-                if dep_key is None:
-                    self._diagnostics.append(
-                        Diagnostic(
-                            Severity.ERROR,
-                            f'导入文件中不存在模板 {item.name!r}',
-                            item.source,
-                        )
-                    )
-                    continue
-                visible = item.alias or item.name
-                if visible in scope:
-                    if visible in local_names:
-                        self._diagnostics.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                f'导入的模板 {visible!r} 与文件内定义冲突',
-                                item.source,
-                            )
-                        )
-                    else:
-                        self._diagnostics.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                f'可见名 {visible!r} 重复导入（同一 scope 内不允许重复可见名），后者被拒绝',
-                                item.source,
-                            )
-                        )
-                else:
-                    scope[visible] = dep_key
+            self._map_import_items(s.items, dep_scope, scope, local_names)
 
         # 3) 非模板语句校验 + 模板 scope 登记
         for s in imported_doc.statements:
@@ -448,31 +408,14 @@ class SemanticAnalyzer:
                     pass
                 case _:
                     if file.name.endswith('.inft'):
-                        self._diagnostics.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                '.inft 文件只允许模板定义，发现其他语句',
-                                s.source,
-                            )
-                        )
+                        self._diagnostics.append(Diagnostic(Severity.ERROR, 'inft.not_allowed', {}, s.source))
 
         return scope
 
     def _parse_document(self, file: File) -> Document:
         """词法 + 语法分析一段源码（用于外部模板文件），诊断并入当前分析。"""
-        tokenize_collector = TokenizeErrorCollector()
-        parse_collector = ParseErrorCollector()
-        raw_tokens = RawTokenizer(
-            file=file,
-            error_collector=tokenize_collector,
-        )
-        tokens = FinalTokenizer(raw_tokens)
-        parser = Parser(tokens, error_collector=parse_collector)
-        doc = parser.parse()
-        for err in tokenize_collector:
-            self._diagnostics.append(Diagnostic.from_error(err))
-        for err in parse_collector:
-            self._diagnostics.append(Diagnostic.from_error(err))
+        doc, diagnostics = parse_source(file)
+        self._diagnostics.extend(diagnostics)
         return doc
 
     # ═══════════════════════════════════════════════════════
@@ -486,7 +429,7 @@ class SemanticAnalyzer:
         scope = schema_scope if self._schema.from_file and schema_scope is not None else self._root_scope
         key = scope.get(self._schema.template)
         if key is None:
-            raise SchemaError(f'未定义的 schema 模板 {self._schema.template!r}')
+            raise SchemaError('schema.undefined_template', {'template': self._schema.template})
         tpl = self._templates[key]
         return self._check_schema_object(root, tpl, self._schema.mode, self._template_scopes[key])
 
@@ -499,20 +442,10 @@ class SemanticAnalyzer:
         extra_names = [f.name for f in obj.fields if f.name not in declared]
         if extra_names:
             if mode == 'strict':
-                diags.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        f'顶层 schema 不允许额外字段: {extra_names}',
-                        None,
-                    )
-                )
+                diags.append(Diagnostic(Severity.ERROR, 'schema.extra_fields', {'fields': extra_names}, None))
             elif mode == 'lenient':
                 self._diagnostics.append(
-                    Diagnostic(
-                        Severity.WARNING,
-                        f'顶层 schema 存在额外字段（已保留）: {extra_names}',
-                        None,
-                    )
+                    Diagnostic(Severity.WARNING, 'schema.extra_fields_lenient', {'fields': extra_names}, None)
                 )
             else:  # strip
                 obj = StdObject(fields=[f for f in obj.fields if f.name in declared])
@@ -523,7 +456,8 @@ class SemanticAnalyzer:
                 diags.append(
                     Diagnostic(
                         Severity.ERROR,
-                        f'顶层 schema 缺少必填字段 {tf.name!r}（模板 {tpl.name}）',
+                        'schema.missing_required',
+                        {'field': tf.name, 'template': tpl.name},
                         None,
                         tf.name,
                     )
@@ -544,7 +478,7 @@ class SemanticAnalyzer:
                 diags.extend(result.diagnostics)
 
         if diags:
-            raise SchemaError('顶层 schema 校验失败: ' + '；'.join(d.message for d in diags))
+            raise SchemaError('schema.failed', {'detail': '；'.join(d.message for d in diags)})
         return obj
 
     # ═══════════════════════════════════════════════════════
@@ -570,17 +504,17 @@ class SemanticAnalyzer:
             executor: Any,
         ) -> ConstraintResult:
             if value is None:
-                return fail_result(f'{path}: 期望 {display}（模板约束），实际没有值', source, path)
+                return fail_result('template.expect_value', {'template': display}, source, path)
             if isinstance(value, StdLiteral):
                 if value.kind == 'null':
-                    return fail_result(
-                        f'{path}: 期望 {display}，实际 null（使用 {display}? 允许可空）',
-                        source,
-                        path,
-                    )
-                return fail_result(f'{path}: 期望 {display}（对象），实际 {describe(value)}', source, path)
+                    return fail_result('template.null_use_nullable', {'template': display}, source, path)
+                return fail_result(
+                    'template.expect_object', {'template': display, 'actual': describe(value)}, source, path
+                )
             if not isinstance(value, StdObject):
-                return fail_result(f'{path}: 期望 {display}（对象），实际 {describe(value)}', source, path)
+                return fail_result(
+                    'template.expect_object', {'template': display, 'actual': describe(value)}, source, path
+                )
 
             diags: list[Diagnostic] = []
             field_map = {f.name: f for f in value.fields}
@@ -594,7 +528,8 @@ class SemanticAnalyzer:
                         diags.append(
                             Diagnostic(
                                 Severity.ERROR,
-                                f'{child}: 模板 {display} 的必填字段 {tf.name!r} 缺失',
+                                'template.missing_field',
+                                {'template': display, 'field': tf.name},
                                 source,
                                 child,
                             )
@@ -613,7 +548,8 @@ class SemanticAnalyzer:
                         diags.append(
                             Diagnostic(
                                 Severity.ERROR,
-                                f'{child}: 模板 {display} 不允许额外字段 {f.name!r}',
+                                'template.extra_field',
+                                {'template': display, 'field': f.name},
                                 f.source or source,
                                 child,
                             )
@@ -673,13 +609,7 @@ class SemanticAnalyzer:
 
         # 2. 值缺失：设计文档未定义「裸 key」，noexist 需显式字面量
         if value is None:
-            self._diagnostics.append(
-                Diagnostic(
-                    Severity.ERROR,
-                    f'{path}: 字段缺少值（如需 noexist 请显式书写 = noexist）',
-                    field.source,
-                )
-            )
+            self._diagnostics.append(Diagnostic(Severity.ERROR, 'field.missing_value', {}, field.source, path))
             return StdField(name=field.name, value=None, source=field.source)
 
         # 3. 约束执行
@@ -705,11 +635,7 @@ class SemanticAnalyzer:
         try:
             if self._depth > MAX_NESTING_DEPTH:
                 self._diagnostics.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        f'{path}: 嵌套层级超过上限 {MAX_NESTING_DEPTH}',
-                        raw.source,
-                    )
+                    Diagnostic(Severity.ERROR, 'value.nesting_depth', {'max': MAX_NESTING_DEPTH}, raw.source, path)
                 )
                 return None
 
@@ -746,7 +672,9 @@ class SemanticAnalyzer:
                 ):
                     return self._expand_template_call(tn, pa, na, path, raw.source, scope)
                 case ErrorValue(message=m):
-                    self._diagnostics.append(Diagnostic(Severity.ERROR, f'{path}: {m}', raw.source))
+                    self._diagnostics.append(
+                        Diagnostic(Severity.ERROR, 'value.invalid', {'message': m}, raw.source, path)
+                    )
                     return None
             return None
         finally:
@@ -777,12 +705,7 @@ class SemanticAnalyzer:
     def _resolve_dollar(self, name: str, type_cast: str | None, path: str) -> StdValue:
         """解析 ``$name`` 引用，type_cast 为显式 as bool/int/float/str 转换。"""
         if name not in self._namespace:
-            self._diagnostics.append(
-                Diagnostic(
-                    Severity.WARNING,
-                    f'{path}: 未找到导入变量 ${name}',
-                )
-            )
+            self._diagnostics.append(Diagnostic(Severity.WARNING, 'dollar.undefined', {'name': name}, path=path))
             return StdLiteral(kind='null', value=None)
 
         raw = self._namespace[name]
@@ -807,7 +730,9 @@ class SemanticAnalyzer:
                     self._diagnostics.append(
                         Diagnostic(
                             Severity.WARNING,
-                            f'{path}: 无法将 ${name}={raw!r} 转为 int',
+                            'dollar.convert_failed',
+                            {'name': name, 'raw': raw, 'type': 'int'},
+                            path=path,
                         )
                     )
                     return StdLiteral(kind='int', value=0)
@@ -818,7 +743,9 @@ class SemanticAnalyzer:
                     self._diagnostics.append(
                         Diagnostic(
                             Severity.WARNING,
-                            f'{path}: 无法将 ${name}={raw!r} 转为 float',
+                            'dollar.convert_failed',
+                            {'name': name, 'raw': raw, 'type': 'float'},
+                            path=path,
                         )
                     )
                     return StdLiteral(kind='float', value=decimal.Decimal(0))
@@ -866,11 +793,7 @@ class SemanticAnalyzer:
         key = scope.get(template_name)
         if key is None:
             self._diagnostics.append(
-                Diagnostic(
-                    Severity.ERROR,
-                    f'{path}: 未定义的模板 {template_name!r}',
-                    source,
-                )
+                Diagnostic(Severity.ERROR, 'template.undefined', {'template': template_name}, source, path)
             )
             return StdObject()
         template = self._templates[key]
@@ -887,8 +810,10 @@ class SemanticAnalyzer:
                     self._diagnostics.append(
                         Diagnostic(
                             Severity.WARNING,
-                            f'{path}: 模板 {template_name!r} 字段 {rf.name!r} 同时以位置和命名参数提供',
+                            'template.arg_conflict',
+                            {'template': template_name, 'field': rf.name},
                             source,
+                            path,
                         )
                     )
                 else:
@@ -897,9 +822,10 @@ class SemanticAnalyzer:
                 self._diagnostics.append(
                     Diagnostic(
                         Severity.WARNING,
-                        f'{path}: 模板 {template_name!r} 只有 {len(required)} 个必填字段，'
-                        f'提供了 {len(positional_args)} 个位置参数',
+                        'template.too_many_positional',
+                        {'template': template_name, 'count': len(required), 'given': len(positional_args)},
                         source,
+                        path,
                     )
                 )
 
@@ -909,8 +835,10 @@ class SemanticAnalyzer:
                 self._diagnostics.append(
                     Diagnostic(
                         Severity.ERROR,
-                        f'{path}: 模板 {template_name!r} 的必填字段 {rf.name!r} 未提供',
+                        'template.missing_required',
+                        {'template': template_name, 'field': rf.name},
                         source,
+                        path,
                     )
                 )
 
@@ -981,7 +909,7 @@ class SemanticAnalyzer:
         无约束位置时回退到外层 source（字段/注释点）。
         """
         if spec.name == _INVALID_CONSTRAINT:
-            return fail_result(f'{path}: 无效的约束表达式', source, path)
+            return fail_result('constraint.invalid', {}, source, path)
         return self._registry.apply(spec, value, spec.source or source, path, self._apply_nested)
 
     def _apply_nested(
@@ -1011,7 +939,7 @@ class SemanticAnalyzer:
             case ConstraintLiteral():
                 return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
             case ErrorConstraint(message=m):
-                self._diagnostics.append(Diagnostic(Severity.ERROR, m, c.source))
+                self._diagnostics.append(Diagnostic(Severity.ERROR, 'error.generic', {'message': m}, c.source))
                 return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
         return ResolvedConstraint(name=_INVALID_CONSTRAINT)
 
@@ -1029,7 +957,7 @@ class SemanticAnalyzer:
             case ConstraintLiteral(value=lit):
                 return self._literal_python_value(lit)
             case ErrorConstraint(message=m):
-                self._diagnostics.append(Diagnostic(Severity.ERROR, m, c.source))
+                self._diagnostics.append(Diagnostic(Severity.ERROR, 'error.generic', {'message': m}, c.source))
                 return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
         return ResolvedConstraint(name=_INVALID_CONSTRAINT)
 
@@ -1063,5 +991,5 @@ class SemanticAnalyzer:
     # 诊断辅助
     # ═══════════════════════════════════════════════════════
 
-    def _report(self, severity: Severity, message: str, source: SourceRange | None) -> None:
-        self._diagnostics.append(Diagnostic(severity=severity, message=message, source=source))
+    def _report(self, severity: Severity, code: str, params: Mapping[str, Any], source: SourceRange | None) -> None:
+        self._diagnostics.append(Diagnostic(severity=severity, code=code, params=dict(params), source=source))

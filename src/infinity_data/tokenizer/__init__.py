@@ -5,7 +5,7 @@
 """
 
 from infinity_data.tokenizer.char_stream import CharStream, LineCounter
-from infinity_data.tokenizer.errors import TokenizeError, TokenizeErrorCollector
+from infinity_data.tokenizer.diagnostics import diag
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.tokenizer import RawTokenizer
 
@@ -14,6 +14,5 @@ __all__ = [
     'LineCounter',
     'FinalTokenizer',
     'RawTokenizer',
-    'TokenizeError',
-    'TokenizeErrorCollector',
+    'diag',
 ]

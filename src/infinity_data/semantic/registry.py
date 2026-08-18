@@ -15,14 +15,14 @@ from __future__ import annotations
 import ipaddress
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Protocol, cast
 from urllib.parse import urlparse
 
+from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.semantic.models import (
-    Diagnostic,
-    Severity,
     StdArray,
     StdField,
     StdLiteral,
@@ -88,12 +88,17 @@ def ok_result(coerced: StdValue | None = None) -> ConstraintResult:
     return ConstraintResult(ok=True, coerced_value=coerced)
 
 
-def fail_result(msg: str, source: SourceRange | None, path: str) -> ConstraintResult:
-    """构造失败结果。"""
+def fail_result(
+    code: str,
+    params: Mapping[str, Any],
+    source: SourceRange | None,
+    path: str,
+) -> ConstraintResult:
+    """构造结构化失败结果（code + params，message 由注册表渲染）。"""
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(severity=Severity.ERROR, message=msg, source=source, path=path),
+            Diagnostic(severity=Severity.ERROR, code=code, params=dict(params), source=source, path=path),
         ],
     )
 
@@ -268,15 +273,11 @@ class ConstraintRegistry:
         """按名称执行约束（含参数个数校验）。"""
         entry = self._entries.get(constraint.name)
         if entry is None:
-            return fail_result(f'{path}: 未知约束 {constraint.name!r}', source, path)
+            return fail_result('constraint.unknown', {'name': constraint.name}, source, path)
         n = len(constraint.args)
         if n < entry.min_args or (entry.max_args is not None and n > entry.max_args):
             expected = str(entry.min_args) if entry.max_args is None else f'{entry.min_args}~{entry.max_args}'
-            return fail_result(
-                f'{path}: 约束 {constraint.name}() 期望 {expected} 个参数，实际 {n} 个',
-                source,
-                path,
-            )
+            return fail_result('constraint.arg_count', {'name': constraint.name, 'expected': expected, 'given': n}, source, path)
         return entry.fn(value, source, path, constraint.args, executor)
 
     def _register_builtins(self) -> None:
@@ -337,7 +338,7 @@ def _check_object(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 object，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'object'}, source, path)
     return ok_result()
 
 
@@ -350,7 +351,7 @@ def _check_nullable(
 ) -> ConstraintResult:
     if isinstance(val, StdLiteral) and val.kind in ('null', 'noexist'):
         return ok_result()
-    return fail_result(f'{path}: 期望 noexist 或 null，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'noexist 或 null', 'actual': describe(val)}, source, path)
 
 
 def _check_int(
@@ -361,10 +362,10 @@ def _check_int(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 int，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'int'}, source, path)
     if isinstance(val, StdLiteral) and val.kind == 'int':
         return ok_result()
-    return fail_result(f'{path}: 期望 int，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'int', 'actual': describe(val)}, source, path)
 
 
 def _check_float(
@@ -375,14 +376,14 @@ def _check_float(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 float，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'float'}, source, path)
     if isinstance(val, StdLiteral) and val.kind == 'int':
         v = val.value
         if isinstance(v, int):
             return ok_result(StdLiteral(kind='float', value=Decimal(v)))
     if isinstance(val, StdLiteral) and val.kind == 'float':
         return ok_result()  # 含 NaN / ±Infinity
-    return fail_result(f'{path}: 期望 float，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'float', 'actual': describe(val)}, source, path)
 
 
 def _check_str(
@@ -393,10 +394,10 @@ def _check_str(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 str，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'str'}, source, path)
     if isinstance(val, StdLiteral) and val.kind == 'str':
         return ok_result()
-    return fail_result(f'{path}: 期望 str，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'str', 'actual': describe(val)}, source, path)
 
 
 def _check_bool(
@@ -407,10 +408,10 @@ def _check_bool(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 bool，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'bool'}, source, path)
     if isinstance(val, StdLiteral) and val.kind == 'bool':
         return ok_result()
-    return fail_result(f'{path}: 期望 bool，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'bool', 'actual': describe(val)}, source, path)
 
 
 def _check_list(
@@ -421,10 +422,10 @@ def _check_list(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 list，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'list'}, source, path)
     if isinstance(val, StdArray):
         return ok_result()
-    return fail_result(f'{path}: 期望 list，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'list', 'actual': describe(val)}, source, path)
 
 
 def _check_dict(
@@ -435,10 +436,10 @@ def _check_dict(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result(f'{path}: 期望 dict，实际没有值', source, path)
+        return fail_result('constraint.expect_value', {'expected': 'dict'}, source, path)
     if isinstance(val, StdObject):
         return ok_result()
-    return fail_result(f'{path}: 期望 dict，实际 {describe(val)}', source, path)
+    return fail_result('constraint.type_mismatch', {'expected': 'dict', 'actual': describe(val)}, source, path)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -455,19 +456,19 @@ def _check_range(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result(f'{path}: range 约束只适用于数值，实际 {describe(val)}', source, path)
+        return fail_result('constraint.numeric_only', {'constraint': 'range', 'actual': describe(val)}, source, path)
     if num.is_nan():
-        return fail_result(f'{path}: range 约束不适用于 NaN', source, path)
+        return fail_result('constraint.nan_not_allowed', {'constraint': 'range'}, source, path)
     lo = _as_decimal_arg(args[0]) if args[0] is not None else None
     hi = _as_decimal_arg(args[1]) if len(args) > 1 and args[1] is not None else None
     if args[0] is not None and lo is None:
-        return fail_result(f'{path}: range 参数必须是数值: {args[0]!r}', source, path)
+        return fail_result('constraint.range_arg', {'value': args[0]}, source, path)
     if len(args) > 1 and args[1] is not None and hi is None:
-        return fail_result(f'{path}: range 参数必须是数值: {args[1]!r}', source, path)
+        return fail_result('constraint.range_arg', {'value': args[1]}, source, path)
     if lo is not None and num < lo:
-        return fail_result(f'{path}: 值 {num} 小于下界 {lo}', source, path)
+        return fail_result('constraint.range_below', {'value': num, 'lo': lo}, source, path)
     if hi is not None and num > hi:
-        return fail_result(f'{path}: 值 {num} 大于上界 {hi}', source, path)
+        return fail_result('constraint.range_above', {'value': num, 'hi': hi}, source, path)
     return ok_result()
 
 
@@ -487,13 +488,13 @@ def _check_size(
     elif isinstance(val, StdObject):
         size_val = len(val.fields)
     if size_val is None:
-        return fail_result(f'{path}: size 约束适用于 str/list/dict，实际 {describe(val)}', source, path)
+        return fail_result('constraint.size_only', {'actual': describe(val)}, source, path)
     lo = _as_decimal_arg(args[0])
     hi = _as_decimal_arg(args[1]) if len(args) > 1 else None
     if lo is None or (len(args) > 1 and hi is None):
-        return fail_result(f'{path}: size 参数必须是整数', source, path)
+        return fail_result('constraint.size_arg', {}, source, path)
     if size_val < lo or (hi is not None and size_val > hi):
-        return fail_result(f'{path}: 大小 {size_val} 不在范围 [{lo}, {hi}] 内', source, path)
+        return fail_result('constraint.size_out', {'size': size_val, 'lo': lo, 'hi': hi}, source, path)
     return ok_result()
 
 
@@ -506,7 +507,7 @@ def _check_each(
 ) -> ConstraintResult:
     spec = _as_spec(args[0])
     if spec is None:
-        return fail_result(f'{path}: each() 需要一个约束参数', source, path)
+        return fail_result('constraint.each_need', {}, source, path)
     diags: list[Diagnostic] = []
     if isinstance(val, StdArray):
         for i, elem in enumerate(val.elements):
@@ -519,7 +520,7 @@ def _check_each(
             if not r.ok:
                 diags.extend(r.diagnostics)
     else:
-        return fail_result(f'{path}: each 约束适用于 list/dict，实际 {describe(val)}', source, path)
+        return fail_result('constraint.each_only', {'actual': describe(val)}, source, path)
     if diags:
         return ConstraintResult(ok=False, diagnostics=diags)
     return ok_result()
@@ -535,7 +536,7 @@ def _check_in(
     choices: list[Any] = cast(list[Any], args[0]) if len(args) == 1 and isinstance(args[0], list) else args
     if any(_std_equal(val, _as_std_value(c)) for c in choices):
         return ok_result()
-    return fail_result(f'{path}: 值 {describe(val)} 不在允许的值 {choices!r} 中', source, path)
+    return fail_result('constraint.in_not_in', {'value': describe(val), 'choices': choices}, source, path)
 
 
 def _check_ip(
@@ -547,12 +548,12 @@ def _check_ip(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: ip 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'ip'}, source, path)
     try:
         ipaddress.ip_address(s)
         return ok_result()
     except ValueError:
-        return fail_result(f'{path}: 无效的 IP 地址 {s!r}', source, path)
+        return fail_result('constraint.invalid_value', {'what': 'IP 地址', 'value': s}, source, path)
 
 
 def _check_ip4(
@@ -564,12 +565,12 @@ def _check_ip4(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: ip4 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'ip4'}, source, path)
     try:
         ipaddress.IPv4Address(s)
         return ok_result()
     except ValueError:
-        return fail_result(f'{path}: 无效的 IPv4 地址 {s!r}', source, path)
+        return fail_result('constraint.invalid_value', {'what': 'IPv4 地址', 'value': s}, source, path)
 
 
 def _check_ip6(
@@ -581,12 +582,12 @@ def _check_ip6(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: ip6 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'ip6'}, source, path)
     try:
         ipaddress.IPv6Address(s)
         return ok_result()
     except ValueError:
-        return fail_result(f'{path}: 无效的 IPv6 地址 {s!r}', source, path)
+        return fail_result('constraint.invalid_value', {'what': 'IPv6 地址', 'value': s}, source, path)
 
 
 def _check_regex(
@@ -598,14 +599,14 @@ def _check_regex(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: regex 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'regex'}, source, path)
     pattern = str(args[0])
     try:
         if re.fullmatch(pattern, s):
             return ok_result()
-        return fail_result(f'{path}: 值 {s!r} 不匹配正则 {pattern!r}', source, path)
+        return fail_result('constraint.regex_no_match', {'value': s, 'pattern': pattern}, source, path)
     except re.error as e:
-        return fail_result(f'{path}: 无效的正则表达式 {pattern!r}: {e}', source, path)
+        return fail_result('constraint.regex_invalid', {'pattern': pattern, 'error': e}, source, path)
 
 
 def _check_email(
@@ -617,10 +618,10 @@ def _check_email(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: email 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'email'}, source, path)
     if re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', s):
         return ok_result()
-    return fail_result(f'{path}: 无效的邮箱地址 {s!r}', source, path)
+    return fail_result('constraint.invalid_value', {'what': '邮箱地址', 'value': s}, source, path)
 
 
 def _check_url(
@@ -632,11 +633,11 @@ def _check_url(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: url 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'url'}, source, path)
     p = urlparse(s)
     if p.scheme and p.netloc:
         return ok_result()
-    return fail_result(f'{path}: 无效的 URL {s!r}', source, path)
+    return fail_result('constraint.invalid_value', {'what': 'URL', 'value': s}, source, path)
 
 
 def _check_uuid(
@@ -648,12 +649,12 @@ def _check_uuid(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: uuid 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'uuid'}, source, path)
     try:
         uuid.UUID(s)
         return ok_result()
     except ValueError:
-        return fail_result(f'{path}: 无效的 UUID {s!r}', source, path)
+        return fail_result('constraint.invalid_value', {'what': 'UUID', 'value': s}, source, path)
 
 
 _HOSTNAME_RE = re.compile(
@@ -671,10 +672,10 @@ def _check_hostname(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result(f'{path}: hostname 约束只适用于字符串', source, path)
+        return fail_result('constraint.string_only', {'constraint': 'hostname'}, source, path)
     if _HOSTNAME_RE.fullmatch(s):
         return ok_result()
-    return fail_result(f'{path}: 无效的主机名 {s!r}', source, path)
+    return fail_result('constraint.invalid_value', {'what': '主机名', 'value': s}, source, path)
 
 
 def _check_positive(
@@ -686,10 +687,10 @@ def _check_positive(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result(f'{path}: positive 约束只适用于数值', source, path)
+        return fail_result('constraint.numeric_only', {'constraint': 'positive'}, source, path)
     if num.is_nan():
-        return fail_result(f'{path}: positive 约束不适用于 NaN', source, path)
-    return ok_result() if num > 0 else fail_result(f'{path}: 值 {num} 不是正数', source, path)
+        return fail_result('constraint.nan_not_allowed', {'constraint': 'positive'}, source, path)
+    return ok_result() if num > 0 else fail_result('constraint.positive_fail', {'value': num}, source, path)
 
 
 def _check_negative(
@@ -701,10 +702,10 @@ def _check_negative(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result(f'{path}: negative 约束只适用于数值', source, path)
+        return fail_result('constraint.numeric_only', {'constraint': 'negative'}, source, path)
     if num.is_nan():
-        return fail_result(f'{path}: negative 约束不适用于 NaN', source, path)
-    return ok_result() if num < 0 else fail_result(f'{path}: 值 {num} 不是负数', source, path)
+        return fail_result('constraint.nan_not_allowed', {'constraint': 'negative'}, source, path)
+    return ok_result() if num < 0 else fail_result('constraint.negative_fail', {'value': num}, source, path)
 
 
 def _check_nonnegative(
@@ -716,10 +717,10 @@ def _check_nonnegative(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result(f'{path}: nonnegative 约束只适用于数值', source, path)
+        return fail_result('constraint.numeric_only', {'constraint': 'nonnegative'}, source, path)
     if num.is_nan():
-        return fail_result(f'{path}: nonnegative 约束不适用于 NaN', source, path)
-    return ok_result() if num >= 0 else fail_result(f'{path}: 值 {num} 是负数', source, path)
+        return fail_result('constraint.nan_not_allowed', {'constraint': 'nonnegative'}, source, path)
+    return ok_result() if num >= 0 else fail_result('constraint.nonnegative_fail', {'value': num}, source, path)
 
 
 def _check_eq(
@@ -731,7 +732,7 @@ def _check_eq(
 ) -> ConstraintResult:
     if _std_equal(val, _as_std_value(args[0])):
         return ok_result()
-    return fail_result(f'{path}: 值 {describe(val)} 不等于 {args[0]!r}', source, path)
+    return fail_result('constraint.eq_mismatch', {'value': describe(val), 'expected': args[0]}, source, path)
 
 
 def _check_unique(
@@ -742,11 +743,11 @@ def _check_unique(
     executor: Executor,
 ) -> ConstraintResult:
     if not isinstance(val, StdArray):
-        return fail_result(f'{path}: unique 约束只适用于 list', source, path)
+        return fail_result('constraint.unique_only', {}, source, path)
     for i in range(len(val.elements)):
         for j in range(i):
             if _std_equal(val.elements[i], val.elements[j]):
-                return fail_result(f'{path}: 元素 {describe(val.elements[i])} 重复', source, path)
+                return fail_result('constraint.unique_dup', {'value': describe(val.elements[i])}, source, path)
     return ok_result()
 
 
@@ -763,11 +764,11 @@ def _check_has(
     executor: Executor,
 ) -> ConstraintResult:
     if not isinstance(val, StdObject):
-        return fail_result(f'{path}: has 约束只适用于 dict', source, path)
+        return fail_result('constraint.has_only', {}, source, path)
     key = _spec_name(args[0])
     if val.get(key) is not None:
         return ok_result()
-    return fail_result(f'{path}: 缺少键 {key!r}', source, path)
+    return fail_result('constraint.has_missing', {'key': key}, source, path)
 
 
 def _check_field(
@@ -778,14 +779,14 @@ def _check_field(
     executor: Executor,
 ) -> ConstraintResult:
     if not isinstance(val, StdObject):
-        return fail_result(f'{path}: field 约束只适用于 dict', source, path)
+        return fail_result('constraint.field_only', {}, source, path)
     name = _spec_name(args[0])
     spec = _as_spec(args[1])
     if spec is None:
-        return fail_result(f'{path}: field() 的第二个参数必须是约束', source, path)
+        return fail_result('constraint.field_need', {}, source, path)
     f = val.get(name)
     if f is None:
-        return fail_result(f'{path}: 字段 {name!r} 不存在', source, path)
+        return fail_result('constraint.field_missing', {'field': name}, source, path)
     return executor(spec, f.value, source, f'{path}.{name}')
 
 
@@ -803,11 +804,11 @@ def _check_not(
 ) -> ConstraintResult:
     spec = _as_spec(args[0])
     if spec is None:
-        return fail_result(f'{path}: not() 需要一个约束参数', source, path)
+        return fail_result('constraint.not_need', {}, source, path)
     inner = executor(spec, val, source, path)
     if not inner.ok:
         return ok_result()  # 内部不满足 → not 满足
-    return fail_result(f'{path}: not 约束失败（内部约束意外满足）', source, path)
+    return fail_result('constraint.not_fail', {}, source, path)
 
 
 def _check_any(
@@ -829,7 +830,7 @@ def _check_any(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(Severity.ERROR, f'{path}: any 约束失败（所有子约束都不满足）', source, path),
+            Diagnostic(Severity.ERROR, 'constraint.any_fail', {}, source, path),
             *diags,
         ],
     )
@@ -859,15 +860,11 @@ def _check_one(
         return ConstraintResult(
             ok=False,
             diagnostics=[
-                Diagnostic(Severity.ERROR, f'{path}: one 约束失败（没有子约束被满足）', source, path),
+                Diagnostic(Severity.ERROR, 'constraint.one_none', {}, source, path),
                 *diags,
             ],
         )
-    return fail_result(
-        f'{path}: one 约束失败（{len(satisfied)} 个子约束被满足: {satisfied}）',
-        source,
-        path,
-    )
+    return fail_result('constraint.one_many', {'count': len(satisfied), 'names': satisfied}, source, path)
 
 
 def _check_all(
@@ -890,7 +887,7 @@ def _check_all(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(Severity.ERROR, f'{path}: all 约束失败', source, path),
+            Diagnostic(Severity.ERROR, 'constraint.all_fail', {}, source, path),
             *diags,
         ],
     )
@@ -906,7 +903,7 @@ def _check_when(
     cond = _as_spec(args[0])
     req = _as_spec(args[1])
     if cond is None or req is None:
-        return fail_result(f'{path}: when() 需要两个约束参数', source, path)
+        return fail_result('constraint.when_need', {}, source, path)
     if not executor(cond, val, source, path).ok:
         return ok_result()  # 条件不满足 → 约束满足
     return executor(req, val, source, path)

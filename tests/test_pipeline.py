@@ -75,7 +75,7 @@ def test_bare_key_is_rejected() -> None:
     """裸 key（无值字段）不属于设计文档定义的语法，应报错。"""
     result = compile_source('feature_flag\ndebug = true\n')
     assert result.has_errors
-    assert any('缺少值' in d.message for d in result.diagnostics)
+    assert any(d.code == 'field.missing_value' for d in result.diagnostics)
     # 其余字段不受影响
     assert result.value == {'debug': True}
 
@@ -151,7 +151,7 @@ def test_template_required_field_missing() -> None:
 db Database()
 """)
     assert result.has_errors
-    assert any('name' in d.message and '未提供' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.missing_required' and d.params.get('field') == 'name' for d in result.diagnostics)
 
 
 def test_template_positional_and_named_args() -> None:
@@ -173,7 +173,7 @@ def test_template_field_constraint_violation() -> None:
 s Server(port=200)
 """)
     assert result.has_errors
-    assert any('range' in d.message or '下界' in d.message or '上界' in d.message for d in result.diagnostics)
+    assert any(d.code in ('constraint.range_below', 'constraint.range_above') for d in result.diagnostics)
 
 
 def test_template_level_constraint() -> None:
@@ -187,7 +187,7 @@ bad Server(port=443, tls=false)
 good Server(port=80, tls=false)
 """)
     assert result.has_errors
-    assert any('tls' in d.message for d in result.diagnostics)
+    assert any(d.code == 'constraint.eq_mismatch' and 'tls' in d.path for d in result.diagnostics)
 
 
 def test_template_level_constraint_trailing_comma() -> None:
@@ -201,7 +201,7 @@ def test_template_level_constraint_trailing_comma() -> None:
 bad Server(port=443, tls=false)
 """)
     assert result.has_errors
-    assert any('tls' in d.message for d in result.diagnostics)
+    assert any(d.code == 'constraint.eq_mismatch' and 'tls' in d.path for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -220,7 +220,7 @@ server {
 }
 """)
     assert result.has_errors
-    assert any('tls' in d.message for d in result.diagnostics)
+    assert any(d.code == 'constraint.field_missing' and d.params.get('field') == 'tls' for d in result.diagnostics)
 
 
 def test_dict_literal_structure_constraint_pass() -> None:
@@ -247,7 +247,7 @@ def test_dict_literal_structure_constraint_in_template_default() -> None:
 a App()
 """)
     assert result.has_errors
-    assert any('tls' in d.message for d in result.diagnostics)
+    assert any(d.code == 'constraint.field_missing' and d.params.get('field') == 'tls' for d in result.diagnostics)
 
 
 def test_top_level_structure_constraint_violation() -> None:
@@ -258,7 +258,7 @@ tls = false
 : <when(field(mode, eq("prod")), field(tls, eq(true)))>
 """)
     assert result.has_errors
-    assert any('tls' in d.message for d in result.diagnostics)
+    assert any(d.code == 'constraint.eq_mismatch' and 'tls' in d.path for d in result.diagnostics)
 
 
 def test_top_level_structure_constraint_pass() -> None:
@@ -280,7 +280,8 @@ port = 443
 : <when(field(port, eq(443)), field(tls, eq(true)))>
 """)
     assert result.has_errors
-    assert any('tls' in d.message for d in result.diagnostics)
+    # tls 未定义 → field(tls, eq(true)) 触发 field_missing
+    assert any(d.code == 'constraint.field_missing' and d.params.get('field') == 'tls' for d in result.diagnostics)
 
 
 def test_dict_structure_constraint_with_template_name() -> None:
@@ -316,7 +317,7 @@ def test_template_as_constraint_extra_field_rejected() -> None:
 hand: Server = { host = "x", extra = 1 }
 """)
     assert result.has_errors
-    assert any('额外字段' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.extra_field' for d in result.diagnostics)
 
 
 def test_template_as_constraint_allow_extra() -> None:
@@ -332,7 +333,7 @@ hand: Server = { host = "x", extra = 1 }
 def test_undefined_template() -> None:
     result = compile_source('x = DoesNotExist()\n')
     assert result.has_errors
-    assert any('未定义的模板' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.undefined' for d in result.diagnostics)
 
 
 def test_required_before_optional_rule() -> None:
@@ -343,7 +344,7 @@ def test_required_before_optional_rule() -> None:
 }
 """)
     assert result.has_errors
-    assert any('可选字段' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.required_order' for d in result.diagnostics)
 
 
 def test_template_shadowing_builtin_type_is_error() -> None:
@@ -355,10 +356,10 @@ def test_template_shadowing_builtin_type_is_error() -> None:
 a: int = 10
 """)
     assert result.has_errors
-    assert any('内置约束' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.shadows_builtin' for d in result.diagnostics)
     # 内置 int 保持可用：a: int = 10 通过，且无"期望 int（对象）"类错误
     assert result.value == {'a': 10}
-    assert not any('期望 int' in d.message for d in result.diagnostics)
+    assert not any(d.code == 'template.expect_object' for d in result.diagnostics)
 
 
 def test_template_shadowing_builtin_constraint_is_error() -> None:
@@ -371,9 +372,9 @@ a: <range(1, 100)> = 42
 b: <range(1, 100)> = 200
 """)
     assert result.has_errors
-    assert any('内置约束' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.shadows_builtin' for d in result.diagnostics)
     # range 仍为内置：200 超出上界报错
-    assert any('上界' in d.message for d in result.diagnostics)
+    assert any(d.code == 'constraint.range_above' for d in result.diagnostics)
 
 
 def test_template_duplicate_definition_is_error() -> None:
@@ -388,7 +389,7 @@ def test_template_duplicate_definition_is_error() -> None:
 s = Server()
 """)
     assert result.has_errors
-    assert any('重复定义' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.duplicate' for d in result.diagnostics)
     # 首次定义被保留：Server 只有 port 字段
     assert result.value == {'s': {'port': 80}}
 
@@ -405,9 +406,9 @@ def test_duplicate_template_still_validates_internals() -> None:
 }
 """)
     assert result.has_errors
-    assert any('重复定义' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.duplicate' for d in result.diagnostics)
     # 第二个模板的内部错误也报了（必填字段出现在可选字段之后）
-    assert any('可选字段' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.required_order' for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -464,7 +465,7 @@ def test_bang_non_import_keyword_is_tokenize_error() -> None:
     """! 后跟非 env/file/from 是词法错误（语言不允许单独 !），其余字段不受影响。"""
     result = compile_source('a = 1\n!bad\nb = 2\n')
     assert result.has_errors
-    assert any('!' in d.message and 'env/file/from' in d.message for d in result.diagnostics)
+    assert any(d.code == 'tokenize.invalid_bang' for d in result.diagnostics)
     assert result.value == {'a': 1, 'b': 2}
 
 

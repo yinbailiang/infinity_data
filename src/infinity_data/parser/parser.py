@@ -3,13 +3,9 @@
 from collections.abc import Iterable
 from typing import TypeVar
 
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.ll1_stream import NoNextType
-from infinity_data.parser.errors import (
-    EmptyTokenListError,
-    ParseErrorCollector,
-    TemplateArgOrderError,
-    UnexpectedTokenError,
-)
+from infinity_data.parser.diagnostics import diag
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
@@ -80,13 +76,13 @@ class Parser:
     def __init__(
         self,
         source: Iterable[Token],
-        error_collector: ParseErrorCollector | None = None,
+        error_collector: DiagnosticCollector | None = None,
     ) -> None:
-        self._errors = error_collector if error_collector is not None else ParseErrorCollector()
+        self._errors = error_collector if error_collector is not None else DiagnosticCollector()
         self._stream: TokenStream = TokenStream(source, self._errors)
 
     @property
-    def error_collector(self) -> ParseErrorCollector:
+    def error_collector(self) -> DiagnosticCollector:
         return self._errors
 
     # ═══════════════════════════════════════════════════════
@@ -97,7 +93,7 @@ class Parser:
         # 懒初始化：预读第一个 token
         first_tok = self._stream.peek()
         if isinstance(first_tok, NoNextType) or self._stream.eof():
-            self._errors.add(EmptyTokenListError(source=SourceRange.empty()))
+            self._errors.add(diag('parse.empty_token_list', {}, SourceRange.empty()))
             return Document(source=SourceRange.empty())
         doc = Document(source=first_tok.raw.source)
         while True:
@@ -170,19 +166,11 @@ class Parser:
         tok = self._stream.peek()
         if isinstance(tok, NoNextType):
             self._errors.add(
-                UnexpectedTokenError(
-                    source=self._stream.span_from(None),
-                    expected=f'关键字 {name!r}',
-                    actual='EOF',
-                )
+                diag('parse.unexpected_token', {'expected': f'关键字 {name!r}', 'actual': 'EOF'}, self._stream.span_from(None))
             )
             return
         self._errors.add(
-            UnexpectedTokenError(
-                source=tok.raw.source,
-                expected=f'关键字 {name!r}',
-                actual=tok.raw.type.name,
-            )
+            diag('parse.unexpected_token', {'expected': f'关键字 {name!r}', 'actual': tok.raw.type.name}, tok.raw.source)
         )
         self._stream.advance()
 
@@ -744,7 +732,7 @@ class Parser:
 
             # 分支 2：其他 token → 一定是位置参数
             if saw_named:
-                self._errors.add(TemplateArgOrderError(source=self._stream.single_span(name_tok)))
+                self._errors.add(diag('parse.template_arg_order', {}, self._stream.single_span(name_tok)))
 
             positional.append(self._parse_value())
             self._stream.skip_separators()

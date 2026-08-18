@@ -197,7 +197,7 @@ x: <dict, when(field(mode, eq("prod")), field(tls, eq(true)))> = {
 def test_unknown_constraint() -> None:
     result = compile_source('x: not_a_constraint = 1\n')
     assert result.has_errors
-    assert any('未知约束' in m for m in errors_of(result))
+    assert any(d.code == 'constraint.unknown' for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════
@@ -208,13 +208,13 @@ def test_unknown_constraint() -> None:
 def test_nan_with_range_does_not_crash() -> None:
     result = compile_source('x: <float, range(1, 100)> = nan\n')
     assert result.has_errors
-    assert any('NaN' in m for m in errors_of(result))
+    assert any(d.code == 'constraint.nan_not_allowed' for d in result.diagnostics)
 
 
 def test_nan_with_sign_constraints_does_not_crash() -> None:
     result = compile_source('a: positive = nan\nb: negative = nan\nc: nonnegative = nan\n')
     assert result.has_errors
-    assert any('NaN' in m for m in errors_of(result))
+    assert any(d.code == 'constraint.nan_not_allowed' for d in result.diagnostics)
 
 
 def test_nan_with_eq_does_not_crash() -> None:
@@ -267,7 +267,7 @@ def test_template_constraint_required_field_missing() -> None:
 db: Database = { host = "h" }
 """)
     assert result.has_errors
-    assert any('缺失' in d.message for d in result.diagnostics)
+    assert any(d.code == 'template.missing_field' for d in result.diagnostics)
 
 
 def test_template_constraint_null_requires_nullable() -> None:

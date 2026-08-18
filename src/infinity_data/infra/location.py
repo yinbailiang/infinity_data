@@ -7,7 +7,18 @@ from pathlib import Path
 
 from infinity_data.infra.file import File
 
-__all__ = ['SourceInfo', 'SourceRange']
+__all__ = ['SourceInfo', 'SourceRange', 'format_location']
+
+
+def format_location(source: SourceRange | None) -> str:
+    """格式化源码位置 ``file:line:col``（无位置时为 ``<unknown>``）。
+
+    :class:`Diagnostic` 与沙盒异常共用，消除重复的格式化逻辑。
+    """
+    if source is None:
+        return '<unknown>'
+    s = source.start
+    return f'{source.file.name}:{s.line}:{s.col}'
 
 
 class _UnknownFile(File):
