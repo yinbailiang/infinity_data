@@ -59,6 +59,7 @@ class ImportResolver:
         elif env is not None:
             config = SandboxConfig(
                 env={**sandbox.config.env, **dict(env)},
+                allow_env=sandbox.config.allow_env,
                 allow_files=sandbox.config.allow_files,
                 allow_templates=sandbox.config.allow_templates,
                 strict=sandbox.config.strict,
@@ -84,6 +85,23 @@ class ImportResolver:
                 self._resolve_file(stmt, namespace, report)
         return namespace
 
+    def _bind(
+        self,
+        namespace: dict[str, Any],
+        name: str,
+        value: Any,
+        report: ReportFn,
+        source: SourceRange | None,
+    ) -> None:
+        """绑定 ``$`` 命名空间条目；重复 alias → ERROR 并拒绝覆盖（保留先到者）。
+
+        与模板 scope 一致：``$`` 命名空间内不允许隐式的"后者覆盖前者"。
+        """
+        if name in namespace:
+            report(Severity.ERROR, f'导入别名 {name!r} 重复绑定（$ 命名空间内不允许重复），后者被拒绝', source)
+            return
+        namespace[name] = value
+
     # ── 各类导入 ──────────────────────────────────────
 
     def _resolve_env(
@@ -92,14 +110,13 @@ class ImportResolver:
         namespace: dict[str, Any],
         report: ReportFn,
     ) -> None:
-        """!env import NAME [as NEW_NAME]"""
+        """!env import NAME [as NEW_NAME]
+
+        未授权环境变量**总是失败**（无论 strict）：Sandbox.getenv 直接抛
+        :class:`SandboxError`，不会退化为空字符串注入。
+        """
         name = stmt.alias or stmt.name
-        value = self._sandbox.getenv(stmt.name, source=stmt.source)
-        if value is None:
-            report(Severity.WARNING, f'环境变量 {stmt.name!r} 未在沙盒授权，已忽略', stmt.source)
-            namespace[name] = ''
-            return
-        namespace[name] = value
+        self._bind(namespace, name, self._sandbox.getenv(stmt.name, source=stmt.source), report, stmt.source)
 
     def _resolve_file(
         self,
@@ -130,7 +147,7 @@ class ImportResolver:
             except (KeyError, IndexError, TypeError):
                 report(Severity.WARNING, f'无法解析导入路径: {file.name}', item.source)
                 continue
-            namespace[item.alias] = value
+            self._bind(namespace, item.alias, value, report, item.source)
 
     # ── 模板导入路径解析（!from 由 SemanticAnalyzer 使用）──
 

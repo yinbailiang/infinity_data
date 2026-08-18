@@ -346,6 +346,70 @@ def test_required_before_optional_rule() -> None:
     assert any('可选字段' in d.message for d in result.diagnostics)
 
 
+def test_template_shadowing_builtin_type_is_error() -> None:
+    """~int 与内置类型约束同名 → ERROR，且内置 int 不被遮蔽。"""
+    result = compile_source("""
+~int {
+    v: str = "tpl"
+}
+a: int = 10
+""")
+    assert result.has_errors
+    assert any('内置约束' in d.message for d in result.diagnostics)
+    # 内置 int 保持可用：a: int = 10 通过，且无"期望 int（对象）"类错误
+    assert result.value == {'a': 10}
+    assert not any('期望 int' in d.message for d in result.diagnostics)
+
+
+def test_template_shadowing_builtin_constraint_is_error() -> None:
+    """~range 与内置约束同名 → ERROR，range(1, 100) 仍按内置语义执行。"""
+    result = compile_source("""
+~range {
+    lo: int = 1
+}
+a: <range(1, 100)> = 42
+b: <range(1, 100)> = 200
+""")
+    assert result.has_errors
+    assert any('内置约束' in d.message for d in result.diagnostics)
+    # range 仍为内置：200 超出上界报错
+    assert any('上界' in d.message for d in result.diagnostics)
+
+
+def test_template_duplicate_definition_is_error() -> None:
+    """同文件同名模板重复定义 → ERROR，保留首次定义（拒绝隐式覆盖）。"""
+    result = compile_source("""
+~Server {
+    port: int = 80
+}
+~Server {
+    host: str = "x"
+}
+s = Server()
+""")
+    assert result.has_errors
+    assert any('重复定义' in d.message for d in result.diagnostics)
+    # 首次定义被保留：Server 只有 port 字段
+    assert result.value == {'s': {'port': 80}}
+
+
+def test_duplicate_template_still_validates_internals() -> None:
+    """重复定义的模板仍校验内部（必填排序），一次暴露所有错误。"""
+    result = compile_source("""
+~Server {
+    port: int = 80
+}
+~Server {
+    a: int = 1
+    b: int
+}
+""")
+    assert result.has_errors
+    assert any('重复定义' in d.message for d in result.diagnostics)
+    # 第二个模板的内部错误也报了（必填字段出现在可选字段之后）
+    assert any('可选字段' in d.message for d in result.diagnostics)
+
+
 # ═══════════════════════════════════════════════════════════
 # 导入
 # ═══════════════════════════════════════════════════════════

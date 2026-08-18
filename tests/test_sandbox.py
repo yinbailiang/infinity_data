@@ -68,12 +68,60 @@ def test_env_param_is_convenience_authorization(tmp_path: Path) -> None:
     assert result.value == {'user': 'alice'}
 
 
-def test_non_strict_sandbox_warns_instead_of_raise(tmp_path: Path) -> None:
+def test_env_authorized_read_from_os(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """allow_env 授权从真实 OS 环境实时读取（非注入快照）。"""
+    monkeypatch.setenv('INF_DEMO_KEY', 'from-os')
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import INF_DEMO_KEY\nv = $INF_DEMO_KEY\n')
+    result = load(f, sandbox=SandboxConfig(allow_env=['INF_DEMO_KEY']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'v': 'from-os'}
+
+
+def test_env_authorized_but_not_set_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """已授权但进程未设置 → 失败（不注入空值）。"""
+    monkeypatch.delenv('INF_NOT_SET', raising=False)
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import INF_NOT_SET\nv = $INF_NOT_SET\n')
+    with pytest.raises(SandboxError):
+        load(f, sandbox=SandboxConfig(allow_env=['INF_NOT_SET']))
+
+
+def test_env_injection_takes_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """注入值（env）优先于 allow_env 的真实读取。"""
+    monkeypatch.setenv('INF_DUP', 'from-os')
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import INF_DUP\nv = $INF_DUP\n')
+    result = load(f, sandbox=SandboxConfig(env={'INF_DUP': 'injected'}, allow_env=['INF_DUP']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'v': 'injected'}
+
+
+def test_full_access_reads_live_os_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """full_access 授权全部环境变量，值实时来自 OS（非构造时快照）。"""
+    monkeypatch.setenv('INF_LIVE', 'live-value')
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import INF_LIVE\nv = $INF_LIVE\n')
+    result = load(f, sandbox=SandboxConfig.full_access())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'v': 'live-value'}
+
+
+def test_allow_env_not_authorized_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """allow_env 白名单外的变量仍失败。"""
+    monkeypatch.setenv('INF_OUTSIDE', 'secret')
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import INF_OUTSIDE\nv = $INF_OUTSIDE\n')
+    with pytest.raises(SandboxError):
+        load(f, sandbox=SandboxConfig(allow_env=['INF_OTHER']))
+
+
+def test_non_strict_env_import_still_fails(tmp_path: Path) -> None:
+    """env 未授权总是失败：非 strict 也不例外（不静默退化为空串）。"""
     f = tmp_path / 'app.infd'
     _write(f, '!env import USER\nuser = $USER\n')
-    result = load(f, sandbox=SandboxConfig(strict=False))
-    assert not result.has_errors
-    assert any(d.severity is Severity.WARNING for d in result.diagnostics)
+    with pytest.raises(SandboxError):
+        load(f, sandbox=SandboxConfig(strict=False))
 
 
 def test_file_import_unauthorized_raises(tmp_path: Path) -> None:
@@ -85,6 +133,65 @@ def test_file_import_unauthorized_raises(tmp_path: Path) -> None:
         load(f, sandbox=SandboxConfig(allow_files=['./other/*.json']))
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert result.value == {'value': 42}
+
+
+# ═══════════════════════════════════════════════════════
+# glob 白名单匹配
+# ═══════════════════════════════════════════════════════
+
+
+def test_glob_double_star_matches_nested(tmp_path: Path) -> None:
+    """** 跨任意深度匹配嵌套文件。"""
+    data = tmp_path / 'configs' / 'dev' / 'data.json'
+    _write(data, '{"key": 42}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['**/*.json']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'value': 42}
+
+
+def test_glob_double_star_matches_root_level(tmp_path: Path) -> None:
+    """** 匹配零段：**/*.json 也能命中根级文件。"""
+    data = tmp_path / 'data.json'
+    _write(data, '{"key": 7}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "data.json" import .key as k\nvalue = $k\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['**/*.json']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'value': 7}
+
+
+def test_glob_dir_double_star_matches_nested(tmp_path: Path) -> None:
+    """configs/** 匹配其下任意深度文件。"""
+    data = tmp_path / 'configs' / 'dev' / 'data.json'
+    _write(data, '{"key": 1}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['configs/**']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'value': 1}
+
+
+def test_glob_single_star_does_not_cross_separator(tmp_path: Path) -> None:
+    """* 不跨目录分隔符：configs/*.json 不匹配嵌套文件。"""
+    data = tmp_path / 'configs' / 'dev' / 'data.json'
+    _write(data, '{"key": 1}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
+    with pytest.raises(SandboxError):
+        load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
+
+
+def test_glob_single_star_matches_one_level(tmp_path: Path) -> None:
+    """* 匹配一层路径：configs/*.json 命中 configs/data.json。"""
+    data = tmp_path / 'configs' / 'data.json'
+    _write(data, '{"key": 5}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "configs/data.json" import .key as k\nvalue = $k\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'value': 5}
 
 
 def test_check_does_not_raise(tmp_path: Path) -> None:
@@ -108,6 +215,62 @@ def test_template_import_from_inft(tmp_path: Path) -> None:
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'val': {'name': 'y'}}
+
+
+def test_imported_template_shadowing_builtin_is_error(tmp_path: Path) -> None:
+    """导入文件中的 ~str 与内置约束同名 → ERROR，内置 str 不被遮蔽。"""
+    tpl = tmp_path / 'bad.inft'
+    _write(tpl, '~str {\n    v: str = "x"\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "bad.inft" import str\ns: str = "ok"\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert result.has_errors
+    assert any('内置约束' in d.message for d in result.diagnostics)
+    # 内置 str 保持可用
+    assert result.value == {'s': 'ok'}
+
+
+def test_duplicate_import_visible_name_is_error(tmp_path: Path) -> None:
+    """两个导入映射到同一可见名 → ERROR，保留首个映射（拒绝隐式覆盖）。"""
+    _write(tmp_path / 'a.inft', '~Server {\n    a: int = 1\n}\n')
+    _write(tmp_path / 'b.inft', '~Server {\n    b: int = 2\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!from "a.inft" import Server\n!from "b.inft" import Server\ns = Server()\n',
+    )
+    result = load(f, sandbox=SandboxConfig.development())
+    assert result.has_errors
+    assert any('重复导入' in d.message for d in result.diagnostics)
+    # 首个可见名映射被保留（a.inft 的 Server）
+    assert result.value == {'s': {'a': 1}}
+
+
+def test_duplicate_env_alias_is_error(tmp_path: Path) -> None:
+    """$ 命名空间重复 env alias → ERROR，保留先到者。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import USER\n!env import HOME as USER\nuser = $USER\n')
+    result = load(f, sandbox=SandboxConfig(env={'USER': 'alice', 'HOME': '/home/alice'}))
+    assert result.has_errors
+    assert any('重复绑定' in d.message for d in result.diagnostics)
+    # 先到者生效：$USER = alice
+    assert result.value == {'user': 'alice'}
+
+
+def test_duplicate_alias_env_and_file_is_error(tmp_path: Path) -> None:
+    """env 与 file 绑定同一 alias → ERROR，保留先到者。"""
+    data = tmp_path / 'data.json'
+    _write(data, '{"key": "from-file"}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import USER\n!file "data.json" import .key as USER\nv = $USER\n')
+    result = load(
+        f,
+        sandbox=SandboxConfig(env={'USER': 'alice'}, allow_files=['./data.json']),
+    )
+    assert result.has_errors
+    assert any('重复绑定' in d.message for d in result.diagnostics)
+    # 先到者生效：$USER = alice（env 在前）
+    assert result.value == {'v': 'alice'}
 
 
 def test_template_import_with_alias(tmp_path: Path) -> None:

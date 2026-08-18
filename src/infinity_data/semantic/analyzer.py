@@ -2,7 +2,7 @@
 
 执行顺序（对应 neo_desg.md）：
 
-1. 收集模板定义（重复定义警告、必填字段排序校验）
+1. 收集模板定义（重复定义错误、必填字段排序校验）
 2. 解析模板导入（``!from``，沙盒授权 + 递归加载外部 .inft/.infd 模板）
 3. 解析数据导入（``!env`` / ``!file``）
 4. 模板名注册为同名校验器（**模板即约束**）
@@ -196,33 +196,59 @@ class SemanticAnalyzer:
     # 模板收集
     # ═══════════════════════════════════════════════════════
 
+    def _check_template_name_conflict(self, name: str, source: SourceRange | None) -> bool:
+        """模板名与已注册约束（内置/自定义）同名 → ERROR 并返回 True。
+
+        模板即约束：定义 ``~int`` / ``~range`` 会遮蔽同名内置约束（``int`` 类型
+        标注、``range(1, 100)`` 调用等语义被静默劫持），因此同名模板禁止定义，
+        内置约束保持可用。
+        """
+        if name in self._registry.names:
+            self._diagnostics.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    f'模板 {name!r} 与内置约束同名，禁止定义（避免遮蔽 {name} 约束）',
+                    source,
+                )
+            )
+            return True
+        return False
+
+    def _check_required_order(self, stmt: TemplateDef) -> None:
+        """模板内部校验：必填字段必须全部在可选字段之前。"""
+        seen_optional = False
+        for tf in stmt.fields:
+            if tf.default_value is None:
+                if seen_optional:
+                    self._diagnostics.append(
+                        Diagnostic(
+                            Severity.ERROR,
+                            f'模板 {stmt.name!r} 中必填字段 {tf.name!r} 出现在可选字段之后',
+                            tf.source,
+                        )
+                    )
+            else:
+                seen_optional = True
+
     def _collect_templates(self, doc: Document, root_hash: str) -> None:
         for stmt in doc.statements:
             if not isinstance(stmt, TemplateDef):
                 continue
+            rejected = self._check_template_name_conflict(stmt.name, stmt.source)
             key = TemplateKey(content_hash=root_hash, name=stmt.name)
-            if key in self._templates:
+            if not rejected and key in self._templates:
                 self._diagnostics.append(
                     Diagnostic(
-                        Severity.WARNING,
-                        f'模板 {stmt.name!r} 重复定义，后者覆盖前者',
+                        Severity.ERROR,
+                        f'模板 {stmt.name!r} 重复定义（同一文件内不允许同名模板），后者被拒绝',
                         stmt.source,
                     )
                 )
-            # 必填字段必须全部在可选字段之前
-            seen_optional = False
-            for tf in stmt.fields:
-                if tf.default_value is None:
-                    if seen_optional:
-                        self._diagnostics.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                f'模板 {stmt.name!r} 中必填字段 {tf.name!r} 出现在可选字段之后',
-                                tf.source,
-                            )
-                        )
-                else:
-                    seen_optional = True
+                rejected = True
+            # 无论是否被拒绝都校验内部（一次暴露所有错误，避免多轮修复）
+            self._check_required_order(stmt)
+            if rejected:
+                continue  # 保留首次定义，拒绝隐式的"后者覆盖前者"
             self._templates[key] = stmt
             assert self._root_file is not None
             self._template_files[key] = self._root_file.identity
@@ -285,12 +311,11 @@ class SemanticAnalyzer:
                     else:
                         self._diagnostics.append(
                             Diagnostic(
-                                Severity.WARNING,
-                                f'可见名 {visible!r} 重复导入，后者覆盖前者',
+                                Severity.ERROR,
+                                f'可见名 {visible!r} 重复导入（同一 scope 内不允许重复可见名），后者被拒绝',
                                 item.source,
                             )
                         )
-                        root_scope[visible] = dep_key
                 else:
                     root_scope[visible] = dep_key
 
@@ -349,6 +374,8 @@ class SemanticAnalyzer:
         for s in imported_doc.statements:
             if not isinstance(s, TemplateDef):
                 continue
+            if self._check_template_name_conflict(s.name, s.source):
+                continue
             key = TemplateKey(content_hash=content_hash, name=s.name)
             existing_file = self._template_files.get(key)
             if existing_file is not None and existing_file != file_id:
@@ -402,12 +429,11 @@ class SemanticAnalyzer:
                     else:
                         self._diagnostics.append(
                             Diagnostic(
-                                Severity.WARNING,
-                                f'可见名 {visible!r} 重复导入，后者覆盖前者',
+                                Severity.ERROR,
+                                f'可见名 {visible!r} 重复导入（同一 scope 内不允许重复可见名），后者被拒绝',
                                 item.source,
                             )
                         )
-                        scope[visible] = dep_key
                 else:
                     scope[visible] = dep_key
 
@@ -415,7 +441,9 @@ class SemanticAnalyzer:
         for s in imported_doc.statements:
             match s:
                 case TemplateDef():
-                    self._template_scopes[TemplateKey(content_hash=content_hash, name=s.name)] = scope
+                    key = TemplateKey(content_hash=content_hash, name=s.name)
+                    if key in self._templates:  # 同名冲突被拒绝的模板不登记 scope
+                        self._template_scopes[key] = scope
                 case TemplateImportStmt():
                     pass
                 case _:
@@ -947,10 +975,14 @@ class SemanticAnalyzer:
         source: SourceRange | None,
         path: str,
     ) -> ConstraintResult:
-        """执行已解析的约束规格。"""
+        """执行已解析的约束规格。
+
+        诊断位置优先取约束自身的 source（spec.source，精确到该约束表达式），
+        无约束位置时回退到外层 source（字段/注释点）。
+        """
         if spec.name == _INVALID_CONSTRAINT:
             return fail_result(f'{path}: 无效的约束表达式', source, path)
-        return self._registry.apply(spec, value, source, path, self._apply_nested)
+        return self._registry.apply(spec, value, spec.source or source, path, self._apply_nested)
 
     def _apply_nested(
         self,
@@ -959,8 +991,11 @@ class SemanticAnalyzer:
         source: SourceRange | None,
         path: str,
     ) -> ConstraintResult:
-        """嵌套约束执行回调（Executor 协议）。"""
-        return self._registry.apply(constraint, value, source, path, self._apply_nested)
+        """嵌套约束执行回调（Executor 协议）。
+
+        与 :meth:`_execute_spec` 一致：优先用嵌套约束自身的位置寻址。
+        """
+        return self._registry.apply(constraint, value, constraint.source or source, path, self._apply_nested)
 
     def _resolve_constraint(self, c: Constraint, scope: Scope) -> ResolvedConstraint:
         """解析约束 AST 为约束规格（名字经 scope 翻译为真名）。"""
