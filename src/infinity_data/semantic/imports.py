@@ -5,7 +5,7 @@
 - ``!env import``：变量经 ``Sandbox.getenv`` 授权查询
 - ``!file``：数据文件经 ``Sandbox.open_file`` 产出 File 后解析
 - ``!from``（模板导入）：模板文件经 ``Sandbox.open_template`` 产出 File，
-  模板定义的实际加载由 :class:`SemanticAnalyzer` 完成
+  模板定义的实际加载由 :class:`AstBuilder` 完成
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ class ImportResolver:
                 continue
             self._bind(namespace, item.alias, value, report, item.source)
 
-    # ── 模板导入路径解析（!from 由 SemanticAnalyzer 使用）──
+    # ── 模板导入路径解析（!from 由 AstBuilder 使用）──
 
     def resolve_template_path(
         self,

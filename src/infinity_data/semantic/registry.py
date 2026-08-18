@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.semantic.models import (
+    ResolvedConstraint,
     StdArray,
     StdField,
     StdLiteral,
@@ -37,25 +38,15 @@ from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 
 @dataclass
-class ResolvedConstraint:
-    """已解析的约束。嵌套参数为 Python 值或 ResolvedConstraint。"""
-
-    name: str
-    args: list[Any] = field(default_factory=list[Any])
-    source: SourceRange | None = None
-
-
-@dataclass
 class ConstraintResult:
-    """约束执行结果。"""
+    """约束执行结果（只校验，不转换值）。"""
 
     ok: bool
     diagnostics: list[Diagnostic] = field(default_factory=list[Diagnostic])
-    coerced_value: StdValue | None = None  # 类型强制转换后的值
 
 
 class Executor(Protocol):
-    """嵌套约束执行回调（由 SemanticAnalyzer 提供）。"""
+    """嵌套约束执行回调（由 ConstraintExecutor 提供）。"""
 
     def __call__(
         self,
@@ -83,9 +74,9 @@ class ConstraintEntry:
     description: str = ''
 
 
-def ok_result(coerced: StdValue | None = None) -> ConstraintResult:
+def ok_result() -> ConstraintResult:
     """构造通过结果。"""
-    return ConstraintResult(ok=True, coerced_value=coerced)
+    return ConstraintResult(ok=True)
 
 
 def fail_result(
@@ -277,7 +268,9 @@ class ConstraintRegistry:
         n = len(constraint.args)
         if n < entry.min_args or (entry.max_args is not None and n > entry.max_args):
             expected = str(entry.min_args) if entry.max_args is None else f'{entry.min_args}~{entry.max_args}'
-            return fail_result('constraint.arg_count', {'name': constraint.name, 'expected': expected, 'given': n}, source, path)
+            return fail_result(
+                'constraint.arg_count', {'name': constraint.name, 'expected': expected, 'given': n}, source, path
+            )
         return entry.fn(value, source, path, constraint.args, executor)
 
     def _register_builtins(self) -> None:
@@ -286,7 +279,7 @@ class ConstraintRegistry:
         self.register('object', _check_object, description='通用超类型，总是通过')
         self.register('?', _check_nullable, description='纯可空类型：noexist 或 null')
         self.register('int', _check_int, description='有符号整数')
-        self.register('float', _check_float, description='十进制浮点（int 自动提升）')
+        self.register('float', _check_float, description='十进制浮点（只接受 float，不含 int 提升）')
         self.register('str', _check_str, description='utf-8 字符串')
         self.register('bool', _check_bool, description='布尔值')
         self.register('list', _check_list, description='数组')
@@ -351,7 +344,9 @@ def _check_nullable(
 ) -> ConstraintResult:
     if isinstance(val, StdLiteral) and val.kind in ('null', 'noexist'):
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'noexist 或 null', 'actual': describe(val)}, source, path)
+    return fail_result(
+        'constraint.type_mismatch', {'expected': 'noexist 或 null', 'actual': describe(val)}, source, path
+    )
 
 
 def _check_int(
@@ -377,10 +372,6 @@ def _check_float(
 ) -> ConstraintResult:
     if val is None:
         return fail_result('constraint.expect_value', {'expected': 'float'}, source, path)
-    if isinstance(val, StdLiteral) and val.kind == 'int':
-        v = val.value
-        if isinstance(v, int):
-            return ok_result(StdLiteral(kind='float', value=Decimal(v)))
     if isinstance(val, StdLiteral) and val.kind == 'float':
         return ok_result()  # 含 NaN / ±Infinity
     return fail_result('constraint.type_mismatch', {'expected': 'float', 'actual': describe(val)}, source, path)

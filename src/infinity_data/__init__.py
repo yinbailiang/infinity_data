@@ -1,6 +1,6 @@
 """InfinityData —— 声明式配置语言（.infd/.inft）的 Python 编译器库。
 
-编译流水线：RawTokenizer → FinalTokenizer → Parser → SemanticAnalyzer → Converter
+编译流水线：RawTokenizer → FinalTokenizer → Parser → AstBuilder → Executor → Converter
 
 用法::
 

@@ -1,4 +1,4 @@
-"""语义分析器（Phase 2）：RawAst → StdAst，消费导入解析产物。
+"""AST 构建器（Phase 2a）：RawAst → StdAst（携带约束与展开值），不执行约束。
 
 两阶段执行（对应 neo_desg.md）：
 
@@ -6,11 +6,12 @@ Phase 1（:mod:`infinity_data.semantic.resolver`，本模块不负责）：
   模板定义收集 / ``!from`` 模板导入 / ``!env``/``!file`` 数据导入
   → 产出不可变 :class:`ResolvedContext`（模板图 + 可见名表 + 命名空间）
 
-Phase 2（本模块）：
-  1. 模板名注册为同名校验器（**模板即约束**）
-  2. 逐语句分析：模板展开、约束语法糖展开、约束链执行
-  3. 顶层结构级约束校验（``: <...>``，作用于编译产物 root）
-  4. 顶层 schema 校验（strict/lenient/strip）
+Phase 2a（本模块 :class:`AstBuilder`）：
+  值语义：字面量 / ``$`` 引用 / 模板展开 / dict 与 array 组装；
+  并把源文档约束解析为 :class:`ResolvedConstraint` 挂到节点（**不执行**）
+
+Phase 2b（:mod:`infinity_data.semantic.executor`）：
+  :class:`ConstraintExecutor` 遍历 StdAst 执行约束 + 顶层 schema 校验
 
 模板身份与可见性模型：
 - 模板真名 :class:`TemplateKey`（来源文件内容 hash + 本地名），全局唯一
@@ -22,24 +23,17 @@ Phase 2（本模块）：
 from __future__ import annotations
 
 import decimal
-from collections.abc import Mapping
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.infra.file import File
 from infinity_data.parser.models import (
     ArrayValue,
-    Constraint,
-    ConstraintCall,
-    ConstraintIdent,
-    ConstraintLiteral,
-    Constraints,
     ConstraintStmt,
     DictValue,
     Document,
     DollarValue,
     EnvImportStmt,
-    ErrorConstraint,
     ErrorValue,
     Field,
     FileImportStmt,
@@ -50,7 +44,10 @@ from infinity_data.parser.models import (
     Value,
 )
 from infinity_data.sandbox import SchemaError
+from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
+from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.models import (
+    ResolvedConstraint,
     Scope,
     StdArray,
     StdDocument,
@@ -59,14 +56,6 @@ from infinity_data.semantic.models import (
     StdObject,
     StdValue,
     TemplateKey,
-)
-from infinity_data.semantic.registry import (
-    ConstraintFn,
-    ConstraintResult,
-    ResolvedConstraint,
-    describe,
-    fail_result,
-    ok_result,
 )
 from infinity_data.semantic.resolver import TemplateGraphResolver
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -83,21 +72,23 @@ from infinity_data.tokenizer.models.tokens import (
 MAX_NESTING_DEPTH = 200
 """值嵌套深度上限，防止递归下降导致 RecursionError。"""
 
-_INVALID_CONSTRAINT = '@invalid'
 
+class AstBuilder:
+    """AST 构建器（Phase 2a）：RawAst → StdAst（携带约束与展开值）。
 
-class SemanticAnalyzer:
-    """语义分析器（Phase 2）：消费 :class:`ResolvedContext`，执行约束。
+    只做「值是什么」：字面量 / ``$`` 引用 / 模板展开 / dict 与 array 组装，
+    并把源文档约束解析为 :class:`ResolvedConstraint` 挂到节点；
+    **不执行任何约束**——校验由 :class:`ConstraintExecutor`（Phase 2b）完成。
 
     显式依赖 :class:`TemplateGraphResolver`（Phase 1）：注册表与顶层 schema
-    均从解析器共享获取，本层不自建任何 Phase 1 依赖（导入解析 / 沙盒 / 模板图）。
+    均从解析器共享获取，本层不自建任何 Phase 1 依赖。
     """
 
     def __init__(self, *, resolver: TemplateGraphResolver) -> None:
         self._resolver = resolver
         self._registry = resolver.registry
         self._schema = resolver.schema
-        # Phase 2 执行期状态（每次 analyze 重置）
+        # 执行期状态（每次 analyze 重置）
         self._templates: dict[TemplateKey, TemplateDef] = {}
         self._template_scopes: dict[TemplateKey, Scope] = {}
         self._root_scope: Scope = {}
@@ -111,10 +102,10 @@ class SemanticAnalyzer:
     # ═══════════════════════════════════════════════════════
 
     def analyze(self, doc: Document, file: File) -> StdDocument:
-        """主入口：分析 RawAst，返回 StandardAst。
+        """构建带约束的 StdAst，并委托执行器完成约束校验。
 
         Phase 1（导入解析）委托给 :attr:`_resolver`，产出不可变上下文；
-        本方法只做 Phase 2（模板即约束注册 + 逐语句分析 + schema 校验）。
+        本方法只做 Phase 2a（构建）并编排 Phase 2b（约束执行 + schema 校验）。
 
         Args:
             doc: 语法分析产物
@@ -139,41 +130,44 @@ class SemanticAnalyzer:
         self._namespace = context.namespace
         self._diagnostics = list(context.diagnostics)
 
-        # 模板名注册为约束（模板即约束，注册表键为真名字符串）
-        for key, tpl in self._templates.items():
-            self._registry.register(
-                str(key),
-                self._make_template_constraint(key, tpl),
-                description=f'模板 {key.name} 结构约束',
-            )
-
-        # 第二遍：分析语句
+        # Phase 2a：构建 root（顶层结构约束挂在 root.constraints，不执行）
         root_fields: list[StdField] = []
-        root_constraints: list[Constraint] = []
+        root_constraints: list[ResolvedConstraint] = []
         for stmt in doc.statements:
             match stmt:
                 case TemplateDef() | TemplateImportStmt() | EnvImportStmt() | FileImportStmt():
                     continue  # 模板定义与导入不产生输出
                 case Field():
-                    f = self._analyze_field(stmt, path=stmt.name, scope=self._root_scope)
+                    f = self._build_field(stmt, path=stmt.name, scope=self._root_scope)
                     if f is not None:
                         root_fields.append(f)
                 case ConstraintStmt(constraints=cs):
-                    root_constraints.extend(cs)
+                    specs, diags = resolve_constraint_list(cs, self._root_scope)
+                    root_constraints.extend(specs)
+                    self._diagnostics.extend(diags)
                 case _:
                     pass  # ErrorStatement 已在语法阶段诊断
+        root = StdObject(fields=root_fields, constraints=root_constraints)
 
-        root = StdObject(fields=root_fields)
+        # Phase 2b：约束执行（独立遍历器，工作在完成的 AST 上）
+        executor = ConstraintExecutor(
+            registry=self._registry,
+            templates=self._templates,
+            template_scopes=self._template_scopes,
+        )
+        self._diagnostics.extend(executor.validate(root))
 
-        # 顶层结构级约束（作用于编译产物 root）
-        for c in root_constraints:
-            result = self._execute_spec(self._resolve_constraint(c, self._root_scope), root, c.source, '')
-            if not result.ok:
-                self._diagnostics.extend(result.diagnostics)
-
-        # 顶层 schema 约束（strict/lenient/strip）
+        # 顶层 schema 校验（strict/lenient/strip）
         if self._schema is not None:
-            root = self._apply_schema(root)
+            scope = (
+                self._schema_scope if self._schema.from_file and self._schema_scope is not None else self._root_scope
+            )
+            key = scope.get(self._schema.template)
+            if key is None:
+                raise SchemaError('schema.undefined_template', {'template': self._schema.template})
+            tpl = self._templates[key]
+            root, schema_diags = executor.apply_schema(root, self._schema, tpl, self._template_scopes[key])
+            self._diagnostics.extend(schema_diags)
 
         diagnostics = sorted(self._diagnostics, key=lambda d: d.sort_key())
         return StdDocument(
@@ -184,212 +178,21 @@ class SemanticAnalyzer:
         )
 
     # ═══════════════════════════════════════════════════════
-    # 顶层 schema 约束
+    # 字段构建
     # ═══════════════════════════════════════════════════════
 
-    def _apply_schema(self, root: StdObject) -> StdObject:
-        """对顶层对象执行 schema 模板约束（strict/lenient/strip）。"""
-        assert self._schema is not None
-        schema_scope = self._schema_scope
-        scope = schema_scope if self._schema.from_file and schema_scope is not None else self._root_scope
-        key = scope.get(self._schema.template)
-        if key is None:
-            raise SchemaError('schema.undefined_template', {'template': self._schema.template})
-        tpl = self._templates[key]
-        return self._check_schema_object(root, tpl, self._schema.mode, self._template_scopes[key])
-
-    def _check_schema_object(self, obj: StdObject, tpl: TemplateDef, mode: str, scope: Scope) -> StdObject:
-        """按模板校验顶层对象。失败抛 :class:`SchemaError`（strip 先过滤再校验）。"""
-        declared = {tf.name for tf in tpl.fields}
-        diags: list[Diagnostic] = []
-
-        # 额外字段处理（模式差异）
-        extra_names = [f.name for f in obj.fields if f.name not in declared]
-        if extra_names:
-            if mode == 'strict':
-                diags.append(Diagnostic(Severity.ERROR, 'schema.extra_fields', {'fields': extra_names}, None))
-            elif mode == 'lenient':
-                self._diagnostics.append(
-                    Diagnostic(Severity.WARNING, 'schema.extra_fields_lenient', {'fields': extra_names}, None)
-                )
-            else:  # strip
-                obj = StdObject(fields=[f for f in obj.fields if f.name in declared], template=obj.template)
-
-        # 必填字段缺失 → 报错
-        for tf in tpl.fields:
-            if tf.default_value is None and obj.get(tf.name) is None:
-                diags.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        'schema.missing_required',
-                        {'field': tf.name, 'template': tpl.name},
-                        None,
-                        tf.name,
-                    )
-                )
-
-        # 字段约束校验
-        for tf in tpl.fields:
-            f = obj.get(tf.name)
-            if f is not None and f.value is not None:
-                result = self._execute_constraints(tf.constraints, f.value, tf.source, tf.name, scope)
-                if not result.ok:
-                    diags.extend(result.diagnostics)
-
-        # 模板级约束
-        for c in tpl.constraints:
-            result = self._execute_spec(self._resolve_constraint(c, scope), obj, None, '')
-            if not result.ok:
-                diags.extend(result.diagnostics)
-
-        if diags:
-            raise SchemaError('schema.failed', {'detail': '；'.join(d.message for d in diags)})
-        return obj
-
-    # ═══════════════════════════════════════════════════════
-    # 模板即约束
-    # ═══════════════════════════════════════════════════════
-
-    def _make_template_constraint(self, key: TemplateKey, tpl: TemplateDef) -> ConstraintFn:
-        """生成把模板当约束用的校验函数（校验手写 dict）。
-
-        闭包捕获：模板 key（显示名用 key.name）、定义、allow_extra、声明字段集、
-        以及模板所在文件的 scope（约束里的模板名按定义点可见性解析）。
-        """
-        allow_extra = self._resolve_config_bool(tpl, 'allow_extra')
-        declared = {tf.name for tf in tpl.fields}
-        display = key.name
-        scope = self._template_scopes[key]
-
-        def check(
-            value: StdValue | None,
-            source: SourceRange | None,
-            path: str,
-            args: list[Any],
-            executor: Any,
-        ) -> ConstraintResult:
-            if value is None:
-                return fail_result('template.expect_value', {'template': display}, source, path)
-            if isinstance(value, StdLiteral):
-                if value.kind == 'null':
-                    return fail_result('template.null_use_nullable', {'template': display}, source, path)
-                return fail_result(
-                    'template.expect_object', {'template': display, 'actual': describe(value)}, source, path
-                )
-            if not isinstance(value, StdObject):
-                return fail_result(
-                    'template.expect_object', {'template': display, 'actual': describe(value)}, source, path
-                )
-
-            # 标记来源模板：这个手写 dict 被判定为模板 display 的结构（供下游引用）
-            if value.template is None:
-                value.template = key
-
-            diags: list[Diagnostic] = []
-            field_map = {f.name: f for f in value.fields}
-
-            # 逐字段校验
-            for tf in tpl.fields:
-                child = f'{path}.{tf.name}' if path else tf.name
-                f = field_map.get(tf.name)
-                if f is None:
-                    if tf.default_value is None:
-                        diags.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                'template.missing_field',
-                                {'template': display, 'field': tf.name},
-                                source,
-                                child,
-                            )
-                        )
-                    continue
-                if f.value is not None:
-                    result = self._execute_constraints(tf.constraints, f.value, tf.source, child, scope)
-                    if not result.ok:
-                        diags.extend(result.diagnostics)
-
-            # 严格模式：不允许额外字段（allow_extra=true 时放行）
-            if not allow_extra:
-                for f in value.fields:
-                    if f.name not in declared:
-                        child = f'{path}.{f.name}' if path else f.name
-                        diags.append(
-                            Diagnostic(
-                                Severity.ERROR,
-                                'template.extra_field',
-                                {'template': display, 'field': f.name},
-                                f.source or source,
-                                child,
-                            )
-                        )
-
-            # 模板级约束
-            for c in tpl.constraints:
-                result = self._execute_spec(self._resolve_constraint(c, scope), value, source, path)
-                if not result.ok:
-                    diags.extend(result.diagnostics)
-
-            if diags:
-                return ConstraintResult(ok=False, diagnostics=diags)
-            return ok_result()
-
-        return check
-
-    def _resolve_config_bool(self, tpl: TemplateDef, key: str) -> bool:
-        """读取模板配置中的布尔项（如 allow_extra）。"""
-        raw = tpl.config.get(key)
-        match raw:
-            case LiteralValue(value=BoolToken(value=b)):
-                return b
-            case _:
-                return False
-
-    # ═══════════════════════════════════════════════════════
-    # 约束语法糖展开
-    # ═══════════════════════════════════════════════════════
-
-    def _expand_annotation(self, annotation: Constraints) -> Constraints:
-        """展开约束语法糖：多约束 ``<a, b, c>`` → ``all(a, b, c)``。
-
-        （``type?`` → ``one(type, ?)`` 已在 parser 阶段展开。）
-        """
-        if len(annotation.constraints) > 1:
-            return Constraints(
-                source=annotation.source,
-                constraints=[
-                    ConstraintCall(
-                        source=annotation.source,
-                        name='all',
-                        arguments=list(annotation.constraints),
-                    ),
-                ],
-            )
-        return annotation
-
-    # ═══════════════════════════════════════════════════════
-    # 字段分析
-    # ═══════════════════════════════════════════════════════
-
-    def _analyze_field(self, field: Field, path: str, scope: Scope) -> StdField | None:
-        """分析单个字段，返回 StdField。"""
-        # 1. 解析值
+    def _build_field(self, field: Field, path: str, scope: Scope) -> StdField | None:
+        """构建字段：解析值 + 解析注解约束（挂到节点，不执行）。"""
         value = self._resolve_value(field.value, path, scope)
-
-        # 2. 值缺失：设计文档未定义「裸 key」，noexist 需显式字面量
+        # 值缺失：设计文档未定义「裸 key」，noexist 需显式字面量
         if value is None:
             self._diagnostics.append(Diagnostic(Severity.ERROR, 'field.missing_value', {}, field.source, path))
             return StdField(name=field.name, value=None, source=field.source)
-
-        # 3. 约束执行
+        specs: list[ResolvedConstraint] = []
         if field.constraints is not None:
-            result = self._execute_constraints(field.constraints, value, field.source, path, scope)
-            if not result.ok:
-                self._diagnostics.extend(result.diagnostics)
-            if result.coerced_value is not None:
-                value = result.coerced_value
-
-        return StdField(name=field.name, value=value, source=field.source)
+            specs, diags = resolve_constraints(field.constraints, scope)
+            self._diagnostics.extend(diags)
+        return StdField(name=field.name, value=value, source=field.source, constraints=specs)
 
     # ═══════════════════════════════════════════════════════
     # 值解析
@@ -417,16 +220,13 @@ class SemanticAnalyzer:
                     std_fields: list[StdField] = []
                     for f in fs:
                         child = f'{path}.{f.name}' if path else f.name
-                        sf = self._analyze_field(f, path=child, scope=scope)
+                        sf = self._build_field(f, path=child, scope=scope)
                         if sf is not None:
                             std_fields.append(sf)
-                    obj = StdObject(fields=std_fields)
-                    # dict 结构级约束（作用于该字面量整体）
-                    for c in cs:
-                        result = self._execute_spec(self._resolve_constraint(c, scope), obj, c.source, path)
-                        if not result.ok:
-                            self._diagnostics.extend(result.diagnostics)
-                    return obj
+                    # dict 结构级约束（作用于该字面量整体）：解析后挂节点，不执行
+                    specs, diags = resolve_constraint_list(cs, scope)
+                    self._diagnostics.extend(diags)
+                    return StdObject(fields=std_fields, constraints=specs)
                 case ArrayValue(elements=els):
                     std_elements: list[StdValue] = []
                     for i, e in enumerate(els):
@@ -558,7 +358,10 @@ class SemanticAnalyzer:
         source: SourceRange | None,
         scope: Scope,
     ) -> StdValue:
-        """展开模板调用为 StdObject（名字经调用点 scope 翻译，展开用模板定义点 scope）。"""
+        """展开模板调用为 StdObject（名字经调用点 scope 翻译，展开用模板定义点 scope）。
+
+        字段 / 模板级约束解析后挂到节点（不执行），由执行器统一校验。
+        """
         key = scope.get(template_name)
         if key is None:
             self._diagnostics.append(
@@ -624,141 +427,11 @@ class SemanticAnalyzer:
             else:
                 continue  # 必填且未提供 → 已在上面报错
 
-            if v is not None:
-                result = self._execute_constraints(tf.constraints, v, tf.source, child, inner_scope)
-                if not result.ok:
-                    self._diagnostics.extend(result.diagnostics)
-                if result.coerced_value is not None:
-                    v = result.coerced_value
-            std_fields.append(StdField(name=tf.name, value=v, source=tf.source))
+            specs, diags = resolve_constraints(tf.constraints, inner_scope)
+            self._diagnostics.extend(diags)
+            std_fields.append(StdField(name=tf.name, value=v, source=tf.source, constraints=specs))
 
-        obj = StdObject(fields=std_fields, template=key)
-
-        # 模板级约束（: 起始，约束整个 dict）
-        for c in template.constraints:
-            result = self._execute_spec(self._resolve_constraint(c, inner_scope), obj, source, path)
-            if not result.ok:
-                self._diagnostics.extend(result.diagnostics)
-
-        return obj
-
-    # ═══════════════════════════════════════════════════════
-    # 约束执行
-    # ═══════════════════════════════════════════════════════
-
-    def _execute_constraints(
-        self,
-        annotation: Constraints,
-        value: StdValue | None,
-        source: SourceRange | None,
-        path: str,
-        scope: Scope,
-    ) -> ConstraintResult:
-        """对值依次执行约束链（语法糖展开 → 逐约束执行 → 值强制转换）。"""
-        expanded = self._expand_annotation(annotation)
-        current = value
-        for c in expanded.constraints:
-            result = self._execute_spec(self._resolve_constraint(c, scope), current, source, path)
-            if not result.ok:
-                return result  # 一个失败即短路
-            if result.coerced_value is not None:
-                current = result.coerced_value
-        return ConstraintResult(ok=True, coerced_value=current)
-
-    def _execute_spec(
-        self,
-        spec: ResolvedConstraint,
-        value: StdValue | None,
-        source: SourceRange | None,
-        path: str,
-    ) -> ConstraintResult:
-        """执行已解析的约束规格。
-
-        诊断位置优先取约束自身的 source（spec.source，精确到该约束表达式），
-        无约束位置时回退到外层 source（字段/注释点）。
-        """
-        if spec.name == _INVALID_CONSTRAINT:
-            return fail_result('constraint.invalid', {}, source, path)
-        return self._registry.apply(spec, value, spec.source or source, path, self._apply_nested)
-
-    def _apply_nested(
-        self,
-        constraint: ResolvedConstraint,
-        value: StdValue | None,
-        source: SourceRange | None,
-        path: str,
-    ) -> ConstraintResult:
-        """嵌套约束执行回调（Executor 协议）。
-
-        与 :meth:`_execute_spec` 一致：优先用嵌套约束自身的位置寻址。
-        """
-        return self._registry.apply(constraint, value, constraint.source or source, path, self._apply_nested)
-
-    def _resolve_constraint(self, c: Constraint, scope: Scope) -> ResolvedConstraint:
-        """解析约束 AST 为约束规格（名字经 scope 翻译为真名）。"""
-        match c:
-            case ConstraintIdent(name=n):
-                return ResolvedConstraint(name=self._translate_name(n, scope), source=c.source)
-            case ConstraintCall(name=n, arguments=args):
-                return ResolvedConstraint(
-                    name=self._translate_name(n, scope),
-                    args=[self._resolve_constraint_arg(a, scope) for a in args],
-                    source=c.source,
-                )
-            case ConstraintLiteral():
-                return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
-            case ErrorConstraint(message=m):
-                self._diagnostics.append(Diagnostic(Severity.ERROR, 'error.generic', {'message': m}, c.source))
-                return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
-        return ResolvedConstraint(name=_INVALID_CONSTRAINT)
-
-    def _resolve_constraint_arg(self, c: Constraint, scope: Scope) -> Any:
-        """解析约束参数：嵌套约束 → ResolvedConstraint；字面量 → Python 值。"""
-        match c:
-            case ConstraintIdent(name=n):
-                return ResolvedConstraint(name=self._translate_name(n, scope), source=c.source)
-            case ConstraintCall(name=n, arguments=args):
-                return ResolvedConstraint(
-                    name=self._translate_name(n, scope),
-                    args=[self._resolve_constraint_arg(a, scope) for a in args],
-                    source=c.source,
-                )
-            case ConstraintLiteral(value=lit):
-                return self._literal_python_value(lit)
-            case ErrorConstraint(message=m):
-                self._diagnostics.append(Diagnostic(Severity.ERROR, 'error.generic', {'message': m}, c.source))
-                return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source)
-        return ResolvedConstraint(name=_INVALID_CONSTRAINT)
-
-    @staticmethod
-    def _translate_name(name: str, scope: Scope) -> str:
-        """可见名 → 真名字符串。未命中（如 has(field) 的裸字段名）保留原名。"""
-        key = scope.get(name)
-        return str(key) if key is not None else name
-
-    @staticmethod
-    def _literal_python_value(lit: LiteralValue) -> Any:
-        """约束参数字面量 → Python 值。"""
-        match lit.value:
-            case IntegerToken(value=v):
-                return v
-            case FloatToken(value=v):
-                return v
-            case BoolToken(value=v):
-                return v
-            case MultilineStringToken(value=v):
-                return v
-            case StringToken(value=v):
-                return v
-            case NullToken():
-                return None
-            case NoexistToken():
-                return None
-        return None
-
-    # ═══════════════════════════════════════════════════════
-    # 诊断辅助
-    # ═══════════════════════════════════════════════════════
-
-    def _report(self, severity: Severity, code: str, params: Mapping[str, Any], source: SourceRange | None) -> None:
-        self._diagnostics.append(Diagnostic(severity=severity, code=code, params=dict(params), source=source))
+        # 模板级约束（: 起始，约束整个 dict）：解析后挂到实例节点
+        tpl_specs, tpl_diags = resolve_constraint_list(template.constraints, inner_scope)
+        self._diagnostics.extend(tpl_diags)
+        return StdObject(fields=std_fields, template=key, constraints=tpl_specs)

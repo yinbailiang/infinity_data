@@ -1,11 +1,13 @@
 """语义分析阶段的标准 AST（StdAst）与统一诊断模型。
 
-StdAst 是模板展开、约束校验之后的规范化 AST：
+StdAst 是模板展开、约束解析之后的规范化 AST，**携带约束但不执行**：
 
 - 三态可空：``noexist``（键不存在）/ ``null``（键存在值为 null）/ value
 - 浮点统一为 :class:`decimal.Decimal`（规范要求无限精度十进制浮点）
 - ``nan`` / ``+inf`` / ``-inf`` 以 ``Decimal("NaN")`` / ``Decimal("Infinity")`` /
   ``Decimal("-Infinity")`` 表示，kind 均为 ``"float"``
+- 节点携带已解析约束（:class:`ResolvedConstraint`），由 :class:`ConstraintExecutor`
+  遍历执行（只校验，不转换）
 """
 
 from __future__ import annotations
@@ -20,6 +22,25 @@ from infinity_data.parser.models import TemplateDef
 
 LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
 """字面量 kind 枚举。"""
+
+
+# ═══════════════════════════════════════════════════════════
+# 已解析约束
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass
+class ResolvedConstraint:
+    """已解析的约束（挂在 StdAst 节点上，由执行器消费）。
+
+    - ``name``：约束真名（模板名已经 scope 翻译）
+    - ``args``：参数（字面量 → Python 值；嵌套约束 → :class:`ResolvedConstraint`）
+    - ``source``：约束表达式来源（诊断寻址）
+    """
+
+    name: str
+    args: list[Any] = field(default_factory=list[Any])
+    source: SourceRange | None = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -49,11 +70,15 @@ type StdValue = StdLiteral | StdArray | StdObject
 
 @dataclass
 class StdField:
-    """标准字段：名称 + 已校验的值 + 来源信息。"""
+    """标准字段：名称 + 值 + 来源信息 + 注解约束。
+
+    ``constraints``：字段注解约束（``key: <c> = v``），已解析未执行。
+    """
 
     name: str
     value: StdValue | None
     source: SourceRange | None = None
+    constraints: list[ResolvedConstraint] = field(default_factory=list[ResolvedConstraint])
 
     @property
     def is_noexist(self) -> bool:
@@ -80,10 +105,13 @@ class StdObject:
     - ``fields``：字段列表
     - ``template``：可选的来源模板（:class:`TemplateKey`）。模板展开的实例，
       或经「模板即约束」校验的手写 dict 会携带；None = 无关联模板（纯字面量）
+    - ``constraints``：结构级约束（``: <...>`` 作用于整个 dict，含模板级约束），
+      已解析未执行
     """
 
     fields: list[StdField] = field(default_factory=list[StdField])
     template: TemplateKey | None = None
+    constraints: list[ResolvedConstraint] = field(default_factory=list[ResolvedConstraint])
 
     def get(self, name: str) -> StdField | None:
         """按名称查找字段（无则 None）。"""
@@ -129,7 +157,7 @@ class ResolvedContext:
     """导入解析（Phase 1）产物：模板图 + 可见名表 + 数据命名空间。
 
     由 :class:`infinity_data.semantic.resolver.TemplateGraphResolver` 产出，
-    供 :class:`infinity_data.semantic.analyzer.SemanticAnalyzer`（Phase 2）消费。
+    供 :class:`infinity_data.semantic.analyzer.AstBuilder`（Phase 2a）消费。
     只含名字与模板定义，不含任何约束执行结果（约束求值属 Phase 2）。
 
     - ``templates``：全部已加载模板（本地 + ``!from`` 导入）

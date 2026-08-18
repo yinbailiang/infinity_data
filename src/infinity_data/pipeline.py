@@ -1,6 +1,6 @@
 """编译流水线：源码字符串 → StdDocument / Python dict。
 
-全链路流式：chars → RawTokenizer → FinalTokenizer → Parser → SemanticAnalyzer → Converter。
+全链路流式：chars → RawTokenizer → FinalTokenizer → Parser → AstBuilder → Executor → Converter。
 
 公共 API：
 - :func:`compile_source` / :func:`load`：编译入口，返回 :class:`CompilationResult`
@@ -22,7 +22,7 @@ from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import Diagnostic, Severity, diagnostic_define, register_diagnostic_define
 from infinity_data.infra.file import DiskFile, File, MemFile
 from infinity_data.sandbox import Sandbox, SandboxConfig, SandboxError, Schema
-from infinity_data.semantic.analyzer import SemanticAnalyzer
+from infinity_data.semantic.analyzer import AstBuilder
 from infinity_data.semantic.imports import ImportResolver
 from infinity_data.semantic.models import StdDocument, StdObject
 from infinity_data.semantic.registry import ConstraintRegistry
@@ -109,7 +109,7 @@ def _compile_file(
         import_resolver=import_resolver,
         schema=schema,
     )
-    analyzer = SemanticAnalyzer(resolver=resolver)
+    analyzer = AstBuilder(resolver=resolver)
     document = analyzer.analyze(doc, file)
 
     diagnostics = sorted(

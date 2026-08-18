@@ -27,9 +27,11 @@ def test_type_int_rejects_float() -> None:
     assert result.has_errors
 
 
-def test_type_float_accepts_int_with_coercion() -> None:
-    value = compile_ok('x: float = 3\n')
-    assert value['x'] == Decimal(3)
+def test_type_float_rejects_int() -> None:
+    """约束只校验不转换：float 约束不接受 int（无自动提升）。"""
+    result = compile_source('x: float = 3\n')
+    assert result.has_errors
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
 
 
 def test_type_nullable() -> None:
@@ -119,7 +121,7 @@ def test_eq() -> None:
 
 def test_eq_works_on_std_nodes() -> None:
     """eq 直接在 Std 节点上比较：int/float 数值交叉相等，bool 与 int 不相等。"""
-    compile_ok('x: <float, eq(42)> = 42\n')  # float 提升后数值交叉
+    compile_ok('x: <float, eq(42)> = 42.0\n')  # 同类型；约束不做 int→float 提升
     compile_ok('x: <int, eq(1)> = 1\n')
     # Python True == 1 的陷阱被 Std 语义排除
     assert compile_source('x: eq(1) = true\n').has_errors

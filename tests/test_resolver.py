@@ -1,7 +1,7 @@
 """Phase 1 导入解析器（TemplateGraphResolver）独立测试。
 
 只测「名字解析 + 模板图构建」，不涉及约束执行——约束求值属 Phase 2
-（SemanticAnalyzer），此处明确验证 Phase 1 不含约束执行。
+（AstBuilder / ConstraintExecutor），此处明确验证 Phase 1 不含约束执行。
 """
 
 from __future__ import annotations
