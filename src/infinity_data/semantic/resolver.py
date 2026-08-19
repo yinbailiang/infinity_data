@@ -130,7 +130,13 @@ class TemplateGraphResolver:
         return False
 
     def _check_required_order(self, stmt: TemplateDef) -> None:
-        """模板内部校验：必填字段必须全部在可选字段之前。"""
+        """模板内部校验：必填字段必须全部在可选字段之前。
+
+        例外：``positional=false`` 的模板不接受位置参数，字段顺序不影响绑定，
+        允许必填与可选交错。
+        """
+        if not stmt.config.positional:
+            return
         seen_optional = False
         for tf in stmt.fields:
             if tf.default_value is None:

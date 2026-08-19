@@ -280,13 +280,16 @@ class Parser:
             return []
         self._stream.advance()
 
-        # 第一个段：必须是标识符（首 key 名）
+        # 第一个段：标识符（非 as）或字符串；`.` 后是 as（别名关键字）→ 整文件导入
         tok = self._stream.peek()
-        if isinstance(tok, IdentifierToken):
+        if isinstance(tok, IdentifierToken) and tok.name != 'as':
             segments.append(JsonPathKey(source=tok.raw.source, key=tok.name))
             self._stream.advance()
+        elif isinstance(tok, SinglelineStringToken):
+            segments.append(JsonPathKey(source=tok.raw.source, key=tok.value))
+            self._stream.advance()
         else:
-            # 只有 . → 导入整个文件
+            # 只有 .（或 . as alias）→ 导入整个文件
             return []
 
         # 后续段：".key" 或 "[index]"
@@ -388,12 +391,19 @@ class Parser:
         if isinstance(self._stream.peek(), LparenToken):
             self._stream.advance()
             self._stream.skip_newlines()
-            while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
+            missing_sep_reported = [False]
+            while not self._stream.check(RawTokenType.RPAREN) and not self._stream.check(RawTokenType.EOF):
                 key_tok = self._stream.expect(IdentifierToken)
                 self._stream.expect(EqualsToken)
                 value = self._parse_value()
                 self._apply_template_config(config, key_tok, value)
-                self._stream.skip_separators()
+                had_sep = self._stream.skip_separators()
+                self._missing_separator(
+                    had_sep,
+                    isinstance(self._stream.peek(), IdentifierToken),
+                    RawTokenType.RPAREN,
+                    missing_sep_reported,
+                )
             self._stream.expect(RparenToken)
 
         self._stream.expect(LbraceToken)
@@ -401,7 +411,8 @@ class Parser:
 
         fields: list[TemplateField] = []
         constraints: list[Constraint] = []
-        while not self._stream.check(RawTokenType.RBRACE) and not self._stream.eof():
+        missing_sep_reported = [False]
+        while not self._stream.check(RawTokenType.RBRACE) and not self._stream.check(RawTokenType.EOF):
             # 结构级约束: : <...>
             if isinstance(self._stream.peek(), ColonToken):
                 self._stream.advance()
@@ -409,7 +420,13 @@ class Parser:
                 constraints.extend(parsed.constraints)
             else:
                 fields.append(self._parse_template_field())
-            self._stream.skip_separators()
+            had_sep = self._stream.skip_separators()
+            self._missing_separator(
+                had_sep,
+                isinstance(self._stream.peek(), (IdentifierToken, ColonToken)),
+                RawTokenType.RBRACE,
+                missing_sep_reported,
+            )
 
         self._stream.expect(RbraceToken)
         self._stream.skip_newlines()
@@ -500,7 +517,6 @@ class Parser:
         elif self._starts_value(self._stream.peek()):
             default_value = self._parse_value()
 
-        self._stream.skip_newlines()
         return TemplateField(
             source=self._stream.span_from(first),
             name=name_tok.name,
@@ -535,7 +551,6 @@ class Parser:
         elif self._starts_value(tok):
             value = self._parse_value()
 
-        self._stream.skip_separators()
         return Field(
             source=self._stream.span_from(first),
             name=name_tok.name,
@@ -563,6 +578,32 @@ class Parser:
                 DollarToken,
             ),
         )
+
+    # ═══════════════════════════════════════════════════════
+    # 分隔符检测（元素间必须显式分隔）
+    # ═══════════════════════════════════════════════════════
+
+    def _missing_separator(
+        self,
+        had_separator: bool,
+        starts_next: bool,
+        closing_type: RawTokenType,
+        reported: list[bool],
+    ) -> None:
+        """元素之间缺少显式分隔符（逗号/换行）→ 报 parse.missing_separator。
+
+        - ``had_separator``：刚消费过逗号/换行（有分隔则无事）
+        - ``starts_next``：当前 token 是否起始下一个元素（避免与其他恢复错误叠加）
+        - 每容器只报一次（``reported`` 标志），其余缺口静默恢复
+        """
+        if had_separator or not starts_next or reported[0]:
+            return
+        if self._stream.check(closing_type) or self._stream.check(RawTokenType.EOF):
+            return
+        tok = self._stream.peek()
+        if not isinstance(tok, NoNextType):
+            self._errors.add(diag('parse.missing_separator', {}, tok.raw.source))
+        reported[0] = True
 
     # ═══════════════════════════════════════════════════════
     # 约束列表
@@ -599,21 +640,16 @@ class Parser:
                     # 直接展开: type? → one(type, ?)
                     return Constraints(
                         source=self._stream.span_from(first),
-                        constraints=[
-                            ConstraintCall(
-                                source=self._stream.span_from(first),
-                                name='one',
-                                arguments=[
-                                    ident,
-                                    ConstraintIdent(source=self._stream.single_span(first), name='?'),
-                                ],
-                            )
-                        ],
+                        constraints=[self._nullable(ident)],
                     )
 
                 # 单约束函数调用可省略尖括号: field: regex("re") = ...
                 if isinstance(self._stream.peek(), LparenToken):
                     call = self._parse_constraint_call(first)
+                    # 调用后也可空: regex("re")? → one(regex("re"), ?)
+                    if isinstance(self._stream.peek(), QuestionToken):
+                        self._stream.advance()
+                        call = self._nullable(call)
                     return Constraints(
                         source=self._stream.span_from(first),
                         constraints=[call],
@@ -635,23 +671,34 @@ class Parser:
                 self._stream.advance()
                 return Constraints(source=self._stream.span_from(first))
 
+    @staticmethod
+    def _nullable(c: Constraint) -> ConstraintCall:
+        """可空包装：constraint? → one(constraint, ?)。"""
+        return ConstraintCall(
+            source=c.source,
+            name='one',
+            arguments=[c, ConstraintIdent(source=c.source, name='?')],
+        )
+
     def _parse_constraint(self) -> Constraint:
-        """解析单个约束：标识符、函数调用或字面量。"""
+        """解析单个约束：标识符、函数调用或字面量（支持可空后缀 ?）。"""
         tok = self._stream.peek()
+        base: Constraint
 
         match tok:
             case IdentifierToken() as name_tok:
                 self._stream.advance()
                 if isinstance(self._stream.peek(), LparenToken):
-                    return self._parse_constraint_call(name_tok)
-                return ConstraintIdent(source=self._stream.single_span(name_tok), name=name_tok.name)
+                    base = self._parse_constraint_call(name_tok)
+                else:
+                    base = ConstraintIdent(source=self._stream.single_span(name_tok), name=name_tok.name)
 
             case QuestionToken():
                 self._stream.advance()
                 return ConstraintIdent(source=tok.raw.source, name='?')
 
             case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken():
-                return self._parse_constraint_literal()
+                base = self._parse_constraint_literal()
 
             case _:
                 bad_tok = self._stream.advance()
@@ -659,6 +706,12 @@ class Parser:
                     source=self._stream.single_span(bad_tok),
                     message=f'无法解析的约束: {bad_tok.raw.type.name}',
                 )
+
+        # 可空后缀: constraint? → one(constraint, ?)
+        if isinstance(self._stream.peek(), QuestionToken):
+            self._stream.advance()
+            return self._nullable(base)
+        return base
 
     def _parse_constraint_call(self, name_tok: IdentifierToken) -> ConstraintCall:
         """解析约束函数调用: name(arg, arg, ...)。"""
@@ -759,7 +812,8 @@ class Parser:
 
         fields: list[Field] = []
         constraints: list[Constraint] = []
-        while not self._stream.check(RawTokenType.RBRACE) and not self._stream.eof():
+        missing_sep_reported = [False]
+        while not self._stream.check(RawTokenType.RBRACE) and not self._stream.check(RawTokenType.EOF):
             # 结构级约束: : <...>
             if isinstance(self._stream.peek(), ColonToken):
                 self._stream.advance()
@@ -767,21 +821,34 @@ class Parser:
                 constraints.extend(parsed.constraints)
             else:
                 fields.append(self._parse_field())
-            self._stream.skip_separators()
+            had_sep = self._stream.skip_separators()
+            self._missing_separator(
+                had_sep,
+                isinstance(self._stream.peek(), (IdentifierToken, ColonToken)),
+                RawTokenType.RBRACE,
+                missing_sep_reported,
+            )
 
         self._stream.expect(RbraceToken)
         return DictValue(source=self._stream.span_from(lbrace_tok), fields=fields, constraints=constraints)
 
     def _parse_array(self) -> ArrayValue:
-        """[ value, ... ] 换行等价于逗号。"""
+        """[ value, ... ] 逗号或换行分隔，元素间必须显式分隔。"""
         lbracket_tok = self._stream.expect(LbracketToken)
         self._stream.skip_newlines()
 
         elements: list[Value] = []
-        while not self._stream.check(RawTokenType.RBRACKET) and not self._stream.eof():
+        missing_sep_reported = [False]
+        while not self._stream.check(RawTokenType.RBRACKET) and not self._stream.check(RawTokenType.EOF):
             val = self._parse_value()
             elements.append(val)
-            self._stream.skip_separators()
+            had_sep = self._stream.skip_separators()
+            self._missing_separator(
+                had_sep,
+                self._starts_value(self._stream.peek()),
+                RawTokenType.RBRACKET,
+                missing_sep_reported,
+            )
 
         self._stream.expect(RbracketToken)
         return ArrayValue(source=self._stream.span_from(lbracket_tok), elements=elements)
@@ -794,6 +861,7 @@ class Parser:
         positional: list[Value] = []
         named: dict[str, Value] = {}
         saw_named = False
+        missing_sep_reported = [False]
 
         while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
             self._stream.skip_newlines()
@@ -811,20 +879,22 @@ class Parser:
                     self._stream.advance()  # 消费 =
                     named[ident.name] = self._parse_value()
                     saw_named = True
-                    self._stream.skip_separators()
-                    continue
+                else:
+                    # 不是 = → 模板调用（位置参数），复用已消费的 ident
+                    positional.append(self._parse_template_call(ident))
+            else:
+                # 分支 2：其他 token → 一定是位置参数
+                if saw_named:
+                    self._errors.add(diag('parse.template_arg_order', {}, self._stream.single_span(name_tok)))
+                positional.append(self._parse_value())
 
-                # 不是 = → 模板调用（位置参数），复用已消费的 ident
-                positional.append(self._parse_template_call(ident))
-                self._stream.skip_separators()
-                continue
-
-            # 分支 2：其他 token → 一定是位置参数
-            if saw_named:
-                self._errors.add(diag('parse.template_arg_order', {}, self._stream.single_span(name_tok)))
-
-            positional.append(self._parse_value())
-            self._stream.skip_separators()
+            had_sep = self._stream.skip_separators()
+            self._missing_separator(
+                had_sep,
+                self._starts_value(self._stream.peek()),
+                RawTokenType.RPAREN,
+                missing_sep_reported,
+            )
 
         self._stream.expect(RparenToken)
         return TemplateCallValue(

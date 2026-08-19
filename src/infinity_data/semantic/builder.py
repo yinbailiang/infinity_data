@@ -23,6 +23,7 @@ Phase 2b（:mod:`infinity_data.semantic.executor`）：
 from __future__ import annotations
 
 import decimal
+from collections.abc import Iterator
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
@@ -96,6 +97,7 @@ class AstBuilder:
         self._namespace: dict[str, Any] = {}  # $ 引用解析目标
         self._diagnostics: list[Diagnostic] = []
         self._depth = 0
+        self._recursive_defaults: set[TemplateKey] = set()
 
     # ═══════════════════════════════════════════════════════
     # 公开入口
@@ -118,12 +120,16 @@ class AstBuilder:
         self._namespace = {}
         self._diagnostics = []
         self._depth = 0
+        self._recursive_defaults = set()
 
         # Phase 1：导入解析（独立对象，产出不可变上下文）
         context = self._resolver.resolve(doc, file)
 
         # Phase 1 产物注入执行期状态
         self._adopt(context)
+
+        # 静态防护：默认值引用环检测（默认值禁止自引用，见 neo_desg.md 2.6）
+        self._detect_recursive_defaults()
 
         # Phase 2a：构建 root（顶层结构约束挂在 root.constraints，不执行）
         root_fields: list[StdField] = []
@@ -180,6 +186,89 @@ class AstBuilder:
         self._schema_scope = context.schema_scope
         self._namespace = context.namespace
         self._diagnostics = list(context.diagnostics)
+
+    # ═══════════════════════════════════════════════════════
+    # 递归默认值防护（方案 C：默认引用图 + 静态环检测）
+    # ═══════════════════════════════════════════════════════
+
+    def _detect_recursive_defaults(self) -> None:
+        """静态检测默认值引用环，标记禁展开模板并报告根因。
+
+        模板实例化是原地展开；若某模板的默认值（经引用链）能回到自身，展开
+        永不终止。只有**默认值**参与建图——调用方提供的值是新鲜的、有限的，
+        不会引发无限展开。检测在展开前一次性完成，避免运行时白白展开
+        ``MAX_NESTING_DEPTH`` 层再报错。
+        """
+        graph: dict[TemplateKey, set[TemplateKey]] = {}
+        sources: dict[TemplateKey, dict[TemplateKey, SourceRange | None]] = {}
+
+        for key, tpl in self._templates.items():
+            scope = self._template_scopes.get(key, self._root_scope)
+            refs: set[TemplateKey] = set()
+            ref_src: dict[TemplateKey, SourceRange | None] = {}
+            for tf in tpl.fields:
+                for dep, src in self._iter_default_refs(tf.default_value, scope):
+                    if dep not in refs:
+                        refs.add(dep)
+                        ref_src[dep] = src
+            graph[key] = refs
+            sources[key] = ref_src
+
+        # DFS 三色标记找环：GRAY(1) 表示在当前展开栈上
+        self._recursive_defaults = set()
+        color: dict[TemplateKey, int] = {}
+        stack: list[TemplateKey] = []
+
+        def visit(key: TemplateKey) -> None:
+            color[key] = 1
+            stack.append(key)
+            for dep in graph.get(key, ()):
+                c = color.get(dep, 0)
+                if c == 0:
+                    visit(dep)
+                elif c == 1:
+                    start = stack.index(dep)
+                    self._recursive_defaults.update(stack[start:])
+            stack.pop()
+            color[key] = 2
+
+        for key in self._templates:
+            if color.get(key, 0) == 0:
+                visit(key)
+
+        # 报告：定位到环上模板的默认值字段（根因），而非展开深处
+        for key in self._recursive_defaults:
+            src = next((s for dep, s in sources.get(key, {}).items() if dep in self._recursive_defaults), None)
+            self._diagnostics.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    'template.recursive_default',
+                    {'template': key.name},
+                    src,
+                )
+            )
+
+    def _iter_default_refs(
+        self,
+        v: Value | None,
+        scope: Scope,
+    ) -> Iterator[tuple[TemplateKey, SourceRange | None]]:
+        """遍历默认值 Value 树，产出其中的模板调用（真名, 调用位置）。"""
+        if v is None:
+            return
+        match v:
+            case TemplateCallValue(template_name=name, source=src):
+                k = scope.get(name)
+                if k is not None:
+                    yield k, src
+            case ArrayValue(elements=els):
+                for e in els:
+                    yield from self._iter_default_refs(e, scope)
+            case DictValue(fields=fs):
+                for f in fs:
+                    yield from self._iter_default_refs(f.value, scope)
+            case _:
+                pass  # 字面量 / $ 引用 / 错误值不含模板调用
 
     # ═══════════════════════════════════════════════════════
     # 字段构建
@@ -368,12 +457,16 @@ class AstBuilder:
                 Diagnostic(Severity.ERROR, 'template.undefined', {'template': template_name}, source, path)
             )
             return StdObject()
+        # 静态环检测已标记：默认值递归引用，禁止展开（根因错误已在定义处报告）
+        if key in self._recursive_defaults:
+            return StdObject()
         template = self._templates[key]
         inner_scope = self._template_scopes[key]
 
         required = [tf for tf in template.fields if tf.default_value is None]
 
-        # 模板配置 positional=false：拒绝位置参数（强制命名参数）
+        # 模板配置 positional=false：位置参数违规报错，但值仍绑定必填字段
+        # （放宽必填绑定：只报 positional_disabled 一条，避免 missing_required 级联）
         if not template.config.positional and positional_args:
             self._diagnostics.append(
                 Diagnostic(
@@ -384,7 +477,6 @@ class AstBuilder:
                     path,
                 )
             )
-            positional_args = []  # 忽略位置参数，避免后续绑定
 
         # 未知命名参数 → ERROR（拒绝静默忽略）
         declared = {tf.name for tf in template.fields}
@@ -408,7 +500,7 @@ class AstBuilder:
                 if rf.name in param_values:
                     self._diagnostics.append(
                         Diagnostic(
-                            Severity.WARNING,
+                            Severity.ERROR,
                             'template.arg_conflict',
                             {'template': template_name, 'field': rf.name},
                             source,

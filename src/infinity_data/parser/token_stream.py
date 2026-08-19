@@ -66,10 +66,18 @@ class TokenStream(LL1Stream[Token]):
         while not self.eof() and isinstance(self.peek(), NewlineToken):
             self.advance()
 
-    def skip_separators(self) -> None:
-        """跳过逗号和换行"""
+    def skip_separators(self) -> bool:
+        """跳过逗号和换行（元素分隔符）。
+
+        Returns:
+            是否消费了至少一个分隔符——区分「有分隔符」与「无分隔符」：
+            元素之间必须显式分隔，空格不构成分隔符。
+        """
+        saw = False
         while not self.eof() and isinstance(self.peek(), (CommaToken, NewlineToken)):
             self.advance()
+            saw = True
+        return saw
 
     # ── Range 追踪 ────────────────────────────────────────
 

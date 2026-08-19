@@ -30,6 +30,11 @@ register_diagnostic_define(
         'template.same_content_diff_file',
         '{path_prefix}模板 {template!r} 内容与 {other} 中的定义相同，但来源文件不同，其导入依赖上下文可能不同',
     ),
+    diagnostic_define(
+        'template.recursive_default',
+        '{path_prefix}模板 {template!r} 的默认值形成递归引用（默认值禁止自引用，展开会无限循环）',
+        en='{path_prefix}template {template!r} has a recursive default (self-reference in defaults is forbidden; expansion would loop forever)',
+    ),
     diagnostic_define('template.import_not_found', '{path_prefix}导入文件中不存在模板 {template!r}'),
     diagnostic_define('template.import_conflict_local', '{path_prefix}导入的模板 {visible!r} 与文件内定义冲突'),
     diagnostic_define(

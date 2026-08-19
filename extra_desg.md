@@ -1,7 +1,8 @@
 # InfinityData 进阶设计文档
 
 > 基于讨论沉淀的库特性、设计取向、工具设计与改进计划。
-> 前置阅读：[neo_desg.md](./neo_desg.md)（语言基础设计）
+> 前置阅读：[neo_desg.md](./neo_desg.md)（语言基础设计）；
+> 实现层取舍见 [impl_desg.md](./impl_desg.md)（实现设计笔记）。
 
 ---
 

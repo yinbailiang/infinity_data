@@ -39,6 +39,11 @@ register_diagnostic_define(
         'parse.unrecognized_value', '[{location}] 无法解析的值: {name}', en='[{location}] unrecognized value: {name}'
     ),
     diagnostic_define(
+        'parse.missing_separator',
+        '[{location}] 元素之间缺少分隔符（逗号或换行，空格不构成分隔）',
+        en='[{location}] missing separator between elements (comma or newline; space is not a separator)',
+    ),
+    diagnostic_define(
         'parse.value_field',
         '[{location}] 值位置出现字段定义 {name}（外层数组/对象未闭合）',
         en='[{location}] field definition {name} in value position (enclosing array/object unclosed)',

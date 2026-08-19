@@ -428,6 +428,9 @@ x = X(1)
 """)
     assert bad.has_errors
     assert any(d.code == 'template.positional_disabled' for d in bad.diagnostics)
+    # 放宽必填绑定：位置值仍绑定必填字段，不产生 missing_required 级联
+    assert not any(d.code == 'template.missing_required' for d in bad.diagnostics)
+    assert bad.value == {'x': {'a': 1}}
 
     good = compile_source("""
 ~X(positional=false) {
@@ -437,6 +440,20 @@ x = X(a=2)
 """)
     assert not good.has_errors, [d.message for d in good.diagnostics]
     assert good.value == {'x': {'a': 2}}
+
+
+def test_template_arg_conflict_named_wins() -> None:
+    """同一字段同时以位置与命名参数提供 → ERROR（arg_conflict），命名优先。"""
+    result = compile_source("""
+~X {
+    a: int
+}
+x = X(3, a=2)
+""")
+    assert result.has_errors
+    assert any(d.code == 'template.arg_conflict' for d in result.diagnostics)
+    # 命名优先：位置 3 被忽略
+    assert result.value == {'x': {'a': 2}}
 
 
 def test_template_unknown_named_argument_is_error() -> None:
@@ -474,6 +491,29 @@ def test_required_before_optional_rule() -> None:
 """)
     assert result.has_errors
     assert any(d.code == 'template.required_order' for d in result.diagnostics)
+
+
+def test_required_order_relaxed_when_positional_disabled() -> None:
+    """positional=false 模板：无位置绑定，允许必填与可选交错。"""
+    good = compile_source("""
+~X(positional=false) {
+    a: int = 1
+    b: int
+}
+x = X(b=2)
+""")
+    assert not good.has_errors, [d.message for d in good.diagnostics]
+    assert good.value == {'x': {'a': 1, 'b': 2}}
+
+    # 普通模板仍强制必填在前
+    bad = compile_source("""
+~X {
+    a: int = 1
+    b: int
+}
+""")
+    assert bad.has_errors
+    assert any(d.code == 'template.required_order' for d in bad.diagnostics)
 
 
 def test_template_shadowing_builtin_type_is_error() -> None:
@@ -570,6 +610,48 @@ def test_file_import() -> None:
 # ═══════════════════════════════════════════════════════════
 # 容错
 # ═══════════════════════════════════════════════════════════
+
+
+def test_missing_separator_in_array() -> None:
+    """空格不构成分隔符：[1 2] → parse.missing_separator（尽力恢复两个元素）。"""
+    result = compile_source('x = [1 2]\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.missing_separator' for d in result.diagnostics)
+    assert result.value == {'x': [1, 2]}
+
+
+def test_separator_comma_or_newline() -> None:
+    """逗号与换行等价分隔；合法写法不受影响。"""
+    assert not compile_source('x = [1, 2, 3]\n').has_errors
+    assert not compile_source('x = [1, 2, 3,]\n').has_errors
+    assert not compile_source('x = [1\n2\n3]\n').has_errors
+    assert not compile_source('x = [1, 2\n3]\n').has_errors
+    assert not compile_source('x = {a = 1\nb = 2}\n').has_errors
+    assert not compile_source('x = {a = 1, b = 2}\n').has_errors
+
+
+def test_missing_separator_in_object() -> None:
+    result = compile_source('x = {a = 1 b = 2}\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.missing_separator' for d in result.diagnostics)
+    assert result.value == {'x': {'a': 1, 'b': 2}}
+
+
+def test_missing_separator_in_template_args() -> None:
+    result = compile_source('~X {\n    a: int\n    b: int\n}\nx = X(1 2)\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.missing_separator' for d in result.diagnostics)
+    assert result.value == {'x': {'a': 1, 'b': 2}}
+
+
+def test_missing_separator_in_template_config() -> None:
+    """模板配置同受显式分隔符约束：空格分隔 → parse.missing_separator。"""
+    bad = compile_source('~X(allow_extra = true positional = false) {\n    a: int\n}\n')
+    assert bad.has_errors
+    assert any(d.code == 'parse.missing_separator' for d in bad.diagnostics)
+
+    assert not compile_source('~X(allow_extra = true, positional = false) {\n    a: int\n}\n').has_errors
+    assert not compile_source('~X(allow_extra = true\npositional = false) {\n    a: int\n}\n').has_errors
 
 
 def test_error_recovery_unclosed_array() -> None:

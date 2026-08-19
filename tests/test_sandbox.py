@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,55 @@ def test_env_param_is_convenience_authorization(tmp_path: Path) -> None:
     _write(f, '!env import USER\nuser = $USER\n')
     result = load(f, env={'USER': 'alice'})
     assert result.value == {'user': 'alice'}
+
+
+# ═══════════════════════════════════════════════════════
+# $ 引用类型转换（as bool / int / float / str）
+# ═══════════════════════════════════════════════════════
+
+
+def test_dollar_cast_int(tmp_path: Path) -> None:
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import PORT\nport = $PORT as int\n')
+    result = load(f, env={'PORT': '8080'})
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'port': 8080}
+
+
+def test_dollar_cast_bool(tmp_path: Path) -> None:
+    """as bool：true/1 → true，其余（含 false/0/其他串）→ false，不分大小写。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import A\n!env import B\n!env import C\na = $A as bool\nb = $B as bool\nc = $C as bool\n')
+    result = load(f, env={'A': 'True', 'B': '0', 'C': 'yes'})
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'a': True, 'b': False, 'c': False}
+
+
+def test_dollar_cast_float(tmp_path: Path) -> None:
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import R\nr = $R as float\n')
+    result = load(f, env={'R': '1.5'})
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'r': Decimal('1.5')}
+
+
+def test_dollar_cast_str_and_plain(tmp_path: Path) -> None:
+    """as str 原样；无 as 时不转换（字符串保持字符串）。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import NAME\ns = $NAME as str\nplain = $NAME\n')
+    result = load(f, env={'NAME': 'demo'})
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'s': 'demo', 'plain': 'demo'}
+
+
+def test_dollar_cast_failure_warns_and_falls_back(tmp_path: Path) -> None:
+    """转换失败 → dollar.convert_failed 警告 + 回退 0（不构成错误）。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import BAD\nx = $BAD as int\n')
+    result = load(f, env={'BAD': 'not-a-number'})
+    assert not result.has_errors
+    assert any(d.code == 'dollar.convert_failed' for d in result.diagnostics)
+    assert result.value == {'x': 0}
 
 
 def test_env_authorized_read_from_os(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,6 +195,28 @@ def test_file_import_unauthorized_denied(tmp_path: Path) -> None:
     assert denied.value == {}
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert result.value == {'value': 42}
+
+
+def test_file_import_whole_file(tmp_path: Path) -> None:
+    """整文件导入：!file ... import . as all → $all 为整个结构（. 后接 as 不视为路径段）。"""
+    data = tmp_path / 'data.json'
+    _write(data, '{"host": "example.com", "port": 443}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "data.json" as json import . as all\nv = $all\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'v': {'host': 'example.com', 'port': 443}}
+
+
+def test_file_import_first_segment_as_key(tmp_path: Path) -> None:
+    """根键名为 as：首段标识符 as 保留给整文件别名，须用字符串段 ."as"。"""
+    data = tmp_path / 'data.json'
+    _write(data, '{"as": {"v": 1}, "as2": 2}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "data.json" as json import ."as" as v\nx = $v\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'x': {'v': 1}}
 
 
 # ═══════════════════════════════════════════════════════

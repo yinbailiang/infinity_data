@@ -238,6 +238,72 @@ def test_nan_as_range_argument_is_rejected() -> None:
     assert result.has_errors
 
 
+# ═══════════════════════════════════════════════════════
+# 可空约束（? 后缀）：裸 type? 与 <type?> 均须展开为 one(type, ?)
+# ═══════════════════════════════════════════════════════
+
+
+def test_nullable_in_brackets_int() -> None:
+    """<int?> 尖括号内可空：null 与值都应通过（回归：曾拆成 <int, ?> 永不满足）。"""
+    assert not compile_source('x: <int?> = null\n').has_errors
+    assert not compile_source('x: <int?> = 5\n').has_errors
+
+
+def test_nullable_in_brackets_template() -> None:
+    """<A?> 模板可空：null 与合法值都应通过。"""
+    src = '~A {\n    v: int = 1\n}\n~B {\n    a: <A?> = null\n}\nb = B(a = null)\n'
+    assert not compile_source(src).has_errors
+    src2 = '~A {\n    v: int = 1\n}\n~B {\n    a: <A?> = null\n}\nb = B(a = A())\n'
+    assert not compile_source(src2).has_errors
+
+
+def test_nullable_after_constraint_call() -> None:
+    """裸约束调用 + ?：regex("a+")? → one(regex("a+"), ?)。"""
+    assert not compile_source('x: regex("a+")? = null\n').has_errors
+    assert not compile_source('x: regex("a+")? = "aaa"\n').has_errors
+
+
+def test_nullable_self_referential_template() -> None:
+    """自引用模板的可空引用：Node? 嵌套展开应通过。"""
+    src = '~Node {\n    child: <Node?> = null\n}\nn = Node(child = Node())\n'
+    result = compile_source(src)
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'n': {'child': {'child': None}}}
+
+
+# ═══════════════════════════════════════════════════════
+# 递归默认值防护（静态环检测，方案 C）
+# ═══════════════════════════════════════════════════════
+
+
+def test_recursive_default_direct() -> None:
+    """默认值自引用 → 静态检测 template.recursive_default（不再展开 200 层）。"""
+    result = compile_source('~Node {\n    child: Node = Node()\n}\nn = Node()\n')
+    assert result.has_errors
+    assert any(d.code == 'template.recursive_default' for d in result.diagnostics)
+    assert not any(d.code == 'value.nesting_depth' for d in result.diagnostics)
+
+
+def test_recursive_default_indirect_cycle() -> None:
+    """间接环：A 默认 → B，B 默认 → A，均应被标记。"""
+    result = compile_source('~A {\n    b: B = B()\n}\n~B {\n    a: A = A()\n}\nx = A()\n')
+    assert result.has_errors
+    assert any(d.code == 'template.recursive_default' for d in result.diagnostics)
+
+
+def test_recursive_default_unused_still_detected() -> None:
+    """未实例化的递归默认模板也应被静态检测（定义即非法）。"""
+    result = compile_source('~Node {\n    child: Node = Node()\n}\n')
+    assert result.has_errors
+    assert any(d.code == 'template.recursive_default' for d in result.diagnostics)
+
+
+def test_nullable_recursive_default_is_legal() -> None:
+    """可空递归 + 默认 null：默认值为字面量，不构成引用环，合法。"""
+    result = compile_source('~Node {\n    child: <Node?> = null\n}\nn = Node()\n')
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+
+
 # ═══════════════════════════════════════════════════════════
 # 模板即约束（嵌套与可空）
 # ═══════════════════════════════════════════════════════════
