@@ -56,6 +56,7 @@ from infinity_data.tokenizer.models.tokens import (
     LbraceToken,
     LbracketToken,
     LparenToken,
+    NewlineToken,
     NoexistToken,
     NullToken,
     QuestionToken,
@@ -146,6 +147,9 @@ class Parser:
                 return self._parse_constraint_stmt()
             case _:
                 bad_tok = self._stream.advance()
+                self._errors.add(
+                    diag('parse.unrecognized_statement', {'name': bad_tok.raw.type.name}, bad_tok.raw.source)
+                )
                 return ErrorStatement(
                     source=bad_tok.raw.source,
                     message=f'无法识别的顶层 token: {bad_tok.raw.type.name}',
@@ -305,6 +309,7 @@ class Parser:
                             segments.append(JsonPathKey(source=self._stream.single_span(str_tok), key=value))
                             self._stream.advance()
                         case _:
+                            self._report_invalid_json_path('：. 后缺少段名')
                             break
 
                 case LbracketToken():
@@ -314,14 +319,24 @@ class Parser:
                             self._stream.advance()
                             if isinstance(self._stream.peek(), RbracketToken):
                                 self._stream.advance()
+                            else:
+                                self._report_invalid_json_path('：[ 下标后缺少 ]')
                             segments.append(JsonPathIndex(source=self._stream.span_from(lbracket), index=value))
                         case _:
+                            self._report_invalid_json_path('：[ 后须为整数下标')
                             break
 
                 case _:
                     break
 
         return segments
+
+    def _report_invalid_json_path(self, detail: str) -> None:
+        """JSON path 段无效 → 报 parse.invalid_json_path（指向当前 token）。"""
+        tok = self._stream.peek()
+        if isinstance(tok, NoNextType):
+            return
+        self._errors.add(diag('parse.invalid_json_path', {'detail': detail}, tok.raw.source))
 
     def _parse_template_import(self, kw_tok: FromImportToken) -> TemplateImportStmt:
         """!from "path" import Name1 [as Alias1], Name2, ..."""
@@ -505,9 +520,33 @@ class Parser:
         first = self._stream.peek()
         name_tok = self._stream.expect(IdentifierToken)
 
-        # 类型标注（模板字段必须）
-        self._stream.expect(ColonToken)
-        constraints = self._parse_constraints()
+        # 类型标注（模板字段必须）：缺失或为空 → 报错并跳过该字段
+        if isinstance(self._stream.peek(), ColonToken):
+            self._stream.advance()
+            constraints = self._parse_constraints()
+            if not constraints.constraints:
+                self._errors.add(
+                    diag(
+                        'parse.template_field_no_constraint',
+                        {'field': name_tok.name},
+                        self._stream.single_span(name_tok),
+                    )
+                )
+        else:
+            self._errors.add(
+                diag(
+                    'parse.template_field_no_constraint',
+                    {'field': name_tok.name},
+                    self._stream.single_span(name_tok),
+                )
+            )
+            self._skip_to_field_boundary()
+            return TemplateField(
+                source=self._stream.single_span(name_tok),
+                name=name_tok.name,
+                constraints=Constraints(source=self._stream.single_span(name_tok)),
+                default_value=None,
+            )
 
         # 默认值（可选，省略 = 必填）
         default_value: Value | None = None
@@ -523,6 +562,13 @@ class Parser:
             constraints=constraints,
             default_value=default_value,
         )
+
+    def _skip_to_field_boundary(self) -> None:
+        """跳过当前模板字段的残余 token，直到分隔符或模板闭合符（错误恢复）。"""
+        while not self._stream.eof() and not isinstance(
+            self._stream.peek(), (CommaToken, NewlineToken, RbraceToken)
+        ):
+            self._stream.advance()
 
     # ═══════════════════════════════════════════════════════
     # 字段
@@ -542,13 +588,19 @@ class Parser:
             self._stream.advance()
             constraints = self._parse_constraints()
 
-        # 值：有 = 时直接解析；无 = 时识别复合值、模板调用或 $ 引用
+        # 值：有 = 时直接解析；省略等号仅限复合值（dict/array）与模板调用
         value: Value | None = None
         tok = self._stream.peek()
         if isinstance(tok, EqualsToken):
             self._stream.advance()
             value = self._parse_value()
+        elif isinstance(tok, (LbraceToken, LbracketToken, IdentifierToken)):
+            value = self._parse_value()
         elif self._starts_value(tok):
+            # 字面量 / $ 引用省略等号 → 报错但仍解析（lint 式，尽力恢复）
+            self._errors.add(
+                diag('parse.field_requires_equals', {'name': name_tok.name}, self._stream.single_span(name_tok))
+            )
             value = self._parse_value()
 
         return Field(
@@ -577,6 +629,16 @@ class Parser:
                 IdentifierToken,
                 DollarToken,
             ),
+        )
+
+    @staticmethod
+    def _starts_constraint(tok: Token | NoNextType | None) -> bool:
+        """判断 token 是否可以起始一个约束（标识符 / ? / 字面量）。"""
+        if isinstance(tok, NoNextType) or tok is None:
+            return False
+        return isinstance(
+            tok,
+            (IdentifierToken, QuestionToken, StringToken, IntegerToken, FloatToken, BoolToken, NullToken),
         )
 
     # ═══════════════════════════════════════════════════════
@@ -623,11 +685,18 @@ class Parser:
         match first:
             case LangleToken():
                 self._stream.advance()
+                self._stream.skip_newlines()
                 constraints: list[Constraint] = []
-                while not self._stream.check(RawTokenType.RANGLE) and not self._stream.eof():
+                missing_sep_reported = [False]
+                while not self._stream.check(RawTokenType.RANGLE) and not self._stream.check(RawTokenType.EOF):
                     constraints.append(self._parse_constraint())
-                    if isinstance(self._stream.peek(), CommaToken):
-                        self._stream.advance()
+                    had_sep = self._stream.skip_separators()
+                    self._missing_separator(
+                        had_sep,
+                        self._starts_constraint(self._stream.peek()),
+                        RawTokenType.RANGLE,
+                        missing_sep_reported,
+                    )
                 self._stream.expect(RangleToken)
                 return Constraints(source=self._stream.span_from(first), constraints=constraints)
 
@@ -668,7 +737,12 @@ class Parser:
                 )
 
             case _:
-                self._stream.advance()
+                # 无效约束起始：报错；不消费容器闭合符（避免吞掉 }/>/）破坏外层解析）
+                if not isinstance(self._stream.peek(), (RangleToken, RbraceToken, RparenToken)):
+                    bad_tok = self._stream.advance()
+                    self._errors.add(
+                        diag('parse.unrecognized_constraint', {'name': bad_tok.raw.type.name}, bad_tok.raw.source)
+                    )
                 return Constraints(source=self._stream.span_from(first))
 
     @staticmethod
@@ -716,11 +790,18 @@ class Parser:
     def _parse_constraint_call(self, name_tok: IdentifierToken) -> ConstraintCall:
         """解析约束函数调用: name(arg, arg, ...)。"""
         self._stream.expect(LparenToken)
+        self._stream.skip_newlines()
         args: list[Constraint] = []
-        while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
+        missing_sep_reported = [False]
+        while not self._stream.check(RawTokenType.RPAREN) and not self._stream.check(RawTokenType.EOF):
             args.append(self._parse_constraint())
-            if isinstance(self._stream.peek(), CommaToken):
-                self._stream.advance()
+            had_sep = self._stream.skip_separators()
+            self._missing_separator(
+                had_sep,
+                self._starts_constraint(self._stream.peek()),
+                RawTokenType.RPAREN,
+                missing_sep_reported,
+            )
         self._stream.expect(RparenToken)
         return ConstraintCall(
             source=self._stream.span_from(name_tok),
@@ -794,6 +875,8 @@ class Parser:
                 name = cast_tok.name
                 if name in ('int', 'float', 'bool', 'str'):
                     type_cast = name
+                else:
+                    self._errors.add(diag('parse.invalid_cast', {'type': name}, cast_tok.raw.source))
                 self._stream.advance()
 
         return DollarValue(

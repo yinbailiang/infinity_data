@@ -49,6 +49,21 @@ register_diagnostic_define(
         en='[{location}] field definition {name} in value position (enclosing array/object unclosed)',
     ),
     diagnostic_define(
+        'parse.field_requires_equals',
+        '[{location}] 字段 {name} 省略等号仅限复合值与模板调用，字面量/引用须用 = 赋值',
+        en='[{location}] field {name}: "=" required here (omit "=" only for dict/array/template call)',
+    ),
+    diagnostic_define(
+        'parse.template_field_no_constraint',
+        '[{location}] 模板字段 {field} 必须有类型标注（如 {field}: int）',
+        en='[{location}] template field {field} requires a type annotation (e.g. {field}: int)',
+    ),
+    diagnostic_define(
+        'parse.invalid_cast',
+        '[{location}] 未知的类型转换 {type}（合法: bool/int/float/str）',
+        en='[{location}] unknown cast type {type} (valid: bool/int/float/str)',
+    ),
+    diagnostic_define(
         'parse.unrecognized_constraint',
         '[{location}] 无法解析的约束: {name}',
         en='[{location}] unrecognized constraint: {name}',

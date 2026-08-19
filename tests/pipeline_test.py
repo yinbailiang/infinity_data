@@ -672,6 +672,88 @@ def test_error_recovery_unknown_char() -> None:
     assert result.value.get('a') == 1
 
 
+def test_omit_equals_only_composite_or_template() -> None:
+    """省略等号仅限复合值与模板调用；字面量/$ 引用须显式 =（lint 式恢复值）。"""
+    assert not compile_source('server { port = 8080 }\n').has_errors
+    assert not compile_source('server [1, 2]\n').has_errors
+
+    for src, expect in (
+        ('x 123\n', {'x': 123}),
+        ('x "str"\n', {'x': 'str'}),
+        ('x true\n', {'x': True}),
+    ):
+        result = compile_source(src)
+        assert result.has_errors, src
+        assert any(d.code == 'parse.field_requires_equals' for d in result.diagnostics)
+        assert result.value == expect  # lint 式：报错但值保留
+
+
+def test_template_field_requires_constraint() -> None:
+    """模板字段必须带类型标注；缺失/为空 → parse.template_field_no_constraint（不崩溃）。"""
+    for src in ('~X {\n    a\n}\n', '~X {\n    a:\n}\n', '~X {\n    b = { a }\n}\n'):
+        result = compile_source(src)
+        assert result.has_errors, src
+        assert any(d.code == 'parse.template_field_no_constraint' for d in result.diagnostics), src
+
+
+def test_value_less_field_reports_and_skips() -> None:
+    """模板外字段无值 → field.missing_value + 字段跳过（noexist 语义）。"""
+    for src, expect in (
+        ('x\n', {}),
+        ('x: int\n', {}),
+        ('y = {a = 1, x}\n', {'y': {'a': 1}}),
+    ):
+        result = compile_source(src)
+        assert result.has_errors, src
+        assert any(d.code == 'field.missing_value' for d in result.diagnostics), src
+        assert result.value == expect
+
+
+def test_value_error_not_double_reported_as_missing() -> None:
+    """值解析失败（parse 已报）不再叠加 field.missing_value。"""
+    result = compile_source('x = = 5\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.unrecognized_value' for d in result.diagnostics)
+    assert not any(d.code == 'field.missing_value' for d in result.diagnostics)
+
+
+def test_no_silent_top_level_garbage() -> None:
+    """顶层垃圾 token 必须报告（parse.unrecognized_statement），不静默吞掉。"""
+    for src in (')\n', '= 5\n'):
+        result = compile_source(src)
+        assert result.has_errors, src
+        assert any(d.code == 'parse.unrecognized_statement' for d in result.diagnostics), src
+
+
+def test_no_silent_constraint_garbage() -> None:
+    """约束起始垃圾 token 必须报告（parse.unrecognized_constraint）。"""
+    result = compile_source('x: , = 5\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.unrecognized_constraint' for d in result.diagnostics)
+
+
+def test_no_silent_invalid_cast() -> None:
+    """$VAR as 非法类型必须报告（parse.invalid_cast）。"""
+    result = compile_source('!env import VAR\nx = $VAR as nonsense\n', env={'VAR': '42'})
+    assert result.has_errors
+    assert any(d.code == 'parse.invalid_cast' for d in result.diagnostics)
+
+
+def test_noexist_in_array_is_error() -> None:
+    """noexist 仅用于 dict 字段；数组元素 → 报错并按 null 处理（位置保留）。"""
+    result = compile_source('x = [noexist, 1]\n')
+    assert result.has_errors
+    assert any(d.code == 'value.noexist_in_array' for d in result.diagnostics)
+    assert result.value == {'x': [None, 1]}
+
+
+def test_three_state_nullability_survives_to_emit() -> None:
+    """三态可空在 emit 完整保留：noexist 键丢弃、null 键保留、值保留。"""
+    result = compile_source('y = {a = noexist, b = null, c = 1}\n')
+    assert not result.has_errors
+    assert result.value == {'y': {'b': None, 'c': 1}}
+
+
 def test_bang_non_import_keyword_is_tokenize_error() -> None:
     """! 后跟非 env/file/from 是词法错误（语言不允许单独 !），其余字段不受影响。"""
     result = compile_source('a = 1\n!bad\nb = 2\n')

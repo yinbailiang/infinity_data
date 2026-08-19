@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from infinity_data.infra.file import DiskFile, File
 from infinity_data.infra.location import SourceRange
+from infinity_data.infra.path import native_to_posix, posix_to_native
 from infinity_data.sandbox.config import SandboxConfig
 from infinity_data.sandbox.errors import AccessDeniedError, EnvNotAuthorizedError, EnvNotSetError
 
@@ -96,10 +97,10 @@ def match_globs(target: Path, patterns: list[str] | None, base: Path) -> bool:
         return True
     target_abs = target.resolve()
     base_abs = base.resolve()
-    target_segments = tuple(PurePosixPath(target_abs.as_posix()).parts)
+    target_segments = tuple(PurePosixPath(native_to_posix(target_abs)).parts)
     try:
         rel = target_abs.relative_to(base_abs)
-        rel_segments: tuple[str, ...] | None = tuple(rel.parts)
+        rel_segments: tuple[str, ...] | None = tuple(PurePosixPath(rel.as_posix()).parts)
     except ValueError:
         rel_segments = None  # 目标在 base 之外：仅能由绝对模式命中
     for pattern in patterns:
@@ -202,7 +203,7 @@ class Sandbox:
     ) -> File | None:
         """公共路径解析 + 授权（相对路径以 base_dir 解析，glob 以入口目录匹配）。"""
         base = base_dir if base_dir is not None else self._base_dir
-        path = Path(from_path)
+        path = posix_to_native(from_path)  # 语言内 POSIX → 当前平台原生（/c/... → C:\...）
         if not path.is_absolute():
             path = base / path
 

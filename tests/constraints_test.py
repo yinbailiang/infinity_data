@@ -304,6 +304,31 @@ def test_nullable_recursive_default_is_legal() -> None:
     assert not result.has_errors, [d.message for d in result.diagnostics]
 
 
+# ═══════════════════════════════════════════════════════
+# 约束列表/参数分隔符（逗号或换行；空格不构成分隔）
+# ═══════════════════════════════════════════════════════
+
+
+def test_constraint_list_newline_separator() -> None:
+    """约束列表支持换行分隔：<int\nrange(1,10)> 与逗号等价。"""
+    assert not compile_source('x: <int, range(1, 10)> = 5\n').has_errors
+    assert not compile_source('x: <int\nrange(1, 10)> = 5\n').has_errors
+
+    result = compile_source('x: <int range(1, 10)> = 5\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.missing_separator' for d in result.diagnostics)
+
+
+def test_constraint_args_newline_separator() -> None:
+    """约束参数支持换行分隔：range(1,\n10) 合法；空格不构成分隔。"""
+    assert not compile_source('x: <int, range(1, 10)> = 5\n').has_errors
+    assert not compile_source('x: <int, range(1,\n10)> = 5\n').has_errors
+
+    result = compile_source('x: <int, range(1 10)> = 5\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.missing_separator' for d in result.diagnostics)
+
+
 # ═══════════════════════════════════════════════════════════
 # 模板即约束（嵌套与可空）
 # ═══════════════════════════════════════════════════════════

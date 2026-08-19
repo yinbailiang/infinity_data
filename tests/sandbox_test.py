@@ -219,6 +219,17 @@ def test_file_import_first_segment_as_key(tmp_path: Path) -> None:
     assert result.value == {'x': {'v': 1}}
 
 
+def test_invalid_json_path_reported(tmp_path: Path) -> None:
+    """JSON path 无效段（如 [0 缺 ]）必须报告 parse.invalid_json_path。"""
+    data = tmp_path / 'data.json'
+    _write(data, '{"a": [7]}')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "data.json" as json import .a[0 as v\nx = $v\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
+    assert result.has_errors
+    assert any(d.code == 'parse.invalid_json_path' for d in result.diagnostics)
+
+
 # ═══════════════════════════════════════════════════════
 # glob 白名单匹配
 # ═══════════════════════════════════════════════════════

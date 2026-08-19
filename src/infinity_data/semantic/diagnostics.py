@@ -85,6 +85,11 @@ register_diagnostic_define(
     ),
     diagnostic_define('value.nesting_depth', '{path_prefix}嵌套层级超过上限 {max}'),
     diagnostic_define(
+        'value.noexist_in_array',
+        '{path_prefix}noexist 仅用于 dict 字段，数组元素中无意义（如需空位请用 null）',
+        en='{path_prefix}noexist is only for dict fields; meaningless in array elements (use null for a slot)',
+    ),
+    diagnostic_define(
         'dollar.undefined', '{path_prefix}未找到导入变量 ${name}', en='{path_prefix}undefined import variable ${name}'
     ),
     diagnostic_define(

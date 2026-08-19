@@ -279,7 +279,9 @@ class AstBuilder:
         value = self._resolve_value(field.value, path, scope)
         # 值缺失：设计文档未定义「裸 key」，noexist 需显式字面量
         if value is None:
-            self._diagnostics.append(Diagnostic(Severity.ERROR, 'field.missing_value', {}, field.source, path))
+            if not isinstance(field.value, ErrorValue):
+                # 值解析失败已由语法层报告（parse.unrecognized_value 等），不重复报
+                self._diagnostics.append(Diagnostic(Severity.ERROR, 'field.missing_value', {}, field.source, path))
             return StdField(name=field.name, value=None, source=field.source)
         specs: list[ResolvedConstraint] = []
         if field.constraints is not None:
@@ -324,8 +326,21 @@ class AstBuilder:
                     std_elements: list[StdValue] = []
                     for i, e in enumerate(els):
                         rv = self._resolve_value(e, f'{path}[{i}]', scope)
-                        if rv is not None:
-                            std_elements.append(rv)
+                        if rv is None:
+                            continue
+                        if isinstance(rv, StdLiteral) and rv.kind == 'noexist':
+                            # noexist 仅用于 dict 字段；数组元素中无意义 → 报错并按 null 处理
+                            self._diagnostics.append(
+                                Diagnostic(
+                                    Severity.ERROR,
+                                    'value.noexist_in_array',
+                                    {},
+                                    e.source,
+                                    f'{path}[{i}]',
+                                )
+                            )
+                            rv = StdLiteral(kind='null', value=None)
+                        std_elements.append(rv)
                     return StdArray(elements=std_elements)
                 case TemplateCallValue(
                     template_name=tn,
