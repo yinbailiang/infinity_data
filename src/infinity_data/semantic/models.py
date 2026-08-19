@@ -183,19 +183,23 @@ class ResolvedContext:
 
 @dataclass(frozen=True)
 class TemplateKey:
-    """模板唯一身份：来源文件内容 hash + 模板本地名。
+    """模板唯一身份：来源文件身份 + 模板本地名。
 
-    - ``content_hash``：来源文件内容的 sha256 前缀（机器无关，内容寻址）
+    - ``identity``：来源文件身份（磁盘 = resolve 绝对路径；内存 = ``路径:mem:内容hash``）
     - ``name``：模板在来源文件中的本地名（诊断显示用）
+
+    身份含来源路径：不同路径的文件即使内容相同也是不同模板身份——模板内部
+    ``!from`` 按定义文件所在目录解析，内容相同的文件其依赖语义可能不同，
+    不能互相覆盖（纯内容寻址无法表达这一区别）。
 
     frozen 保证可哈希，直接作为 ``_templates`` 等表的键。
     """
 
-    content_hash: str
+    identity: str
     name: str
 
     def __str__(self) -> str:
-        return f'{self.content_hash}:{self.name}'
+        return f'{self.identity}:{self.name}'
 
 
 Scope = dict[str, TemplateKey]

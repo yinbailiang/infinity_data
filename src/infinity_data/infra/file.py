@@ -6,8 +6,8 @@
 - ``root_path``：相对导入解析基准（所在目录）
 - ``read()``：源码内容
 - ``chars()``：逐字符迭代流（词法分析输入）
-- ``identity``：唯一身份（磁盘 = resolve 后绝对路径；内存 = 内容寻址）
-- ``content_hash()``：内容 sha256 前缀（模板身份，机器无关）
+- ``identity``：唯一身份（磁盘 = resolve 后绝对路径；内存 = ``路径:mem:内容hash``）；模板身份（TemplateKey）基于它，含来源路径
+- ``content_hash()``：内容 sha256 前缀（MemFile 身份的一部分 / 内容校验）
 """
 
 import hashlib
@@ -35,11 +35,11 @@ class File:
 
     @property
     def identity(self) -> str:
-        """唯一身份（循环防护 / 同真名异文件保护用）。"""
+        """唯一身份（循环导入防护 / 模板身份（TemplateKey）基础，含来源路径）。"""
         raise NotImplementedError
 
     def content_hash(self) -> str:
-        """内容 sha256 前缀（机器无关、内容寻址）。"""
+        """内容 sha256 前缀（MemFile 身份的一部分；内容校验，非模板身份本身）。"""
         return hashlib.sha256(self.read().encode('utf-8')).hexdigest()[:12]
 
 
@@ -67,7 +67,7 @@ class DiskFile(File):
 
 @dataclass(frozen=True)
 class MemFile(File):
-    """内存源码（测试/嵌入式场景）。身份按内容寻址。"""
+    """内存源码（测试/嵌入式场景）。身份 = 根路径:mem:内容hash（含路径）。"""
 
     content: str
 

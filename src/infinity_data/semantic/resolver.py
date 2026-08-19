@@ -62,7 +62,6 @@ class TemplateGraphResolver:
         # 工作状态（每次 resolve 重置）
         self._templates: dict[TemplateKey, TemplateDef] = {}
         self._template_scopes: dict[TemplateKey, Scope] = {}
-        self._template_files: dict[TemplateKey, str] = {}  # key → 来源文件 identity（同真名异文件保护）
         self._scopes_by_file: dict[str, Scope] = {}  # 文件 identity → 已构建 scope（循环导入防护）
         self._root_file: File | None = None
         self._root_scope: Scope = {}
@@ -74,8 +73,8 @@ class TemplateGraphResolver:
         """解析导入，返回不可变上下文（幂等：同一输入产出等价结果）。"""
         self._reset(file)
 
-        # 收集本地模板定义（key 键控）
-        self._collect_templates(doc, file.content_hash())
+        # 收集本地模板定义（key 键控，身份含来源文件路径）
+        self._collect_templates(doc, file.identity)
 
         # 解析模板导入（!from，含 schema.from_file 隐式导入）→ 构建主文件 scope
         root_scope = self._load_imported_templates(doc)
@@ -105,7 +104,6 @@ class TemplateGraphResolver:
     def _reset(self, file: File) -> None:
         self._templates = {}
         self._template_scopes = {}
-        self._template_files = {}
         self._scopes_by_file = {}
         self._root_file = file
         self._root_scope = {}
@@ -152,12 +150,12 @@ class TemplateGraphResolver:
             else:
                 seen_optional = True
 
-    def _collect_templates(self, doc: Document, root_hash: str) -> None:
+    def _collect_templates(self, doc: Document, root_identity: str) -> None:
         for stmt in doc.statements:
             if not isinstance(stmt, TemplateDef):
                 continue
             rejected = self._check_template_name_conflict(stmt.name, stmt.source)
-            key = TemplateKey(content_hash=root_hash, name=stmt.name)
+            key = TemplateKey(identity=root_identity, name=stmt.name)
             if not rejected and key in self._templates:
                 self._diagnostics.append(
                     Diagnostic(Severity.ERROR, 'template.duplicate', {'template': stmt.name}, stmt.source)
@@ -168,8 +166,6 @@ class TemplateGraphResolver:
             if rejected:
                 continue  # 保留首次定义，拒绝隐式的"后者覆盖前者"
             self._templates[key] = stmt
-            assert self._root_file is not None
-            self._template_files[key] = self._root_file.identity
             self._root_local_names.add(stmt.name)
 
     # ═══════════════════════════════════════════════════════
@@ -215,7 +211,7 @@ class TemplateGraphResolver:
         root_id = self._root_file.identity
         loaded: set[str] = set()
         root_scope: Scope = {
-            tpl.name: key for key, tpl in self._templates.items() if self._template_files.get(key) == root_id
+            tpl.name: key for key, tpl in self._templates.items() if key.identity == root_id
         }
 
         # schema.from_file 隐式导入：独立 scope 供顶层校验使用
@@ -241,7 +237,7 @@ class TemplateGraphResolver:
             self._map_import_items(stmt.items, dep_scope, root_scope, self._root_local_names)
         # 主文件本地模板的 scope 登记（模板展开/约束校验按此解析名字）
         for key in self._templates:
-            if self._template_files.get(key) == root_id:
+            if key.identity == root_id:
                 self._template_scopes[key] = root_scope
         return root_scope
 
@@ -279,7 +275,7 @@ class TemplateGraphResolver:
         loaded.add(file_id)
 
         try:
-            content_hash = file.content_hash()
+            _ = file.content_hash()  # 触发内容读取；身份不含内容，仍需校验文件可读
         except OSError as e:
             self._diagnostics.append(
                 Diagnostic(Severity.ERROR, 'template.read_failed', {'file': file.name, 'error': e}, source)
@@ -289,6 +285,9 @@ class TemplateGraphResolver:
         imported_doc = self._parse_document(file)
 
         # 1) 本地模板：先注册（循环导入时依赖文件的本地名部分已可见）
+        #    身份含来源文件路径：不同路径的文件即使内容相同也是不同模板身份——
+        #    模板内部 !from 按定义文件所在目录解析，内容相同的文件其依赖语义
+        #    可能不同，不能互相覆盖（纯内容寻址无法表达这一区别）
         scope: Scope = {}
         local_names: set[str] = set()
         for s in imported_doc.statements:
@@ -296,20 +295,8 @@ class TemplateGraphResolver:
                 continue
             if self._check_template_name_conflict(s.name, s.source):
                 continue
-            key = TemplateKey(content_hash=content_hash, name=s.name)
-            existing_file = self._template_files.get(key)
-            if existing_file is not None and existing_file != file_id:
-                self._diagnostics.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        'template.same_content_diff_file',
-                        {'template': s.name, 'other': existing_file},
-                        s.source,
-                    )
-                )
-                continue
+            key = TemplateKey(identity=file_id, name=s.name)
             self._templates[key] = s
-            self._template_files[key] = file_id
             scope[s.name] = key
             local_names.add(s.name)
         self._scopes_by_file[file_id] = scope
@@ -331,7 +318,7 @@ class TemplateGraphResolver:
         for s in imported_doc.statements:
             match s:
                 case TemplateDef():
-                    key = TemplateKey(content_hash=content_hash, name=s.name)
+                    key = TemplateKey(identity=file_id, name=s.name)
                     if key in self._templates:  # 同名冲突被拒绝的模板不登记 scope
                         self._template_scopes[key] = scope
                 case TemplateImportStmt():

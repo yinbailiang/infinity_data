@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+.coverage
+
+# 个人仓库笔记（不随仓库提交）
+repo-notes/

@@ -14,7 +14,7 @@ Phase 2b（:mod:`infinity_data.semantic.executor`）：
   :class:`ConstraintExecutor` 遍历 StdAst 执行约束 + 顶层 schema 校验
 
 模板身份与可见性模型：
-- 模板真名 :class:`TemplateKey`（来源文件内容 hash + 本地名），全局唯一
+- 模板真名 :class:`TemplateKey`（来源文件身份 + 本地名，含路径），全局唯一
 - 每个文件一张可见名表 scope（可见名 → 真名）；``!from ... import A as S``
   只把 ``S`` 映射进导入方 scope，原名不可见
 - 名字解析（模板调用、约束里的模板名）在解析点经 scope 翻译成真名
@@ -111,7 +111,7 @@ class AstBuilder:
 
         Args:
             doc: 语法分析产物
-            file: 源码来源（诊断名 / 相对导入基准 / 内容 hash 均由它提供）
+            file: 源码来源（诊断名 / 相对导入基准 / 模板身份（含来源路径）均由它提供）
         """
         self._templates = {}
         self._template_scopes = {}

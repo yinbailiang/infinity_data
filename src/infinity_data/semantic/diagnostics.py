@@ -27,10 +27,6 @@ register_diagnostic_define(
     diagnostic_define('template.import_depth', '{path_prefix}模板导入嵌套深度超过上限 {max}: {path_src}'),
     diagnostic_define('template.read_failed', '{path_prefix}读取模板文件失败 {file}: {error}'),
     diagnostic_define(
-        'template.same_content_diff_file',
-        '{path_prefix}模板 {template!r} 内容与 {other} 中的定义相同，但来源文件不同，其导入依赖上下文可能不同',
-    ),
-    diagnostic_define(
         'template.recursive_default',
         '{path_prefix}模板 {template!r} 的默认值形成递归引用（默认值禁止自引用，展开会无限循环）',
         en='{path_prefix}template {template!r} has a recursive default (self-reference in defaults is forbidden; expansion would loop forever)',

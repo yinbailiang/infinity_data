@@ -471,19 +471,23 @@ def test_template_import_cyclic_is_safe(tmp_path: Path) -> None:
     assert result.value == {'x': {'b': {'a': None}}}
 
 
-def test_same_content_different_files_is_rejected(tmp_path: Path) -> None:
-    """内容 hash 真名相同但来源文件不同 → 显式报错（依赖上下文可能不同）。"""
+def test_same_content_different_files_are_distinct(tmp_path: Path) -> None:
+    """内容相同的模板在不同路径是不同身份（嵌套依赖按定义文件目录解析，不可互相覆盖）。"""
     shared = '~Shared {\n    id: int = 0\n}\n'
     _write(tmp_path / 'a' / 'shared.inft', shared)
     _write(tmp_path / 'b' / 'shared.inft', shared)
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '!from "a/shared.inft" import Shared as A\n!from "b/shared.inft" import Shared as B\n',
+        '!from "a/shared.inft" import Shared as A\n'
+        '!from "b/shared.inft" import Shared as B\n'
+        'x = A(id=1)\n'
+        'y = B(id=2)\n',
     )
     result = load(f, sandbox=SandboxConfig.development())
-    assert result.has_errors
-    assert any(d.code == 'template.same_content_diff_file' for d in result.diagnostics)
+    assert not result.has_errors
+    assert result.value == {'x': {'id': 1}, 'y': {'id': 2}}
+    assert not any(d.code == 'template.same_content_diff_file' for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════

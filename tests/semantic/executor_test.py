@@ -120,7 +120,7 @@ def _server_template() -> tuple[TemplateDef, TemplateKey]:
         config=TemplateConfig(),
         source=_SRC,
     )
-    return tpl, TemplateKey(content_hash='abc', name='Server')
+    return tpl, TemplateKey(identity='abc', name='Server')
 
 
 def test_template_as_constraint_validates_handwritten_dict() -> None:
@@ -171,7 +171,7 @@ def test_template_as_constraint_marks_source_template() -> None:
 
 def _apply_schema(mode: str) -> tuple[StdObject, list[str]]:
     tpl = TemplateDef(name='Cfg', fields=[], constraints=[], config=TemplateConfig(), source=_SRC)
-    key = TemplateKey(content_hash='abc', name='Cfg')
+    key = TemplateKey(identity='abc', name='Cfg')
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])
     new_root, diags = executor.apply_schema(root, Schema(template='Cfg', mode=mode), tpl, {})  # type: ignore[arg-type]
@@ -180,7 +180,7 @@ def _apply_schema(mode: str) -> tuple[StdObject, list[str]]:
 
 def test_schema_strict_extra_field_raises() -> None:
     tpl = TemplateDef(name='Cfg', fields=[], constraints=[], config=TemplateConfig(), source=_SRC)
-    key = TemplateKey(content_hash='abc', name='Cfg')
+    key = TemplateKey(identity='abc', name='Cfg')
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])
     with pytest.raises(SchemaError):
