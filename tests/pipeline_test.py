@@ -1,5 +1,6 @@
 """流水线端到端测试：词法 → 语法 → 语义 → 降维。"""
 
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -586,15 +587,41 @@ def test_duplicate_template_still_validates_internals() -> None:
 
 
 def test_env_import() -> None:
-    result = load('test_import.infd', env={'USER': 'alice', 'HOME': '/home/alice'})
+    result = compile_source('''\
+# 测试 !env import
+!env import USER as system_user
+!env import HOME
+
+# 测试 $ 引用 + 类型转换
+app {
+    user = $system_user
+    home = $HOME
+}
+''', env={'USER': 'alice', 'HOME': '/home/alice'})
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'app': {'user': 'alice', 'home': '/home/alice'}}
 
 
-def test_file_import() -> None:
+def test_file_import(infd_file: Callable[[str, str], Path]) -> None:
     # M3 零信任：!file 需要显式授权（allow_files glob 白名单）
+    infd_file('test_config.json', '''{
+    "server": {
+        "host": "prod.example.com",
+        "port": 443,
+        "features": ["http2", "tls1.3"]
+    }
+}''')
+    path = infd_file('test_file_import.infd', '''\
+!file "test_config.json" as json import .server.host as srv_host, .server.port as srv_port, .server.features as srv_features
+
+config {
+    host = $srv_host
+    port = $srv_port
+    features = $srv_features
+}
+''')
     result = load(
-        'test_file_import.infd',
+        path,
         sandbox=SandboxConfig(allow_files=['./test_config.json']),
     )
     assert not result.has_errors, [d.message for d in result.diagnostics]
@@ -774,7 +801,111 @@ def test_bang_at_eof_is_tokenize_error() -> None:
 
 
 def test_golden_test_infd() -> None:
-    result = load('test.infd')
+    result = compile_source('''\
+# ============================================================
+# 综合测试：覆盖语言各项语法特性
+# ============================================================
+
+# -- 模板定义 -------------------------------------------------
+
+~Server {
+    host: str = "0.0.0.0"
+    port: <int, range(1, 65535)> = 80
+    features: dict {
+        caching: <?> = noexist
+        compression: bool = true
+    }
+    tags: <list, each(str)> = ["web"]
+}
+
+~Database {
+    host: str = "localhost"
+    port: int = 5432
+    name: str = "mydb"
+    pool_size: <int, range(1, 100)> = 10
+}
+
+# -- 应用配置 -------------------------------------------------
+
+MyApp {
+    # 简单字段 + 类型推断
+    version = "2.0.0"
+    debug = false
+    max_retries = 3
+
+    # 带约束的类型标注
+    timeout: <int, range(1, 300)> = 30
+    log_level: <str, in("debug", "info", "warn", "error")> = "info"
+    ratio: float = 0.75
+
+    # 存在性标记
+    experimental_features = noexist
+    maintenance_mode = noexist
+
+    # 可空字段
+    description: str? = null
+    backup_host: str? = "fallback.example.com"
+
+    # 嵌套对象
+    database {
+        adapter = "postgresql"
+        host = "db.internal"
+        port = 5432
+        credentials {
+            username = "admin"
+            password = "secret123"
+        }
+    }
+
+    # 对象数组
+    servers [
+        {
+            name = "api-01"
+            ip = "10.0.0.1"
+            weight = 100
+        }
+        {
+            name = "api-02"
+            ip = "10.0.0.2"
+            weight = 80
+        }
+    ]
+
+    # 模板实例化
+    api Server(
+        port = 443
+        host = "api.example.com"
+        features = {
+            caching=null
+            compression=true
+        }
+    )
+    other Server()
+    db Database(pool_size=20)
+
+    # 嵌套对象中使用模板调用
+    cache {
+        redis Server(host="redis.internal", port=6379)
+        ttl_seconds = 3600
+    }
+
+    # 多行字符串数组
+    allowed_origins [
+        "https://app.example.com"
+        "https://admin.example.com"
+        "http://localhost:3000"
+    ]
+
+    # 混合类型数组
+    mixed_values [
+        42
+        3.14
+        "hello"
+        true
+        null
+    ]
+}
+''')
     errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
     assert not errors, [f'{d.location}: {d.message}' for d in errors]
 

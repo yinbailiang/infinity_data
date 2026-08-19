@@ -9,7 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Tools cache
 .coverage
+.pytest_cache/
+.ruff_cache/
 
-# 个人仓库笔记（不随仓库提交）
-repo-notes/
+# Others no code things
+others/
