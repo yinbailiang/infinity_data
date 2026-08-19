@@ -1,4 +1,4 @@
-"""semantic/imports.py 单元测试：ImportResolver 命名空间解析。"""
+"""semantic/resolver/imports.py 单元测试：ImportResolver 命名空间解析。"""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -8,7 +8,7 @@ from infinity_data.infra.diagnostics import Severity
 from infinity_data.infra.file import MemFile
 from infinity_data.infra.location import SourceRange
 from infinity_data.sandbox import Sandbox, SandboxConfig
-from infinity_data.semantic.imports import ImportResolver, ReportFn
+from infinity_data.semantic.resolver import ImportResolver, ReportFn
 
 
 def _report(diags: list[tuple[Severity, str]]) -> ReportFn:

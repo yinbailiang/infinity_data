@@ -9,7 +9,7 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 from infinity_data.infra.diagnostics import Diagnostic
-from infinity_data.semantic.models import StdArray, StdLiteral, StdObject, StdValue
+from infinity_data.semantic.builder.models import StdArray, StdLiteral, StdObject, StdValue
 from infinity_data.semantic.registry._core import (
     ConstraintResult,
     Executor,

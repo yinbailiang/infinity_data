@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -161,6 +161,10 @@ class DiagnosticCollector:
     def add(self, error: Diagnostic) -> None:
         """添加一个诊断。"""
         self._errors.append(error)
+
+    def extend(self, errors: Iterable[Diagnostic]) -> None:
+        """批量添加诊断。"""
+        self._errors.extend(errors)
 
     # ── 只读查询 ──────────────────────────────────────
 

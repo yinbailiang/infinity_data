@@ -1,6 +1,6 @@
 """前端流水线：源码 File → RawAst Document + 前端诊断（容错收集）。
 
-供 :mod:`pipeline`（主文件）与 :mod:`semantic.builder`（外部模板文件）共用，
+供 :mod:`pipeline`（主文件）与 :mod:`semantic.resolver`（外部模板文件）共用，
 消除两处重复的 RawTokenizer → FinalTokenizer → Parser 组装。
 """
 

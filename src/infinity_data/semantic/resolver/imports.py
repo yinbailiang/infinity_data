@@ -1,11 +1,14 @@
-"""导入语句解析：``!env`` / ``!file`` / ``!from``。
+"""导入语句求解：``!env`` / ``!file`` / ``!from`` 的系统访问。
 
 所有系统访问经 :class:`Sandbox` 中介：
 
 - ``!env import``：变量经 ``Sandbox.getenv`` 授权查询
 - ``!file``：数据文件经 ``Sandbox.open_file`` 产出 File 后解析
 - ``!from``（模板导入）：模板文件经 ``Sandbox.open_template`` 产出 File，
-  模板定义的实际加载由 :class:`AstBuilder` 完成
+  模板定义的实际加载由 Phase 1 的 :class:`TemplateGraphResolver` 完成
+
+本层产出 ``$`` 引用命名空间（alias → Python 值），经 ``ReportFn`` 上报诊断
+（由调用方注入到共享收集器）。纯数据依赖：不引用任何 Phase 2 对象。
 """
 
 from __future__ import annotations
@@ -131,7 +134,7 @@ class ImportResolver:
                 continue
             self._bind(namespace, item.alias, value, report, item.source)
 
-    # ── 模板导入路径解析（!from 由 AstBuilder 使用）──
+    # ── 模板导入路径解析（!from 由 TemplateGraphResolver 使用）──
 
     def resolve_template_path(
         self,

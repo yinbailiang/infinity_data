@@ -8,18 +8,14 @@ from __future__ import annotations
 
 import pytest
 
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.location import SourceRange
 from infinity_data.parser.models import Constraints, TemplateConfig, TemplateDef, TemplateField
 from infinity_data.sandbox import Schema, SchemaError
+from infinity_data.semantic.builder import ResolvedConstraint, StdField, StdLiteral, StdObject
 from infinity_data.semantic.executor import ConstraintExecutor
-from infinity_data.semantic.models import (
-    ResolvedConstraint,
-    StdField,
-    StdLiteral,
-    StdObject,
-    TemplateKey,
-)
 from infinity_data.semantic.registry import ConstraintRegistry
+from infinity_data.semantic.resolver import TemplateKey
 
 _SRC = SourceRange.empty()
 
@@ -43,16 +39,18 @@ def test_validate_field_constraint_failure() -> None:
         value=StdLiteral(kind='int', value=3),
         constraints=[ResolvedConstraint(name='str')],
     )
-    diags = _executor().validate(StdObject(fields=[field]))
-    assert [d.code for d in diags] == ['constraint.type_mismatch']
+    collector = DiagnosticCollector()
+    _executor().validate(StdObject(fields=[field]), collector)
+    assert [d.code for d in collector] == ['constraint.type_mismatch']
 
 
 def test_validate_only_checks_does_not_coerce() -> None:
     """只校验不转换：float 拒绝 int，失败后值保持原样。"""
     value = StdLiteral(kind='int', value=3)
     field = StdField(name='x', value=value, constraints=[ResolvedConstraint(name='float')])
-    diags = _executor().validate(StdObject(fields=[field]))
-    assert diags
+    collector = DiagnosticCollector()
+    _executor().validate(StdObject(fields=[field]), collector)
+    assert list(collector)
     assert field.value is value  # 未转换
 
 
@@ -66,8 +64,9 @@ def test_field_constraint_chain_short_circuit() -> None:
             ResolvedConstraint(name='range', args=[0, 10]),
         ],
     )
-    diags = _executor().validate(StdObject(fields=[field]))
-    assert [d.code for d in diags] == ['constraint.type_mismatch']  # range 未执行
+    collector = DiagnosticCollector()
+    _executor().validate(StdObject(fields=[field]), collector)
+    assert [d.code for d in collector] == ['constraint.type_mismatch']  # range 未执行
 
 
 def test_object_structure_constraints_all_executed() -> None:
@@ -79,8 +78,9 @@ def test_object_structure_constraints_all_executed() -> None:
             ResolvedConstraint(name='size', args=[2, 10]),
         ],
     )
-    diags = _executor().validate(obj)
-    assert [d.code for d in diags] == ['constraint.size_out', 'constraint.size_out']
+    collector = DiagnosticCollector()
+    _executor().validate(obj, collector)
+    assert [d.code for d in collector] == ['constraint.size_out', 'constraint.size_out']
 
 
 def test_validate_recurses_into_nested_object() -> None:
@@ -90,8 +90,9 @@ def test_validate_recurses_into_nested_object() -> None:
         constraints=[ResolvedConstraint(name='size', args=[1, 10])],
     )
     outer = StdObject(fields=[StdField(name='child', value=inner)])
-    diags = _executor().validate(outer)
-    assert [d.code for d in diags] == ['constraint.size_out']
+    collector = DiagnosticCollector()
+    _executor().validate(outer, collector)
+    assert [d.code for d in collector] == ['constraint.size_out']
 
 
 # ═══════════════════════════════════════════════════════════
@@ -134,18 +135,20 @@ def test_template_as_constraint_validates_handwritten_dict() -> None:
             StdField(name='port', value=StdLiteral(kind='int', value=80)),
         ]
     )
-    assert (
-        executor.validate(
-            StdObject(fields=[StdField(name='hand', value=ok, constraints=[ResolvedConstraint(name=str(key))])])
-        )
-        == []
+    collector = DiagnosticCollector()
+    executor.validate(
+        StdObject(fields=[StdField(name='hand', value=ok, constraints=[ResolvedConstraint(name=str(key))])]),
+        collector,
     )
+    assert not list(collector)
 
     bad = StdObject(fields=[StdField(name='host', value=StdLiteral(kind='str', value='h'))])
-    diags = executor.validate(
-        StdObject(fields=[StdField(name='hand', value=bad, constraints=[ResolvedConstraint(name=str(key))])])
+    collector2 = DiagnosticCollector()
+    executor.validate(
+        StdObject(fields=[StdField(name='hand', value=bad, constraints=[ResolvedConstraint(name=str(key))])]),
+        collector2,
     )
-    assert [d.code for d in diags] == ['template.missing_field']
+    assert [d.code for d in collector2] == ['template.missing_field']
 
 
 def test_template_as_constraint_marks_source_template() -> None:
@@ -158,8 +161,10 @@ def test_template_as_constraint_marks_source_template() -> None:
             StdField(name='port', value=StdLiteral(kind='int', value=80)),
         ]
     )
+    collector = DiagnosticCollector()
     executor.validate(
-        StdObject(fields=[StdField(name='hand', value=obj, constraints=[ResolvedConstraint(name=str(key))])])
+        StdObject(fields=[StdField(name='hand', value=obj, constraints=[ResolvedConstraint(name=str(key))])]),
+        collector,
     )
     assert obj.template == key
 
@@ -174,8 +179,9 @@ def _apply_schema(mode: str) -> tuple[StdObject, list[str]]:
     key = TemplateKey(identity='abc', name='Cfg')
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])
-    new_root, diags = executor.apply_schema(root, Schema(template='Cfg', mode=mode), tpl, {})  # type: ignore[arg-type]
-    return new_root, [d.code for d in diags]
+    collector = DiagnosticCollector()
+    new_root = executor.apply_schema(root, Schema(template='Cfg', mode=mode), tpl, {}, collector)  # type: ignore[arg-type]
+    return new_root, [d.code for d in collector]
 
 
 def test_schema_strict_extra_field_raises() -> None:
@@ -184,7 +190,7 @@ def test_schema_strict_extra_field_raises() -> None:
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])
     with pytest.raises(SchemaError):
-        executor.apply_schema(root, Schema(template='Cfg', mode='strict'), tpl, {})
+        executor.apply_schema(root, Schema(template='Cfg', mode='strict'), tpl, {}, DiagnosticCollector())
 
 
 def test_schema_lenient_extra_field_warns() -> None:

@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
-from infinity_data.semantic.models import (
+from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
     StdArray,
     StdField,

@@ -1,14 +1,16 @@
-"""导入解析（Phase 1）：构建模板图、可见名表与数据命名空间。
+"""模板图求解器（Phase 1）：构建模板图、可见名表与数据命名空间。
 
 将「模板导入（``!from``）、数据导入（``!env`` / ``!file``）、模板定义收集」
 从语义分析中独立出来，产出不可变的 :class:`ResolvedContext` 供
-:class:`infinity_data.semantic.builder.AstBuilder`（Phase 2a）消费。
+Phase 2a（:class:`~infinity_data.semantic.builder.AstBuilder`）消费。
 
 - 本层**不执行任何约束**：只解析名字、加载模板定义、构建 scope；
   模板展开 / 约束求值 / schema 校验全部留在 Phase 2。
 - ``resolve()`` 幂等：同一输入产出等价上下文，不依赖调用历史；
   外部文件解析结果可经 ``parse_cache`` 跨调用复用（增量编译 / LSP）。
 - 遮蔽检查只读查询注册表的内置约束名（不触发约束执行）。
+- 诊断写入调用方注入的共享 :class:`DiagnosticCollector`（流水线单一收集器），
+  本层不持有诊断列表、不产出诊断数据。
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from infinity_data.frontend import parse_source
-from infinity_data.infra.diagnostics import Diagnostic, Severity
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.infra.file import File
 from infinity_data.parser.models import (
     Document,
@@ -27,9 +29,9 @@ from infinity_data.parser.models import (
     TemplateImportStmt,
 )
 from infinity_data.sandbox import Schema
-from infinity_data.semantic.imports import ImportResolver
-from infinity_data.semantic.models import ResolvedContext, Scope, TemplateKey
 from infinity_data.semantic.registry import ConstraintRegistry
+from infinity_data.semantic.resolver.imports import ImportResolver
+from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 MAX_IMPORT_DEPTH = 32
@@ -37,7 +39,7 @@ MAX_IMPORT_DEPTH = 32
 
 
 class TemplateGraphResolver:
-    """模板图解析器（Phase 1）：递归加载导入、构建 scope、解析数据导入。
+    """模板图求解器（Phase 1）：递归加载导入、构建 scope、解析数据导入。
 
     Args:
         registry: 约束注册表（仅用于内置约束名的遮蔽检查，不执行约束）
@@ -67,11 +69,15 @@ class TemplateGraphResolver:
         self._root_scope: Scope = {}
         self._root_local_names: set[str] = set()
         self._schema_scope: Scope | None = None
-        self._diagnostics: list[Diagnostic] = []
+        # 本次 resolve 的共享诊断收集器（流水线单一收集器，resolve() 注入）
+        self._collector: DiagnosticCollector = DiagnosticCollector()
 
-    def resolve(self, doc: Document, file: File) -> ResolvedContext:
-        """解析导入，返回不可变上下文（幂等：同一输入产出等价结果）。"""
-        self._reset(file)
+    def resolve(self, doc: Document, file: File, collector: DiagnosticCollector) -> ResolvedContext:
+        """求解导入，返回不可变上下文（幂等：同一输入产出等价结果）。
+
+        诊断（``import.*`` / ``template.*`` 域）写入 ``collector``。
+        """
+        self._reset(file, collector)
 
         # 收集本地模板定义（key 键控，身份含来源文件路径）
         self._collect_templates(doc, file.identity)
@@ -88,7 +94,6 @@ class TemplateGraphResolver:
             root_scope=root_scope,  # 与 template_scopes 内的定义点 scope 同一对象
             schema_scope=self._schema_scope,
             namespace=dict(namespace),
-            diagnostics=tuple(self._diagnostics),
         )
 
     @property
@@ -98,10 +103,10 @@ class TemplateGraphResolver:
 
     @property
     def schema(self) -> Schema | None:
-        """顶层 schema（Phase 2 顶层校验复用同一实例）。"""
+        """顶层 schema（Phase 2b 顶层校验复用同一实例）。"""
         return self._schema
 
-    def _reset(self, file: File) -> None:
+    def _reset(self, file: File, collector: DiagnosticCollector) -> None:
         self._templates = {}
         self._template_scopes = {}
         self._scopes_by_file = {}
@@ -109,7 +114,7 @@ class TemplateGraphResolver:
         self._root_scope = {}
         self._root_local_names = set()
         self._schema_scope = None
-        self._diagnostics = []
+        self._collector = collector
 
     # ═══════════════════════════════════════════════════════
     # 模板收集
@@ -123,7 +128,7 @@ class TemplateGraphResolver:
         内置约束保持可用。
         """
         if name in self._registry.names:
-            self._diagnostics.append(Diagnostic(Severity.ERROR, 'template.shadows_builtin', {'template': name}, source))
+            self._collector.add(Diagnostic(Severity.ERROR, 'template.shadows_builtin', {'template': name}, source))
             return True
         return False
 
@@ -139,7 +144,7 @@ class TemplateGraphResolver:
         for tf in stmt.fields:
             if tf.default_value is None:
                 if seen_optional:
-                    self._diagnostics.append(
+                    self._collector.add(
                         Diagnostic(
                             Severity.ERROR,
                             'template.required_order',
@@ -157,7 +162,7 @@ class TemplateGraphResolver:
             rejected = self._check_template_name_conflict(stmt.name, stmt.source)
             key = TemplateKey(identity=root_identity, name=stmt.name)
             if not rejected and key in self._templates:
-                self._diagnostics.append(
+                self._collector.add(
                     Diagnostic(Severity.ERROR, 'template.duplicate', {'template': stmt.name}, stmt.source)
                 )
                 rejected = True
@@ -188,18 +193,18 @@ class TemplateGraphResolver:
         for item in items:
             dep_key = dep_scope.get(item.name)
             if dep_key is None:
-                self._diagnostics.append(
+                self._collector.add(
                     Diagnostic(Severity.ERROR, 'template.import_not_found', {'template': item.name}, item.source)
                 )
                 continue
             visible = item.alias or item.name
             if visible in scope:
                 if visible in local_names:
-                    self._diagnostics.append(
+                    self._collector.add(
                         Diagnostic(Severity.ERROR, 'template.import_conflict_local', {'visible': visible}, item.source)
                     )
                 else:
-                    self._diagnostics.append(
+                    self._collector.add(
                         Diagnostic(Severity.ERROR, 'template.import_duplicate', {'visible': visible}, item.source)
                     )
             else:
@@ -252,7 +257,7 @@ class TemplateGraphResolver:
     ) -> Scope:
         """加载单个模板文件，返回该文件的可见 scope（递归解析嵌套 !from）。"""
         if depth > MAX_IMPORT_DEPTH:
-            self._diagnostics.append(
+            self._collector.add(
                 Diagnostic(
                     Severity.ERROR, 'template.import_depth', {'max': MAX_IMPORT_DEPTH, 'path_src': from_path}, source
                 )
@@ -277,7 +282,7 @@ class TemplateGraphResolver:
         try:
             _ = file.content_hash()  # 触发内容读取；身份不含内容，仍需校验文件可读
         except OSError as e:
-            self._diagnostics.append(
+            self._collector.add(
                 Diagnostic(Severity.ERROR, 'template.read_failed', {'file': file.name, 'error': e}, source)
             )
             return {}
@@ -325,7 +330,7 @@ class TemplateGraphResolver:
                     pass
                 case _:
                     if file.name.endswith('.inft'):
-                        self._diagnostics.append(Diagnostic(Severity.ERROR, 'inft.not_allowed', {}, s.source))
+                        self._collector.add(Diagnostic(Severity.ERROR, 'inft.not_allowed', {}, s.source))
 
         return scope
 
@@ -339,7 +344,7 @@ class TemplateGraphResolver:
             if cached is not None:
                 return cached
         doc, diagnostics = parse_source(file)
-        self._diagnostics.extend(diagnostics)
+        self._collector.extend(diagnostics)
         if self._parse_cache is not None:
             self._parse_cache[file.identity] = doc
         return doc
@@ -351,4 +356,4 @@ class TemplateGraphResolver:
         params: Mapping[str, Any],
         source: SourceRange | None,
     ) -> None:
-        self._diagnostics.append(Diagnostic(severity=severity, code=code, params=dict(params), source=source))
+        self._collector.add(Diagnostic(severity=severity, code=code, params=dict(params), source=source))

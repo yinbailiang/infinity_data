@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
-from infinity_data.semantic.models import StdValue
+from infinity_data.semantic.builder.models import StdValue
 from infinity_data.semantic.registry._core import (
     ConstraintResult,
     Executor,

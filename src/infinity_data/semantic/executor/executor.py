@@ -9,24 +9,25 @@
 - **只校验、不转换**：约束失败仅产出诊断，不改变值（coercion 属错误设计）
 - 顶层 schema 校验（strict/lenient/strip）也在此：
   对顶层对象执行模板约束 + 额外字段策略
+
+本层消费 Phase 2a 数据模型（:class:`StdDocument` 等），与构建器零耦合；
+诊断写入调用方注入的共享 :class:`DiagnosticCollector`（流水线单一收集器）。
 """
 
 from __future__ import annotations
 
-from infinity_data.infra.diagnostics import Diagnostic, Severity
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.parser.models import TemplateDef
 from infinity_data.sandbox import Schema, SchemaError
-from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
-from infinity_data.semantic.models import (
+from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
-    Scope,
     StdArray,
     StdField,
     StdLiteral,
     StdObject,
     StdValue,
-    TemplateKey,
 )
+from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
 from infinity_data.semantic.registry import (
     ConstraintRegistry,
     ConstraintResult,
@@ -34,6 +35,7 @@ from infinity_data.semantic.registry import (
     fail_result,
     ok_result,
 )
+from infinity_data.semantic.resolver.models import Scope, TemplateKey
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 _INVALID_CONSTRAINT = '@invalid'
@@ -58,34 +60,30 @@ class ConstraintExecutor:
     # 遍历入口
     # ═══════════════════════════════════════════════════════
 
-    def validate(self, node: StdValue, path: str = '') -> list[Diagnostic]:
-        """递归遍历节点，执行携带的约束，返回诊断（不修改值）。"""
-        diags: list[Diagnostic] = []
+    def validate(self, node: StdValue, collector: DiagnosticCollector, path: str = '') -> None:
+        """递归遍历节点，执行携带的约束，诊断写入 ``collector``（不修改值）。"""
         if isinstance(node, StdObject):
             for f in node.fields:
-                diags.extend(self._validate_field(f, path))
+                self._validate_field(f, collector, path)
             # 结构级约束（dict 级 / 模板级 / 顶层）：全部执行（不短路）
             for spec in node.constraints:
                 result = self._exec(spec, node, spec.source, path)
                 if not result.ok:
-                    diags.extend(result.diagnostics)
+                    collector.extend(result.diagnostics)
         elif isinstance(node, StdArray):
             for i, elem in enumerate(node.elements):
-                diags.extend(self.validate(elem, f'{path}[{i}]'))
-        return diags
+                self.validate(elem, collector, f'{path}[{i}]')
 
-    def _validate_field(self, field: StdField, path: str) -> list[Diagnostic]:
+    def _validate_field(self, field: StdField, collector: DiagnosticCollector, path: str) -> None:
         """字段：先递归值（内部结构约束），再执行字段注解约束（链式短路）。"""
-        diags: list[Diagnostic] = []
         child = f'{path}.{field.name}' if path else field.name
         if field.value is not None:
-            diags.extend(self.validate(field.value, child))
+            self.validate(field.value, collector, child)
         for spec in field.constraints:
             result = self._exec(spec, field.value, spec.source or field.source, child)
             if not result.ok:
-                diags.extend(result.diagnostics)
+                collector.extend(result.diagnostics)
                 break  # 约束链短路（与构建期语义一致）
-        return diags
 
     # ═══════════════════════════════════════════════════════
     # 约束执行
@@ -201,16 +199,15 @@ class ConstraintExecutor:
         schema: Schema,
         tpl: TemplateDef,
         scope: Scope,
-    ) -> tuple[StdObject, list[Diagnostic]]:
-        """按模板校验顶层对象（strict/lenient/strip）。
+        collector: DiagnosticCollector,
+    ) -> StdObject:
+        """按模板校验顶层对象（strict/lenient/strip），返回校验后的 root。
 
-        Returns:
-            ``(校验后的 root, 非致命诊断)``——lenient 的额外字段 WARNING 直接返回；
-            strict / 必填缺失 / 字段 / 模板级约束失败聚合为 :class:`SchemaError` 抛出。
+        - lenient 的额外字段 WARNING 写入 ``collector``（非致命）
+        - strict / 必填缺失 / 字段 / 模板级约束失败聚合为 :class:`SchemaError` 抛出
         """
         mode = schema.mode
         declared = {tf.name for tf in tpl.fields}
-        returned: list[Diagnostic] = []
         diags: list[Diagnostic] = []
 
         # 额外字段处理（模式差异）
@@ -219,7 +216,7 @@ class ConstraintExecutor:
             if mode == 'strict':
                 diags.append(Diagnostic(Severity.ERROR, 'schema.extra_fields', {'fields': extra_names}, None))
             elif mode == 'lenient':
-                returned.append(
+                collector.add(
                     Diagnostic(Severity.WARNING, 'schema.extra_fields_lenient', {'fields': extra_names}, None)
                 )
             else:  # strip
@@ -259,4 +256,4 @@ class ConstraintExecutor:
 
         if diags:
             raise SchemaError('schema.failed', {'detail': '；'.join(d.message for d in diags)})
-        return root, returned
+        return root

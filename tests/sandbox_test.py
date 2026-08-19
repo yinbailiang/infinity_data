@@ -16,7 +16,7 @@ from infinity_data import (
     load,
     safe_load,
 )
-from infinity_data.semantic.models import Severity
+from infinity_data.semantic import Severity
 
 
 def _write(path: Path, text: str) -> None:
@@ -590,7 +590,8 @@ def test_compile_document(tmp_path: Path) -> None:
     _write(f, 'name = "demo"\n')
     doc = compile_document(f)
     assert doc.root.get('name') is not None
-    assert not doc.has_errors
+    # StdDocument 为纯数据（不携带诊断）；无错误经 load 的 CompilationResult 验证
+    assert not load(f).has_errors
 
 
 def test_compile_source_with_schema(tmp_path: Path) -> None:

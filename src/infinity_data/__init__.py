@@ -23,7 +23,7 @@ from infinity_data.pipeline import (
     safe_load,
 )
 from infinity_data.sandbox import SandboxConfig, SandboxError, Schema, SchemaError
-from infinity_data.semantic.models import Diagnostic, Severity
+from infinity_data.semantic import Diagnostic, Severity
 
 __all__ = [
     'compile_source',

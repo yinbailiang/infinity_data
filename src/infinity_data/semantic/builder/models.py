@@ -1,24 +1,43 @@
-"""语义分析阶段的标准 AST（StdAst）与统一诊断模型。
+"""Phase 2a（构建）数据模型：标准 AST（StdAst）与已解析约束。
 
-StdAst 是模板展开、约束解析之后的规范化 AST，**携带约束但不执行**：
+本子模块**只定义数据**，不包含任何构建逻辑（构建器见 :mod:`builder`）。
+Phase 2b（约束执行）通过本层模型消费构建产物——子模块间仅经数据模型依赖。
 
 - 三态可空：``noexist``（键不存在）/ ``null``（键存在值为 null）/ value
 - 浮点统一为 :class:`decimal.Decimal`（规范要求无限精度十进制浮点）
 - ``nan`` / ``+inf`` / ``-inf`` 以 ``Decimal("NaN")`` / ``Decimal("Infinity")`` /
   ``Decimal("-Infinity")`` 表示，kind 均为 ``"float"``
-- 节点携带已解析约束（:class:`ResolvedConstraint`），由 :class:`ConstraintExecutor`
-  遍历执行（只校验，不转换）
+- 节点携带已解析约束（:class:`ResolvedConstraint`），由 Phase 2b 遍历执行
+  （只校验，不转换）
+
+模板真名 :class:`TemplateKey` 与可见名表 :class:`Scope` 属 Phase 1 数据模型
+（:mod:`infinity_data.semantic.resolver.models`），本层仅消费。
 """
 
 from __future__ import annotations
 
 import decimal
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.infra.location import SourceRange
 from infinity_data.parser.models import TemplateDef
+
+if TYPE_CHECKING:
+    # 仅类型注解使用（from __future__ import annotations 下为惰性字符串）：
+    # 运行时导入会经 resolver/__init__ → resolver.resolver → registry → builder.models
+    # 形成循环（emit.converter 引导导入期间）。注解不发散，TYPE_CHECKING 即可。
+    from infinity_data.semantic.resolver.models import Scope, TemplateKey
+
+__all__ = [
+    'ResolvedConstraint',
+    'StdArray',
+    'StdDocument',
+    'StdField',
+    'StdLiteral',
+    'StdObject',
+    'StdValue',
+]
 
 LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
 """字面量 kind 枚举。"""
@@ -128,79 +147,17 @@ class StdObject:
 
 @dataclass
 class StdDocument:
-    """标准文档：顶层对象 + 诊断信息 + 模板表与可见名表。
+    """标准文档（**纯数据**）：顶层对象 + 模板表与可见名表。
 
     - ``root``：编译产物（顶层对象）
-    - ``diagnostics``：统一诊断
     - ``templates``：全部已加载模板（:class:`TemplateKey` → 定义，含 ``!from`` 导入的）
     - ``scope``：**入口文件**的可见名表（可见名 → :class:`TemplateKey`），
       与 ``templates`` 配合可完整解析：可见名 → TemplateKey → TemplateDef
+
+    不携带诊断：所有诊断经共享 :class:`DiagnosticCollector` 收集，
+    由流水线在 :class:`CompilationResult` 上承载——诊断不属于文档数据。
     """
 
     root: StdObject = field(default_factory=StdObject)
-    diagnostics: list[Diagnostic] = field(default_factory=list[Diagnostic])
     templates: dict[TemplateKey, TemplateDef] = field(default_factory=lambda: {})
     scope: Scope = field(default_factory=lambda: {})
-
-    @property
-    def has_errors(self) -> bool:
-        return any(d.severity is Severity.ERROR for d in self.diagnostics)
-
-
-# ═══════════════════════════════════════════════════════════
-# 导入解析上下文（Phase 1 产物）
-# ═══════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True)
-class ResolvedContext:
-    """导入解析（Phase 1）产物：模板图 + 可见名表 + 数据命名空间。
-
-    由 :class:`infinity_data.semantic.resolver.TemplateGraphResolver` 产出，
-    供 :class:`infinity_data.semantic.builder.AstBuilder`（Phase 2a）消费。
-    只含名字与模板定义，不含任何约束执行结果（约束求值属 Phase 2）。
-
-    - ``templates``：全部已加载模板（本地 + ``!from`` 导入）
-    - ``template_scopes``：每个模板定义点的可见名表（展开/校验按定义点可见性解析）
-    - ``root_scope``：入口文件可见名表（可见名 → :class:`TemplateKey`）
-    - ``schema_scope``：schema.from_file 隐式导入的可见名表（无则 None）
-    - ``namespace``：``$`` 引用命名空间（``!env`` / ``!file`` 解析结果）
-    - ``diagnostics``：Phase 1 诊断（``import.*`` / ``template.*`` 域）
-    """
-
-    templates: dict[TemplateKey, TemplateDef]
-    template_scopes: dict[TemplateKey, Scope]
-    root_scope: Scope
-    schema_scope: Scope | None
-    namespace: dict[str, Any]
-    diagnostics: tuple[Diagnostic, ...]
-
-
-# ═══════════════════════════════════════════════════════════
-# 模板身份
-# ═══════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True)
-class TemplateKey:
-    """模板唯一身份：来源文件身份 + 模板本地名。
-
-    - ``identity``：来源文件身份（磁盘 = resolve 绝对路径；内存 = ``路径:mem:内容hash``）
-    - ``name``：模板在来源文件中的本地名（诊断显示用）
-
-    身份含来源路径：不同路径的文件即使内容相同也是不同模板身份——模板内部
-    ``!from`` 按定义文件所在目录解析，内容相同的文件其依赖语义可能不同，
-    不能互相覆盖（纯内容寻址无法表达这一区别）。
-
-    frozen 保证可哈希，直接作为 ``_templates`` 等表的键。
-    """
-
-    identity: str
-    name: str
-
-    def __str__(self) -> str:
-        return f'{self.identity}:{self.name}'
-
-
-Scope = dict[str, TemplateKey]
-"""文件级可见名表：可见名 → 模板真名（:class:`TemplateKey`）。"""

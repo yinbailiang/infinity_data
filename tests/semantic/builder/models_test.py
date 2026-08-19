@@ -1,6 +1,6 @@
-"""semantic/models.py 单元测试：StdAst 模型与三态属性。"""
+"""semantic/builder/models.py 单元测试：StdAst 模型与三态属性。"""
 
-from infinity_data.semantic.models import StdArray, StdDocument, StdField, StdLiteral, StdObject
+from infinity_data.semantic.builder import StdArray, StdDocument, StdField, StdLiteral, StdObject
 
 
 def test_std_literal_kinds() -> None:
@@ -30,8 +30,8 @@ def test_std_containers() -> None:
     assert len(arr.elements) == 1
 
 
-def test_std_document_defaults_and_errors() -> None:
+def test_std_document_defaults() -> None:
     doc = StdDocument()
     assert doc.root is not None
-    assert doc.diagnostics == []
-    assert not doc.has_errors
+    assert doc.templates == {}
+    assert doc.scope == {}

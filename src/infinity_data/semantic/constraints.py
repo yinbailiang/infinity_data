@@ -21,7 +21,8 @@ from infinity_data.parser.models import (
     ErrorConstraint,
     LiteralValue,
 )
-from infinity_data.semantic.models import ResolvedConstraint, Scope
+from infinity_data.semantic.builder.models import ResolvedConstraint
+from infinity_data.semantic.resolver.models import Scope
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
     FloatToken,

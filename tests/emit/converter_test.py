@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 from infinity_data.emit.converter import reduce_array, reduce_object, reduce_value
-from infinity_data.semantic.models import StdArray, StdField, StdLiteral, StdObject
+from infinity_data.semantic.builder import StdArray, StdField, StdLiteral, StdObject
 
 
 def _obj(*fields: StdField) -> StdObject:

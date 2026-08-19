@@ -9,7 +9,7 @@ import pytest
 
 from infinity_data import SandboxConfig, compile_source, load
 from infinity_data.infra.file import MemFile
-from infinity_data.semantic.models import Severity, StdObject
+from infinity_data.semantic import Severity, StdObject
 
 
 def compile_ok(source: str) -> dict[str, Any]:
@@ -163,7 +163,7 @@ s = Server()
 """)
     doc = result.document
     assert doc is not None
-    assert not doc.has_errors
+    assert not result.has_errors
     # scope：入口文件可见名 → TemplateKey
     assert 'Server' in doc.scope
     # templates：TemplateKey → 定义，能完整解析
@@ -183,7 +183,7 @@ hand: Server = { host = "x" }
 plain = { host = "y" }
 """)
     doc = result.document
-    assert doc is not None and not doc.has_errors
+    assert doc is not None and not result.has_errors
     key = doc.scope['Server']
 
     def template_of(name: str):

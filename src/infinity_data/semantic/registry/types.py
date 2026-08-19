@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from infinity_data.semantic.models import StdArray, StdLiteral, StdObject, StdValue
+from infinity_data.semantic.builder.models import StdArray, StdLiteral, StdObject, StdValue
 from infinity_data.semantic.registry._core import (
     ConstraintResult,
     Executor,

@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from infinity_data.semantic.models import ResolvedConstraint, StdValue
+from infinity_data.semantic.builder.models import ResolvedConstraint, StdValue
 from infinity_data.semantic.registry._core import (
     ConstraintEntry,
     ConstraintFn,

@@ -1,23 +1,16 @@
-"""AST 构建器（Phase 2a）：RawAst → StdAst（携带约束与展开值），不执行约束。
+"""AST 构建器（Phase 2a）：RawAst + ResolvedContext → StdAst（携带约束，不执行）。
 
-两阶段执行（对应 neo_desg.md）：
+本层是纯数据变换：输入 :class:`Document`（语法产物）与 :class:`ResolvedContext`
+（Phase 1 产物，数据模型），输出 :class:`StdDocument`。**不持有任何其他阶段对象**
+（无 resolver / 无 executor / 无 registry / 无 schema）——子模块间仅经数据模型依赖。
 
-Phase 1（:mod:`infinity_data.semantic.resolver`，本模块不负责）：
-  模板定义收集 / ``!from`` 模板导入 / ``!env``/``!file`` 数据导入
-  → 产出不可变 :class:`ResolvedContext`（模板图 + 可见名表 + 命名空间）
+值语义：字面量 / ``$`` 引用 / 模板展开 / dict 与 array 组装；
+并把源文档约束解析为 :class:`ResolvedConstraint` 挂到节点（**不执行**）。
+约束执行与顶层 schema 校验由 Phase 2b（:class:`~infinity_data.semantic.executor.ConstraintExecutor`）
+在流水线中独立完成。
 
-Phase 2a（本模块 :class:`AstBuilder`）：
-  值语义：字面量 / ``$`` 引用 / 模板展开 / dict 与 array 组装；
-  并把源文档约束解析为 :class:`ResolvedConstraint` 挂到节点（**不执行**）
-
-Phase 2b（:mod:`infinity_data.semantic.executor`）：
-  :class:`ConstraintExecutor` 遍历 StdAst 执行约束 + 顶层 schema 校验
-
-模板身份与可见性模型：
-- 模板真名 :class:`TemplateKey`（来源文件身份 + 本地名，含路径），全局唯一
-- 每个文件一张可见名表 scope（可见名 → 真名）；``!from ... import A as S``
-  只把 ``S`` 映射进导入方 scope，原名不可见
-- 名字解析（模板调用、约束里的模板名）在解析点经 scope 翻译成真名
+诊断写入调用方注入的共享 :class:`DiagnosticCollector`（流水线单一收集器），
+本层不持有诊断列表、不产出诊断数据。
 """
 
 from __future__ import annotations
@@ -26,8 +19,7 @@ import decimal
 from collections.abc import Iterator
 from typing import Any, cast
 
-from infinity_data.infra.diagnostics import Diagnostic, Severity
-from infinity_data.infra.file import File
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.parser.models import (
     ArrayValue,
     ConstraintStmt,
@@ -44,22 +36,17 @@ from infinity_data.parser.models import (
     TemplateImportStmt,
     Value,
 )
-from infinity_data.sandbox import SchemaError
-from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
-from infinity_data.semantic.executor import ConstraintExecutor
-from infinity_data.semantic.models import (
+from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
-    ResolvedContext,
-    Scope,
     StdArray,
     StdDocument,
     StdField,
     StdLiteral,
     StdObject,
     StdValue,
-    TemplateKey,
 )
-from infinity_data.semantic.resolver import TemplateGraphResolver
+from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
+from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
@@ -75,27 +62,21 @@ MAX_NESTING_DEPTH = 200
 
 
 class AstBuilder:
-    """AST 构建器（Phase 2a）：RawAst → StdAst（携带约束与展开值）。
+    """AST 构建器（Phase 2a）：RawAst + ResolvedContext → StdAst（携带约束）。
 
     只做「值是什么」：字面量 / ``$`` 引用 / 模板展开 / dict 与 array 组装，
     并把源文档约束解析为 :class:`ResolvedConstraint` 挂到节点；
-    **不执行任何约束**——校验由 :class:`ConstraintExecutor`（Phase 2b）完成。
-
-    显式依赖 :class:`TemplateGraphResolver`（Phase 1）：注册表与顶层 schema
-    均从解析器共享获取，本层不自建任何 Phase 1 依赖。
+    **不执行任何约束**——校验由 Phase 2b 完成，本层与执行器零耦合。
     """
 
-    def __init__(self, *, resolver: TemplateGraphResolver) -> None:
-        self._resolver = resolver
-        self._registry = resolver.registry
-        self._schema = resolver.schema
-        # 执行期状态（每次 analyze 重置）
+    def __init__(self) -> None:
+        # 执行期状态（每次 build 重置）
         self._templates: dict[TemplateKey, TemplateDef] = {}
         self._template_scopes: dict[TemplateKey, Scope] = {}
         self._root_scope: Scope = {}
         self._schema_scope: Scope | None = None
         self._namespace: dict[str, Any] = {}  # $ 引用解析目标
-        self._diagnostics: list[Diagnostic] = []
+        self._collector: DiagnosticCollector = DiagnosticCollector()  # 本次 build 的共享收集器
         self._depth = 0
         self._recursive_defaults: set[TemplateKey] = set()
 
@@ -103,35 +84,38 @@ class AstBuilder:
     # 公开入口
     # ═══════════════════════════════════════════════════════
 
-    def analyze(self, doc: Document, file: File) -> StdDocument:
-        """构建带约束的 StdAst，并委托执行器完成约束校验。
-
-        Phase 1（导入解析）委托给 :attr:`_resolver`，产出不可变上下文；
-        本方法只做 Phase 2a（构建）并编排 Phase 2b（约束执行 + schema 校验）。
+    def build(self, doc: Document, context: ResolvedContext, collector: DiagnosticCollector) -> StdDocument:
+        """构建带约束的 StdAst（纯数据变换，不执行约束）。
 
         Args:
             doc: 语法分析产物
-            file: 源码来源（诊断名 / 相对导入基准 / 模板身份（含来源路径）均由它提供）
+            context: Phase 1 产物（模板图 / 可见名表 / 命名空间，数据模型）
+            collector: 共享诊断收集器（流水线单一收集器）
+
+        Returns:
+            :class:`StdDocument`——root 已构建、约束已挂载未执行；
+            ``diagnostics`` 字段为空（诊断全部进 ``collector``，由流水线末端快照）。
         """
         self._templates = {}
         self._template_scopes = {}
         self._root_scope = {}
         self._schema_scope = None
         self._namespace = {}
-        self._diagnostics = []
+        self._collector = collector
         self._depth = 0
         self._recursive_defaults = set()
 
-        # Phase 1：导入解析（独立对象，产出不可变上下文）
-        context = self._resolver.resolve(doc, file)
-
-        # Phase 1 产物注入执行期状态
-        self._adopt(context)
+        # Phase 1 产物注入执行期状态（按引用共享，约定只读）
+        self._templates = context.templates
+        self._template_scopes = context.template_scopes
+        self._root_scope = context.root_scope
+        self._schema_scope = context.schema_scope
+        self._namespace = context.namespace
 
         # 静态防护：默认值引用环检测（默认值禁止自引用，见 neo_desg.md 2.6）
         self._detect_recursive_defaults()
 
-        # Phase 2a：构建 root（顶层结构约束挂在 root.constraints，不执行）
+        # 构建 root（顶层结构约束挂在 root.constraints，不执行）
         root_fields: list[StdField] = []
         root_constraints: list[ResolvedConstraint] = []
         for stmt in doc.statements:
@@ -145,47 +129,15 @@ class AstBuilder:
                 case ConstraintStmt(constraints=cs):
                     specs, diags = resolve_constraint_list(cs, self._root_scope)
                     root_constraints.extend(specs)
-                    self._diagnostics.extend(diags)
+                    self._collector.extend(diags)
                 case _:
                     pass  # ErrorStatement 已在语法阶段诊断
-        root = StdObject(fields=root_fields, constraints=root_constraints)
 
-        # Phase 2b：约束执行（独立遍历器，工作在完成的 AST 上）
-        executor = ConstraintExecutor(
-            registry=self._registry,
-            templates=self._templates,
-            template_scopes=self._template_scopes,
-        )
-        self._diagnostics.extend(executor.validate(root))
-
-        # 顶层 schema 校验（strict/lenient/strip）
-        if self._schema is not None:
-            scope = (
-                self._schema_scope if self._schema.from_file and self._schema_scope is not None else self._root_scope
-            )
-            key = scope.get(self._schema.template)
-            if key is None:
-                raise SchemaError('schema.undefined_template', {'template': self._schema.template})
-            tpl = self._templates[key]
-            root, schema_diags = executor.apply_schema(root, self._schema, tpl, self._template_scopes[key])
-            self._diagnostics.extend(schema_diags)
-
-        diagnostics = sorted(self._diagnostics, key=lambda d: d.sort_key())
         return StdDocument(
-            root=root,
-            diagnostics=diagnostics,
+            root=StdObject(fields=root_fields, constraints=root_constraints),
             templates=dict(self._templates),
             scope=dict(self._root_scope),
         )
-
-    def _adopt(self, context: ResolvedContext) -> None:
-        """采纳 Phase 1 产物：模板图 / 可见名表 / 命名空间 / 诊断。"""
-        self._templates = context.templates
-        self._template_scopes = context.template_scopes
-        self._root_scope = context.root_scope
-        self._schema_scope = context.schema_scope
-        self._namespace = context.namespace
-        self._diagnostics = list(context.diagnostics)
 
     # ═══════════════════════════════════════════════════════
     # 递归默认值防护（方案 C：默认引用图 + 静态环检测）
@@ -239,7 +191,7 @@ class AstBuilder:
         # 报告：定位到环上模板的默认值字段（根因），而非展开深处
         for key in self._recursive_defaults:
             src = next((s for dep, s in sources.get(key, {}).items() if dep in self._recursive_defaults), None)
-            self._diagnostics.append(
+            self._collector.add(
                 Diagnostic(
                     Severity.ERROR,
                     'template.recursive_default',
@@ -281,12 +233,12 @@ class AstBuilder:
         if value is None:
             if not isinstance(field.value, ErrorValue):
                 # 值解析失败已由语法层报告（parse.unrecognized_value 等），不重复报
-                self._diagnostics.append(Diagnostic(Severity.ERROR, 'field.missing_value', {}, field.source, path))
+                self._collector.add(Diagnostic(Severity.ERROR, 'field.missing_value', {}, field.source, path))
             return StdField(name=field.name, value=None, source=field.source)
         specs: list[ResolvedConstraint] = []
         if field.constraints is not None:
             specs, diags = resolve_constraints(field.constraints, scope)
-            self._diagnostics.extend(diags)
+            self._collector.extend(diags)
         return StdField(name=field.name, value=value, source=field.source, constraints=specs)
 
     # ═══════════════════════════════════════════════════════
@@ -301,7 +253,7 @@ class AstBuilder:
         self._depth += 1
         try:
             if self._depth > MAX_NESTING_DEPTH:
-                self._diagnostics.append(
+                self._collector.add(
                     Diagnostic(Severity.ERROR, 'value.nesting_depth', {'max': MAX_NESTING_DEPTH}, raw.source, path)
                 )
                 return None
@@ -320,7 +272,7 @@ class AstBuilder:
                             std_fields.append(sf)
                     # dict 结构级约束（作用于该字面量整体）：解析后挂节点，不执行
                     specs, diags = resolve_constraint_list(cs, scope)
-                    self._diagnostics.extend(diags)
+                    self._collector.extend(diags)
                     return StdObject(fields=std_fields, constraints=specs)
                 case ArrayValue(elements=els):
                     std_elements: list[StdValue] = []
@@ -330,7 +282,7 @@ class AstBuilder:
                             continue
                         if isinstance(rv, StdLiteral) and rv.kind == 'noexist':
                             # noexist 仅用于 dict 字段；数组元素中无意义 → 报错并按 null 处理
-                            self._diagnostics.append(
+                            self._collector.add(
                                 Diagnostic(
                                     Severity.ERROR,
                                     'value.noexist_in_array',
@@ -378,7 +330,7 @@ class AstBuilder:
     def _resolve_dollar(self, name: str, type_cast: str | None, path: str) -> StdValue:
         """解析 ``$name`` 引用，type_cast 为显式 as bool/int/float/str 转换。"""
         if name not in self._namespace:
-            self._diagnostics.append(Diagnostic(Severity.WARNING, 'dollar.undefined', {'name': name}, path=path))
+            self._collector.add(Diagnostic(Severity.WARNING, 'dollar.undefined', {'name': name}, path=path))
             return StdLiteral(kind='null', value=None)
 
         raw = self._namespace[name]
@@ -400,7 +352,7 @@ class AstBuilder:
                 try:
                     return StdLiteral(kind='int', value=int(raw))
                 except (ValueError, TypeError):
-                    self._diagnostics.append(
+                    self._collector.add(
                         Diagnostic(
                             Severity.WARNING,
                             'dollar.convert_failed',
@@ -413,7 +365,7 @@ class AstBuilder:
                 try:
                     return StdLiteral(kind='float', value=decimal.Decimal(str(raw)))
                 except (ValueError, TypeError, decimal.InvalidOperation):
-                    self._diagnostics.append(
+                    self._collector.add(
                         Diagnostic(
                             Severity.WARNING,
                             'dollar.convert_failed',
@@ -468,7 +420,7 @@ class AstBuilder:
         """
         key = scope.get(template_name)
         if key is None:
-            self._diagnostics.append(
+            self._collector.add(
                 Diagnostic(Severity.ERROR, 'template.undefined', {'template': template_name}, source, path)
             )
             return StdObject()
@@ -483,7 +435,7 @@ class AstBuilder:
         # 模板配置 positional=false：位置参数违规报错，但值仍绑定必填字段
         # （放宽必填绑定：只报 positional_disabled 一条，避免 missing_required 级联）
         if not template.config.positional and positional_args:
-            self._diagnostics.append(
+            self._collector.add(
                 Diagnostic(
                     Severity.ERROR,
                     'template.positional_disabled',
@@ -497,7 +449,7 @@ class AstBuilder:
         declared = {tf.name for tf in template.fields}
         for name in named_args:
             if name not in declared:
-                self._diagnostics.append(
+                self._collector.add(
                     Diagnostic(
                         Severity.ERROR,
                         'template.unknown_argument',
@@ -513,7 +465,7 @@ class AstBuilder:
             if idx < len(required):
                 rf = required[idx]
                 if rf.name in param_values:
-                    self._diagnostics.append(
+                    self._collector.add(
                         Diagnostic(
                             Severity.ERROR,
                             'template.arg_conflict',
@@ -525,7 +477,7 @@ class AstBuilder:
                 else:
                     param_values[rf.name] = pos_val
             else:
-                self._diagnostics.append(
+                self._collector.add(
                     Diagnostic(
                         Severity.WARNING,
                         'template.too_many_positional',
@@ -538,7 +490,7 @@ class AstBuilder:
         # 必填字段缺失检查
         for rf in required:
             if rf.name not in param_values:
-                self._diagnostics.append(
+                self._collector.add(
                     Diagnostic(
                         Severity.ERROR,
                         'template.missing_required',
@@ -562,10 +514,10 @@ class AstBuilder:
                 continue  # 必填且未提供 → 已在上面报错
 
             specs, diags = resolve_constraints(tf.constraints, inner_scope)
-            self._diagnostics.extend(diags)
+            self._collector.extend(diags)
             std_fields.append(StdField(name=tf.name, value=v, source=tf.source, constraints=specs))
 
         # 模板级约束（: 起始，约束整个 dict）：解析后挂到实例节点
         tpl_specs, tpl_diags = resolve_constraint_list(template.constraints, inner_scope)
-        self._diagnostics.extend(tpl_diags)
+        self._collector.extend(tpl_diags)
         return StdObject(fields=std_fields, template=key, constraints=tpl_specs)
