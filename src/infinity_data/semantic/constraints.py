@@ -26,7 +26,6 @@ from infinity_data.tokenizer.models.tokens import (
     BoolToken,
     FloatToken,
     IntegerToken,
-    MultilineStringToken,
     NoexistToken,
     NullToken,
     StringToken,
@@ -153,8 +152,6 @@ def literal_python_value(lit: LiteralValue) -> Any:
         case FloatToken(value=v):
             return v
         case BoolToken(value=v):
-            return v
-        case MultilineStringToken(value=v):
             return v
         case StringToken(value=v):
             return v

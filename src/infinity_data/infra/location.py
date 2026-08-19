@@ -11,14 +11,21 @@ __all__ = ['SourceInfo', 'SourceRange', 'format_location']
 
 
 def format_location(source: SourceRange | None) -> str:
-    """格式化源码位置 ``file:line:col``（无位置时为 ``<unknown>``）。
+    """格式化源码位置（无位置时为 ``<unknown>``）。
+
+    - 零宽 range（start == end）→ ``file:line:col``
+    - 非零宽 range → ``file:line:col-line:col``（起止区间）
 
     :class:`Diagnostic` 与沙盒异常共用，消除重复的格式化逻辑。
     """
     if source is None:
         return '<unknown>'
     s = source.start
-    return f'{source.file.name}:{s.line}:{s.col}'
+    base = f'{source.file.name}:{s.line}:{s.col}'
+    if s == source.end:
+        return base
+    e = source.end
+    return f'{base}-{e.line}:{e.col}'
 
 
 class _UnknownFile(File):

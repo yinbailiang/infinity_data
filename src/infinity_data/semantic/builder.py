@@ -64,7 +64,6 @@ from infinity_data.tokenizer.models.tokens import (
     BoolToken,
     FloatToken,
     IntegerToken,
-    MultilineStringToken,
     NoexistToken,
     NullToken,
     StringToken,
@@ -245,10 +244,8 @@ class AstBuilder:
                     named_args=na,
                 ):
                     return self._expand_template_call(tn, pa, na, path, raw.source, scope)
-                case ErrorValue(message=m):
-                    self._diagnostics.append(
-                        Diagnostic(Severity.ERROR, 'value.invalid', {'message': m}, raw.source, path)
-                    )
+                case ErrorValue():
+                    # 值解析失败已在语法层报告（parse.value_field / parse.unrecognized_value），不重复
                     return None
             return None
         finally:
@@ -260,8 +257,6 @@ class AstBuilder:
     ) -> StdLiteral:
         """将字面量 Token 转为 StdLiteral。"""
         match tok:
-            case MultilineStringToken(value=v):
-                return StdLiteral(kind='str', value=v)
             case StringToken(value=v):
                 return StdLiteral(kind='str', value=v)
             case IntegerToken(value=v):
@@ -377,6 +372,33 @@ class AstBuilder:
         inner_scope = self._template_scopes[key]
 
         required = [tf for tf in template.fields if tf.default_value is None]
+
+        # 模板配置 positional=false：拒绝位置参数（强制命名参数）
+        if not template.config.positional and positional_args:
+            self._diagnostics.append(
+                Diagnostic(
+                    Severity.ERROR,
+                    'template.positional_disabled',
+                    {'template': template_name},
+                    source,
+                    path,
+                )
+            )
+            positional_args = []  # 忽略位置参数，避免后续绑定
+
+        # 未知命名参数 → ERROR（拒绝静默忽略）
+        declared = {tf.name for tf in template.fields}
+        for name in named_args:
+            if name not in declared:
+                self._diagnostics.append(
+                    Diagnostic(
+                        Severity.ERROR,
+                        'template.unknown_argument',
+                        {'template': template_name, 'arg': name},
+                        source,
+                        path,
+                    )
+                )
 
         # 参数映射：位置参数按定义顺序绑定必填字段
         param_values: dict[str, Value] = dict(named_args)

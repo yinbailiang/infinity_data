@@ -13,19 +13,57 @@ from infinity_data.infra.location import SourceRange
 __all__ = ['diag']
 
 register_diagnostic_define(
-    diagnostic_define('parse.unrecognized_statement', '[{location}] 无法识别的顶层 token: {name}', en='[{location}] unrecognized top-level token: {name}'),
-    diagnostic_define('parse.unrecognized_import', '[{location}] 无法识别的导入语句', en='[{location}] unrecognized import statement'),
-    diagnostic_define('parse.unexpected_token', '[{location}] 期望 {expected}，实际为 {actual}', en='[{location}] expected {expected}, got {actual}'),
+    diagnostic_define(
+        'parse.unrecognized_statement',
+        '[{location}] 无法识别的顶层 token: {name}',
+        en='[{location}] unrecognized top-level token: {name}',
+    ),
+    diagnostic_define(
+        'parse.unrecognized_import', '[{location}] 无法识别的导入语句', en='[{location}] unrecognized import statement'
+    ),
+    diagnostic_define(
+        'parse.unexpected_token',
+        '[{location}] 期望 {expected}，实际为 {actual}',
+        en='[{location}] expected {expected}, got {actual}',
+    ),
     diagnostic_define(
         'parse.template_arg_order',
         '[{location}] 位置参数不能出现在命名参数之后',
         en='[{location}] positional arguments cannot follow named arguments',
     ),
     diagnostic_define('parse.empty_token_list', 'Token 列表为空，无法解析', en='empty token list, nothing to parse'),
-    diagnostic_define('parse.invalid_json_path', '[{location}] 无效的 JSON 路径{detail}', en='[{location}] invalid JSON path{detail}'),
-    diagnostic_define('parse.unrecognized_value', '[{location}] 无法解析的值: {name}', en='[{location}] unrecognized value: {name}'),
-    diagnostic_define('parse.unrecognized_constraint', '[{location}] 无法解析的约束: {name}', en='[{location}] unrecognized constraint: {name}'),
+    diagnostic_define(
+        'parse.invalid_json_path', '[{location}] 无效的 JSON 路径{detail}', en='[{location}] invalid JSON path{detail}'
+    ),
+    diagnostic_define(
+        'parse.unrecognized_value', '[{location}] 无法解析的值: {name}', en='[{location}] unrecognized value: {name}'
+    ),
+    diagnostic_define(
+        'parse.value_field',
+        '[{location}] 值位置出现字段定义 {name}（外层数组/对象未闭合）',
+        en='[{location}] field definition {name} in value position (enclosing array/object unclosed)',
+    ),
+    diagnostic_define(
+        'parse.unrecognized_constraint',
+        '[{location}] 无法解析的约束: {name}',
+        en='[{location}] unrecognized constraint: {name}',
+    ),
     diagnostic_define('parse.statement_error', '{path_prefix}{message}'),
+    diagnostic_define(
+        'parse.template_config_unknown',
+        '[{location}] 未知的模板配置项: {key}（合法项: {valid}）',
+        en='[{location}] unknown template config key: {key} (valid: {valid})',
+    ),
+    diagnostic_define(
+        'parse.template_config_type',
+        '[{location}] 模板配置 {key} 期望 {expected}，实际为 {actual}',
+        en='[{location}] template config {key} expects {expected}, got {actual}',
+    ),
+    diagnostic_define(
+        'parse.template_config_value',
+        '[{location}] 模板配置 {key} 必须是字面量（不支持 $ 引用 / 模板调用）',
+        en='[{location}] template config {key} must be a literal (no $ refs / template calls)',
+    ),
 )
 
 

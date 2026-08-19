@@ -4,8 +4,6 @@
 消除两处重复的 RawTokenizer → FinalTokenizer → Parser 组装。
 """
 
-from __future__ import annotations
-
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector
 from infinity_data.infra.file import File
 from infinity_data.parser.models import Document

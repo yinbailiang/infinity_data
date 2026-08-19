@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
-from infinity_data.parser.models import BoolToken, LiteralValue, TemplateDef
+from infinity_data.parser.models import TemplateDef
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
 from infinity_data.semantic.models import (
@@ -120,7 +120,7 @@ class ConstraintExecutor:
         tpl = self._templates[key]
         display = key.name
         scope = self._template_scopes[key]
-        allow_extra = _resolve_config_bool(tpl, 'allow_extra')
+        allow_extra = tpl.config.allow_extra
         declared = {tf.name for tf in tpl.fields}
 
         if value is None:
@@ -260,13 +260,3 @@ class ConstraintExecutor:
         if diags:
             raise SchemaError('schema.failed', {'detail': '；'.join(d.message for d in diags)})
         return root, returned
-
-
-def _resolve_config_bool(tpl: TemplateDef, key: str) -> bool:
-    """读取模板配置中的布尔项（如 allow_extra）。"""
-    raw = tpl.config.get(key)
-    match raw:
-        case LiteralValue(value=BoolToken(value=b)):
-            return b
-        case _:
-            return False

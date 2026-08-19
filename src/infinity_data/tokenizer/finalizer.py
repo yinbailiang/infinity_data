@@ -45,7 +45,7 @@ from infinity_data.tokenizer.models.tokens import (
     RbraceToken,
     RbracketToken,
     RparenToken,
-    StringToken,
+    SinglelineStringToken,
     TildeToken,
     Token,
 )
@@ -100,7 +100,7 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
     # 2. 提取 tags（起始行剩余部分）
     rest_start: int = backtick_count
     newline_idx: int = raw.find('\n', rest_start)
-    if newline_idx == -1: # 无换行：整个同一行为 tags，无内容
+    if newline_idx == -1:  # 无换行：整个同一行为 tags，无内容
         tags_part: str = raw[rest_start:]  # 排除结束围栏
         # 找到结束围栏位置（应从尾部去除 backtick_count 个反引号）
         if raw.endswith('`' * backtick_count):
@@ -205,9 +205,9 @@ class FinalTokenizer:
     # ── 各类型转换 ────────────────────────────────────
 
     @staticmethod
-    def _convert_string(raw: RawToken) -> StringToken:
+    def _convert_string(raw: RawToken) -> SinglelineStringToken:
         """处理单行字符串：通过 json.loads 解析转义。"""
-        return StringToken(raw=raw, value=json.loads(raw.raw))
+        return SinglelineStringToken(raw=raw, value=json.loads(raw.raw))
 
     @staticmethod
     def _convert_multiline_string(raw: RawToken) -> MultilineStringToken:

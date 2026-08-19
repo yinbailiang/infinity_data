@@ -80,4 +80,4 @@ class MemFile(File):
 
     @property
     def identity(self) -> str:
-        return 'mem:' + self.content_hash()
+        return str(self.root_path.resolve()) + ':mem:' + self.content_hash()

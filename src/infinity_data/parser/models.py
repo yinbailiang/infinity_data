@@ -119,12 +119,28 @@ class TemplateField(AstNode):
 
 
 @dataclass
+class TemplateConfig:
+    """模板头部配置（``~X(key=value)``），语法层解析为类型化字段。
+
+    - ``allow_extra``：校验时是否放行额外字段（模板即约束 / schema）
+    - ``positional``：是否允许位置参数（false = 只接受命名参数）
+    - ``description``：模板文档（元数据，暂不消费，供 LSP/文档）
+
+    未来新增配置项：在此加字段，parser 侧在对应键集合补一行（字段即白名单）。
+    """
+
+    allow_extra: bool = False
+    positional: bool = True
+    description: str | None = None
+
+
+@dataclass
 class TemplateDef(AstNode):
     """模板定义: ~Name { ... } 或 ~Name(config=value) { ... }"""
 
     name: str
     fields: list[TemplateField]
-    config: dict[str, Value] = field(default_factory=lambda: {})
+    config: TemplateConfig = field(default_factory=TemplateConfig)
     constraints: list[Constraint] = field(default_factory=lambda: [])
 
 
@@ -274,12 +290,6 @@ class ErrorConstraint(AstNode):
 # ═══════════════════════════════════════════════════════════
 
 type Statement = (
-    TemplateImportStmt
-    | EnvImportStmt
-    | FileImportStmt
-    | TemplateDef
-    | Field
-    | ConstraintStmt
-    | ErrorStatement
+    TemplateImportStmt | EnvImportStmt | FileImportStmt | TemplateDef | Field | ConstraintStmt | ErrorStatement
 )
 type Value = LiteralValue | DollarValue | DictValue | ArrayValue | TemplateCallValue | ErrorValue

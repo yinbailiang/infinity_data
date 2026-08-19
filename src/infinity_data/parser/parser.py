@@ -1,7 +1,7 @@
 """递归下降语法分析器，将 Token 流转换为 RawAst"""
 
 from collections.abc import Iterable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.ll1_stream import NoNextType
@@ -30,6 +30,7 @@ from infinity_data.parser.models import (
     LiteralValue,
     Statement,
     TemplateCallValue,
+    TemplateConfig,
     TemplateDef,
     TemplateField,
     TemplateImportItem,
@@ -62,12 +63,31 @@ from infinity_data.tokenizer.models.tokens import (
     RbraceToken,
     RbracketToken,
     RparenToken,
+    SinglelineStringToken,
     StringToken,
     TildeToken,
     Token,
 )
 
 _TToken = TypeVar('_TToken', bound=Token)
+
+# 模板配置项白名单（dataclass 字段即白名单，此处按类型分组）
+_CONFIG_BOOL_KEYS = frozenset({'allow_extra', 'positional'})
+_CONFIG_STR_KEYS = frozenset({'description'})
+_TEMPLATE_CONFIG_VALID = 'allow_extra, positional, description'
+
+
+def _py_describe(v: Any) -> str:
+    """config 值类型的人类可读描述（诊断用）。"""
+    if isinstance(v, bool):
+        return 'bool'
+    if isinstance(v, str):
+        return 'string'
+    if isinstance(v, int):
+        return 'integer'
+    if isinstance(v, float):
+        return 'float'
+    return type(v).__name__
 
 
 class Parser:
@@ -111,10 +131,8 @@ class Parser:
         """解析一条顶层语句。"""
         self._stream.skip_newlines()
 
-        # 流真正耗尽（无 EOF token）或到达 EOF token 均视为结束
+        # EofToken 或物理耗尽均视为流结束
         if self._stream.eof():
-            return None
-        if self._stream.check(RawTokenType.EOF):
             return None
 
         match self._stream.peek():
@@ -166,11 +184,17 @@ class Parser:
         tok = self._stream.peek()
         if isinstance(tok, NoNextType):
             self._errors.add(
-                diag('parse.unexpected_token', {'expected': f'关键字 {name!r}', 'actual': 'EOF'}, self._stream.span_from(None))
+                diag(
+                    'parse.unexpected_token',
+                    {'expected': f'关键字 {name!r}', 'actual': 'EOF'},
+                    self._stream.span_from(None),
+                )
             )
             return
         self._errors.add(
-            diag('parse.unexpected_token', {'expected': f'关键字 {name!r}', 'actual': tok.raw.type.name}, tok.raw.source)
+            diag(
+                'parse.unexpected_token', {'expected': f'关键字 {name!r}', 'actual': tok.raw.type.name}, tok.raw.source
+            )
         )
         self._stream.advance()
 
@@ -193,7 +217,7 @@ class Parser:
 
     def _parse_file_import(self, kw_tok: FileImportToken) -> FileImportStmt:
         """!file "path" [as <format>] import .path.to.key as alias, ..."""
-        path_tok = self._stream.expect(StringToken)
+        path_tok = self._stream.expect(SinglelineStringToken)
 
         # 可选 as <format>
         fmt = None
@@ -274,7 +298,7 @@ class Parser:
                         case IdentifierToken(name=name) as id_tok:
                             segments.append(JsonPathKey(source=self._stream.single_span(id_tok), key=name))
                             self._stream.advance()
-                        case StringToken(value=value) as str_tok:
+                        case SinglelineStringToken(value=value) as str_tok:
                             segments.append(JsonPathKey(source=self._stream.single_span(str_tok), key=value))
                             self._stream.advance()
                         case _:
@@ -298,7 +322,7 @@ class Parser:
 
     def _parse_template_import(self, kw_tok: FromImportToken) -> TemplateImportStmt:
         """!from "path" import Name1 [as Alias1], Name2, ..."""
-        path_tok = self._stream.expect(StringToken)
+        path_tok = self._stream.expect(SinglelineStringToken)
         self._expect_keyword('import')
 
         items: list[TemplateImportItem] = []
@@ -359,14 +383,16 @@ class Parser:
         name_tok = self._stream.expect(IdentifierToken)
 
         # 可选模板配置参数: ~Name(allow_extra=true, ...)
-        config: dict[str, Value] = {}
+        # 语法层解析为类型化 TemplateConfig（未知键 / 类型错 / 非字面量 → 诊断）
+        config = TemplateConfig()
         if isinstance(self._stream.peek(), LparenToken):
             self._stream.advance()
             self._stream.skip_newlines()
             while not self._stream.check(RawTokenType.RPAREN) and not self._stream.eof():
                 key_tok = self._stream.expect(IdentifierToken)
                 self._stream.expect(EqualsToken)
-                config[key_tok.name] = self._parse_value()
+                value = self._parse_value()
+                self._apply_template_config(config, key_tok, value)
                 self._stream.skip_separators()
             self._stream.expect(RparenToken)
 
@@ -395,6 +421,67 @@ class Parser:
             config=config,
             constraints=constraints,
         )
+
+    def _apply_template_config(
+        self,
+        config: TemplateConfig,
+        key_tok: IdentifierToken,
+        value: Value,
+    ) -> None:
+        """模板头部配置项 → 类型化字段；未知键 / 类型错 / 非字面量 → 语法诊断。
+
+        config 值是纯字面量（布尔 / 字符串 / 整数），不支持 ``$`` 引用等复杂值。
+        """
+        key = key_tok.name
+        if not isinstance(value, LiteralValue):
+            self._errors.add(diag('parse.template_config_value', {'key': key}, value.source))
+            return
+        py = self._literal_config_value(value)
+        if key in _CONFIG_BOOL_KEYS:
+            if isinstance(py, bool):
+                setattr(config, key, py)
+            else:
+                self._errors.add(
+                    diag(
+                        'parse.template_config_type',
+                        {'key': key, 'expected': 'bool', 'actual': _py_describe(py)},
+                        key_tok.raw.source,
+                    )
+                )
+        elif key in _CONFIG_STR_KEYS:
+            if isinstance(py, str):
+                setattr(config, key, py)
+            else:
+                self._errors.add(
+                    diag(
+                        'parse.template_config_type',
+                        {'key': key, 'expected': 'str', 'actual': _py_describe(py)},
+                        key_tok.raw.source,
+                    )
+                )
+        else:
+            self._errors.add(
+                diag(
+                    'parse.template_config_unknown',
+                    {'key': key, 'valid': _TEMPLATE_CONFIG_VALID},
+                    key_tok.raw.source,
+                )
+            )
+
+    @staticmethod
+    def _literal_config_value(lit: LiteralValue) -> Any:
+        """LiteralValue → Python 值（config 值限定为字面量）。"""
+        match lit.value:
+            case BoolToken(value=b):
+                return b
+            case StringToken(value=v):
+                return v
+            case IntegerToken(value=v):
+                return v
+            case FloatToken(value=v):
+                return v
+            case _:
+                return None
 
     def _parse_template_field(self) -> TemplateField:
         """解析模板内部字段：必须有类型标注，默认值可选。"""
@@ -620,19 +707,21 @@ class Parser:
             # ── 标识符 → 模板调用 ──
             case IdentifierToken():
                 ident = self._stream.expect(IdentifierToken)
+                # 标识符后接 = / : → 不是模板调用而是新语句的字段定义：
+                # 说明外层数组/对象未闭合。报 parse.value_field 并停止，
+                # 避免把后续行误解析为模板调用（消除 template.undefined 级联）。
+                nxt = self._stream.peek()
+                if isinstance(nxt, (EqualsToken, ColonToken)):
+                    self._errors.add(diag('parse.value_field', {'name': ident.name}, self._stream.single_span(ident)))
+                    return ErrorValue(source=self._stream.single_span(ident), message=f'值位置出现字段定义: {ident.name}')
                 return self._parse_template_call(ident)
 
             case tok:
                 self._stream.advance()
-                if isinstance(tok, NoNextType):
-                    return ErrorValue(
-                        source=SourceRange.empty(),
-                        message='无法解析的值: EOF',
-                    )
-                return ErrorValue(
-                    source=tok.raw.source,
-                    message=f'无法解析的值: {tok.raw.type.name}',
-                )
+                name = 'EOF' if isinstance(tok, NoNextType) else tok.raw.type.name
+                source = SourceRange.empty() if isinstance(tok, NoNextType) else tok.raw.source
+                self._errors.add(diag('parse.unrecognized_value', {'name': name}, source))
+                return ErrorValue(source=source, message=f'无法解析的值: {name}')
 
     def _wrap_literal(self, tok: Token | NoNextType | None) -> LiteralValue:
         """将字面量 Token 包装为 LiteralValue。"""

@@ -8,9 +8,7 @@ import pytest
 
 from infinity_data import (
     SandboxConfig,
-    SandboxError,
     Schema,
-    SchemaError,
     check,
     compile_document,
     compile_source,
@@ -41,22 +39,28 @@ def test_safe_load_pure_data(tmp_path: Path) -> None:
 def test_safe_load_rejects_env_import(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!env import USER\nuser = $USER\n')
-    with pytest.raises(SandboxError):
-        safe_load(f)
+    result = safe_load(f)
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.env_unauthorized']
+    assert result.value == {}  # 沙盒违规 → 空文档
 
 
 def test_load_default_is_deny_all(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file "data.json" import .key as k\nvalue = $k\n')
-    with pytest.raises(SandboxError):
-        load(f)
+    result = load(f)
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.access_denied']
+    assert result.value == {}
 
 
 def test_env_import_requires_authorization(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!env import USER\nuser = $USER\n')
-    with pytest.raises(SandboxError):
-        load(f)  # 默认零信任
+    denied = load(f)  # 默认零信任 → 违规转为 ERROR 诊断
+    assert denied.has_errors
+    assert [d.code for d in denied.diagnostics] == ['sandbox.env_unauthorized']
+    assert denied.value == {}
     result = load(f, sandbox=SandboxConfig(env={'USER': 'alice'}))
     assert result.value == {'user': 'alice'}
 
@@ -83,8 +87,10 @@ def test_env_authorized_but_not_set_fails(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.delenv('INF_NOT_SET', raising=False)
     f = tmp_path / 'app.infd'
     _write(f, '!env import INF_NOT_SET\nv = $INF_NOT_SET\n')
-    with pytest.raises(SandboxError):
-        load(f, sandbox=SandboxConfig(allow_env=['INF_NOT_SET']))
+    result = load(f, sandbox=SandboxConfig(allow_env=['INF_NOT_SET']))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.env_not_set']
+    assert result.value == {}
 
 
 def test_env_injection_takes_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,25 +118,31 @@ def test_allow_env_not_authorized_fails(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setenv('INF_OUTSIDE', 'secret')
     f = tmp_path / 'app.infd'
     _write(f, '!env import INF_OUTSIDE\nv = $INF_OUTSIDE\n')
-    with pytest.raises(SandboxError):
-        load(f, sandbox=SandboxConfig(allow_env=['INF_OTHER']))
+    result = load(f, sandbox=SandboxConfig(allow_env=['INF_OTHER']))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.env_unauthorized']
+    assert result.value == {}
 
 
 def test_non_strict_env_import_still_fails(tmp_path: Path) -> None:
     """env 未授权总是失败：非 strict 也不例外（不静默退化为空串）。"""
     f = tmp_path / 'app.infd'
     _write(f, '!env import USER\nuser = $USER\n')
-    with pytest.raises(SandboxError):
-        load(f, sandbox=SandboxConfig(strict=False))
+    result = load(f, sandbox=SandboxConfig(strict=False))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.env_unauthorized']
+    assert result.value == {}
 
 
-def test_file_import_unauthorized_raises(tmp_path: Path) -> None:
+def test_file_import_unauthorized_denied(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"key": 42}')
     f = tmp_path / 'app.infd'
     _write(f, '!file "data.json" import .key as k\nvalue = $k\n')
-    with pytest.raises(SandboxError):
-        load(f, sandbox=SandboxConfig(allow_files=['./other/*.json']))
+    denied = load(f, sandbox=SandboxConfig(allow_files=['./other/*.json']))
+    assert denied.has_errors
+    assert [d.code for d in denied.diagnostics] == ['sandbox.access_denied']
+    assert denied.value == {}
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert result.value == {'value': 42}
 
@@ -179,8 +191,10 @@ def test_glob_single_star_does_not_cross_separator(tmp_path: Path) -> None:
     _write(data, '{"key": 1}')
     f = tmp_path / 'app.infd'
     _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
-    with pytest.raises(SandboxError):
-        load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
+    result = load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.access_denied']
+    assert result.value == {}
 
 
 def test_glob_single_star_matches_one_level(tmp_path: Path) -> None:
@@ -341,13 +355,15 @@ def test_template_import_nested(tmp_path: Path) -> None:
     assert result.value == {'m': {'base': {'id': 7}}}
 
 
-def test_template_import_unauthorized_raises(tmp_path: Path) -> None:
+def test_template_import_unauthorized_denied(tmp_path: Path) -> None:
     tpl = tmp_path / 'templates' / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
     _write(f, '!from "templates/extra.inft" import Extra\nval = Extra()\n')
-    with pytest.raises(SandboxError):
-        load(f, sandbox=SandboxConfig(allow_templates=['./allowed/*.inft']))
+    result = load(f, sandbox=SandboxConfig(allow_templates=['./allowed/*.inft']))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.access_denied']
+    assert result.value == {}
 
 
 def test_template_import_conflict_with_local(tmp_path: Path) -> None:
@@ -410,15 +426,19 @@ def test_schema_strict_passes(tmp_path: Path) -> None:
 def test_schema_strict_missing_required(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str\n}\n')
-    with pytest.raises(SchemaError):
-        load(f, schema=Schema(template='AppConfig'))
+    result = load(f, schema=Schema(template='AppConfig'))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert result.value == {}
 
 
-def test_schema_strict_extra_field_raises(tmp_path: Path) -> None:
+def test_schema_strict_extra_field_fails(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str = "x"\n}\nname = "x"\nextra = 1\n')
-    with pytest.raises(SchemaError):
-        load(f, schema=Schema(template='AppConfig', mode='strict'))
+    result = load(f, schema=Schema(template='AppConfig', mode='strict'))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert result.value == {}
 
 
 def test_schema_lenient_extra_field_warns(tmp_path: Path) -> None:
@@ -455,8 +475,10 @@ def test_schema_from_file(tmp_path: Path) -> None:
 def test_schema_field_constraint_violation(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    port: <int, range(1, 100)> = 80\n}\nport = 200\n')
-    with pytest.raises(SchemaError):
-        load(f, schema=Schema(template='AppConfig'))
+    result = load(f, schema=Schema(template='AppConfig'))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert result.value == {}
 
 
 # ═══════════════════════════════════════════════════════

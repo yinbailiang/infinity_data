@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser.models import Constraints, TemplateDef, TemplateField
+from infinity_data.parser.models import Constraints, TemplateConfig, TemplateDef, TemplateField
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.models import (
@@ -117,7 +117,7 @@ def _server_template() -> tuple[TemplateDef, TemplateKey]:
             ),
         ],
         constraints=[],
-        config={},
+        config=TemplateConfig(),
         source=_SRC,
     )
     return tpl, TemplateKey(content_hash='abc', name='Server')
@@ -170,7 +170,7 @@ def test_template_as_constraint_marks_source_template() -> None:
 
 
 def _apply_schema(mode: str) -> tuple[StdObject, list[str]]:
-    tpl = TemplateDef(name='Cfg', fields=[], constraints=[], config={}, source=_SRC)
+    tpl = TemplateDef(name='Cfg', fields=[], constraints=[], config=TemplateConfig(), source=_SRC)
     key = TemplateKey(content_hash='abc', name='Cfg')
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])
@@ -179,7 +179,7 @@ def _apply_schema(mode: str) -> tuple[StdObject, list[str]]:
 
 
 def test_schema_strict_extra_field_raises() -> None:
-    tpl = TemplateDef(name='Cfg', fields=[], constraints=[], config={}, source=_SRC)
+    tpl = TemplateDef(name='Cfg', fields=[], constraints=[], config=TemplateConfig(), source=_SRC)
     key = TemplateKey(content_hash='abc', name='Cfg')
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])

@@ -3,7 +3,7 @@
 错误模型：
 - 词法/语法/语义错误统一为 :class:`Diagnostic`（纯数据，从不抛异常）
 - 沙盒错误必须**中止编译**（控制流），故保留异常；携带 ``code/params/source``，
-  可经 :func:`infinity_data.pipeline.check` 转换为 Diagnostic
+  由编译核心（``infinity_data.pipeline``）捕获并转换为 ERROR 诊断，返回空文档
 """
 
 from __future__ import annotations

@@ -18,6 +18,7 @@ from infinity_data.tokenizer.models.raw_tokens import (
 )
 from infinity_data.tokenizer.models.tokens import (
     CommaToken,
+    EofToken,
     NewlineToken,
     Token,
 )
@@ -48,6 +49,15 @@ class TokenStream(LL1Stream[Token]):
         if isinstance(token, NoNextType):
             return False
         return token.raw.type == expect
+
+    def eof(self) -> bool:
+        """结束判定：当前 token 为 EofToken，或流已物理耗尽（哨兵被消费后）。
+
+        EofToken 是 FinalTokenizer 产出的哨兵 token；基类 :class:`LL1Stream` 的
+        ``eof()`` 只认物理耗尽（哨兵被消费后才为 True），此处统一为「哨兵即结束」
+        ——解析循环无需再区分 ``check(EOF)`` 与 ``eof()``。
+        """
+        return isinstance(self.peek(), (EofToken, NoNextType))
 
     # ── 跳过 ───────────────────────────────────────
 

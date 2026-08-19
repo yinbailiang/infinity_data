@@ -260,6 +260,8 @@ tags可为空，内容不做约束
 
 支持的配置参数:
 - `allow_extra: bool` 默认 `false` 设置为 `true` 来允许扩展属性
+- `positional: bool` 默认 `true`, 设为 `false` 禁止位置参数
+- `description: str?` 默认 `null`, 支持设为任意字符串，用于元数据
 
 ### 2.2 模板实例化
 

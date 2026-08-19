@@ -27,6 +27,11 @@ register_diagnostic_define(
         '[{location}] 多行注释未闭合，期望结束标记: {flag}',
         en='[{location}] unterminated block comment, expected closing: {flag}',
     ),
+    diagnostic_define(
+        'tokenize.bom',
+        '[{location}] 文件包含 BOM，规范要求 UTF-8 NO BOM 编码',
+        en='[{location}] file contains a BOM; UTF-8 NO BOM is required',
+    ),
 )
 
 

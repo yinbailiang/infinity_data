@@ -1,6 +1,6 @@
 """词法分析器"""
 
-from infinity_data.infra.diagnostics import DiagnosticCollector
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.infra.file import File
 from infinity_data.infra.ll1_stream import NoNextType
 from infinity_data.tokenizer.char_stream import CharStream
@@ -43,6 +43,9 @@ class RawTokenizer:
         'nan': RawTokenType.FLOAT,
     }
 
+    _open_brackets: frozenset[str] = frozenset({'{', '[', '(', '<'})
+    _close_brackets: frozenset[str] = frozenset({'}', ']', ')', '>'})
+
     def __init__(
         self,
         file: File,
@@ -53,6 +56,21 @@ class RawTokenizer:
         # 注意：不能用 `or` —— 空 DiagnosticCollector 的 __bool__ 为 False，会静默丢弃传入的收集器
         self._errors = error_collector if error_collector is not None else DiagnosticCollector()
         self._eof_sent: bool = False
+        self._open_stack: list[tuple[str, SourceInfo]] = []
+        self._detect_bom()
+
+    def _detect_bom(self) -> None:
+        """检测文件 BOM（规范要求 UTF-8 NO BOM）：报 tokenize.bom 警告并跳过。"""
+        if not self._stream.eof() and self._stream.peek() == '\ufeff':
+            self._errors.add(
+                Diagnostic(
+                    Severity.WARNING,
+                    'tokenize.bom',
+                    {},
+                    SourceRange.at(self._file, self._stream.info()),
+                )
+            )
+            self._stream.advance()
 
     def __iter__(self) -> 'RawTokenizer':
         return self
@@ -82,13 +100,16 @@ class RawTokenizer:
             self._skip_whitespace_and_comments()
 
             if self._stream.eof():
+                self._report_unclosed_brackets()
                 return self._make_token(RawTokenType.EOF, '', self._current_source_info())
 
             ch = self._stream.peek()
             assert not isinstance(ch, NoNextType)
 
             if ch in self._single_char_map:
-                return self._single_char(self._single_char_map[ch])
+                tok = self._single_char(self._single_char_map[ch])
+                self._track_bracket(ch, tok)
+                return tok
 
             if ch == '!':
                 tok = self._read_bang()
@@ -214,6 +235,23 @@ class RawTokenizer:
         start = self._current_source_info()
         self._stream.advance()
         return self._make_token(token_type, ch, start=start)
+
+    # ── 括号栈（EOF 时报告未闭合）────────────────────
+    def _track_bracket(self, ch: str, tok: RawToken) -> None:
+        """维护括号栈：开括号压栈、闭括号弹栈，供 EOF 时报告未闭合括号。"""
+        if ch in self._open_brackets:
+            self._open_stack.append((ch, tok.source.start))
+        elif ch in self._close_brackets:
+            if self._open_stack:
+                self._open_stack.pop()
+
+    def _report_unclosed_brackets(self) -> None:
+        """EOF 时仍开着的括号 → 报 tokenize.unterminated_bracket（按开括号顺序）。"""
+        for bracket, start in self._open_stack:
+            self._errors.add(
+                diag('tokenize.unterminated_bracket', {'bracket': bracket}, SourceRange.at(self._file, start))
+            )
+        self._open_stack.clear()
 
     # ── ! 导入关键字（词法组合，! 无独立语法）──
 

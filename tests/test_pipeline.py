@@ -4,6 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from infinity_data import SandboxConfig, compile_source, load
 from infinity_data.infra.file import MemFile
 from infinity_data.semantic.models import Severity, StdObject
@@ -34,6 +36,14 @@ def test_mem_file_chars_stream() -> None:
     mem = MemFile(name='mem.infd', root_path=Path('.'), content='a = 1\n')
     assert list(mem.chars()) == list('a = 1\n')
     assert ''.join(mem.chars()) == 'a = 1\n'  # 每次构造新迭代器
+
+
+def test_string_token_base_is_not_instantiable() -> None:
+    """StringToken 是抽象基类：拒绝直接实例化（须用单行/多行子类）。"""
+    from infinity_data.tokenizer.models.tokens import StringToken
+
+    with pytest.raises(TypeError):
+        StringToken()
 
 
 def test_scalar_fields() -> None:
@@ -380,6 +390,79 @@ def test_undefined_template() -> None:
     result = compile_source('x = DoesNotExist()\n')
     assert result.has_errors
     assert any(d.code == 'template.undefined' for d in result.diagnostics)
+
+
+# ═══════════════════════════════════════════════════════════
+# 模板头部配置（TemplateConfig，语法层解析）
+# ═══════════════════════════════════════════════════════════
+
+
+def test_template_config_unknown_key_is_error() -> None:
+    """未知配置键 → 语法层报错（dataclass 字段即白名单）。"""
+    result = compile_source('~X(unknown_key=true) {\n    a: int = 1\n}\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.template_config_unknown' for d in result.diagnostics)
+
+
+def test_template_config_type_error() -> None:
+    """配置值类型不匹配 → 语法层报错。"""
+    result = compile_source('~X(allow_extra="yes") {\n    a: int = 1\n}\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.template_config_type' for d in result.diagnostics)
+
+
+def test_template_config_non_literal_is_error() -> None:
+    """配置值必须是字面量（$ 引用 / 复杂值 → 报错）。"""
+    result = compile_source('~X(description=$VAR) {\n    a: int = 1\n}\n')
+    assert result.has_errors
+    assert any(d.code == 'parse.template_config_value' for d in result.diagnostics)
+
+
+def test_template_config_positional_false() -> None:
+    """positional=false：位置参数 → ERROR，命名参数正常。"""
+    bad = compile_source("""
+~X(positional=false) {
+    a: int
+}
+x = X(1)
+""")
+    assert bad.has_errors
+    assert any(d.code == 'template.positional_disabled' for d in bad.diagnostics)
+
+    good = compile_source("""
+~X(positional=false) {
+    a: int = 1
+}
+x = X(a=2)
+""")
+    assert not good.has_errors, [d.message for d in good.diagnostics]
+    assert good.value == {'x': {'a': 2}}
+
+
+def test_template_unknown_named_argument_is_error() -> None:
+    """未知命名参数 → ERROR（拒绝静默忽略）。"""
+    result = compile_source("""
+~X {
+    a: int = 1
+}
+x = X(bogus=2)
+""")
+    assert result.has_errors
+    assert any(d.code == 'template.unknown_argument' for d in result.diagnostics)
+    # 合法字段不受影响
+    ok = compile_source("""
+~X {
+    a: int = 1
+}
+x = X(a=2)
+""")
+    assert not ok.has_errors
+
+
+def test_template_config_description_metadata() -> None:
+    """description 是合法元数据（不消费，仅解析通过）。"""
+    result = compile_source('~X(description="服务模板") {\n    a: int = 1\n}\nx = X()\n')
+    assert not result.has_errors
 
 
 def test_required_before_optional_rule() -> None:

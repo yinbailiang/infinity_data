@@ -1,5 +1,6 @@
 import decimal
 from dataclasses import dataclass, field
+from typing import Any
 
 from .raw_tokens import RawToken
 
@@ -127,16 +128,21 @@ class DotToken(Token):
 # ── 字符串字面量 ───────────────────────────────────
 
 
-@dataclass
+@dataclass(init=False)
 class StringToken(Token):
-    """字符串（默认值仅用于错误恢复时的合成 token）"""
+    """字符串基类（抽象：拒绝直接实例化，由单行/多行子类承载）"""
 
     value: str = ''
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError(
+            'StringToken 是抽象字符串基类，不能直接实例化；请使用 SinglelineStringToken 或 MultilineStringToken'
+        )
 
 
 @dataclass
 class SinglelineStringToken(StringToken):
-    """双引号单行字符串"""
+    """双引号单行字符串（默认值仅用于错误恢复时的合成 token）"""
 
     pass
 
