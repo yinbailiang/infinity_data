@@ -10,7 +10,7 @@ import pytest
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser.models import Constraints, TemplateConfig, TemplateDef, TemplateField
+from infinity_data.parser import Constraints, TemplateConfig, TemplateDef, TemplateField
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.builder import ResolvedConstraint, StdField, StdLiteral, StdObject
 from infinity_data.semantic.executor import ConstraintExecutor

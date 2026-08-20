@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from infinity_data.parser.models import TemplateDef
+from infinity_data.parser import TemplateDef
 
 __all__ = ['ResolvedContext', 'Scope', 'TemplateKey']
 

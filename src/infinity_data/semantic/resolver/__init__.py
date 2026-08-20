@@ -7,13 +7,12 @@
 子模块导出自身模型与类，供流水线（pipeline / 测试）直接引用。
 """
 
-from infinity_data.semantic.resolver.imports import ImportResolver, ReportFn
+from infinity_data.semantic.resolver.imports import ImportResolver
 from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
 from infinity_data.semantic.resolver.resolver import TemplateGraphResolver
 
 __all__ = [
     'ImportResolver',
-    'ReportFn',
     'ResolvedContext',
     'Scope',
     'TemplateGraphResolver',

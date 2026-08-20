@@ -14,6 +14,7 @@
         print(result.value)
 """
 
+from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.pipeline import (
     CompilationResult,
     check,
@@ -23,7 +24,6 @@ from infinity_data.pipeline import (
     safe_load,
 )
 from infinity_data.sandbox import SandboxConfig, SandboxError, Schema, SchemaError
-from infinity_data.semantic import Diagnostic, Severity
 
 __all__ = [
     'compile_source',

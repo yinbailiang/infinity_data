@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from infinity_data import SandboxConfig, compile_source, load
+from infinity_data import SandboxConfig, Severity, compile_source, load
 from infinity_data.infra.file import MemFile
-from infinity_data.semantic import Severity, StdObject
+from infinity_data.semantic import StdObject
 
 
 def compile_ok(source: str) -> dict[str, Any]:

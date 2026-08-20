@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
-from infinity_data.parser.models import TemplateDef
+from infinity_data.parser import TemplateDef
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.builder.models import (
     ResolvedConstraint,

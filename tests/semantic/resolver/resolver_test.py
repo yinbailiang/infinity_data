@@ -12,7 +12,7 @@ from infinity_data import SandboxConfig
 from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import DiskFile, MemFile
-from infinity_data.parser.models import Document
+from infinity_data.parser import Document
 from infinity_data.sandbox import Sandbox
 from infinity_data.semantic.resolver import ImportResolver, ResolvedContext, TemplateGraphResolver
 

@@ -1,7 +1,7 @@
 """semantic/resolver/models.py 单元测试：Phase 1 数据模型（模板身份 / 可见名表 / 上下文）。"""
 
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser.models import TemplateConfig, TemplateDef
+from infinity_data.parser import TemplateConfig, TemplateDef
 from infinity_data.semantic.resolver import ResolvedContext, Scope, TemplateKey
 
 

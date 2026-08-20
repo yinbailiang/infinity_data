@@ -18,7 +18,6 @@
 （副作用，导入即注册进全局注册表）。
 """
 
-from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.semantic import (
     diagnostics,
 )
@@ -44,12 +43,10 @@ from infinity_data.semantic.resolver import (
 __all__ = [
     'AstBuilder',
     'ConstraintExecutor',
-    'Diagnostic',
     'ImportResolver',
     'ResolvedConstraint',
     'ResolvedContext',
     'Scope',
-    'Severity',
     'StdArray',
     'StdDocument',
     'StdField',

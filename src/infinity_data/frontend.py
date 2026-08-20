@@ -6,7 +6,7 @@
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector
 from infinity_data.infra.file import File
-from infinity_data.parser.models import Document
+from infinity_data.parser import Document
 from infinity_data.parser.parser import Parser
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.tokenizer import RawTokenizer

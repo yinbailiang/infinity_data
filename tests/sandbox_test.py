@@ -10,13 +10,13 @@ import pytest
 from infinity_data import (
     SandboxConfig,
     Schema,
+    Severity,
     check,
     compile_document,
     compile_source,
     load,
     safe_load,
 )
-from infinity_data.semantic import Severity
 
 
 def _write(path: Path, text: str) -> None:

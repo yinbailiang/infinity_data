@@ -3,8 +3,7 @@
 from decimal import Decimal
 from typing import Any
 
-from infinity_data import CompilationResult, compile_source
-from infinity_data.semantic import Severity
+from infinity_data import CompilationResult, Severity, compile_source
 
 
 def errors_of(result: CompilationResult) -> list[str]:

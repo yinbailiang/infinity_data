@@ -4,7 +4,7 @@ from pathlib import Path
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
-from infinity_data.parser.models import DictValue, Field, TemplateDef, TemplateField
+from infinity_data.parser import DictValue, Field, TemplateDef, TemplateField
 from infinity_data.parser.parser import Parser
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.tokenizer import RawTokenizer

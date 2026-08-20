@@ -15,14 +15,12 @@ Phase 2a（:class:`~infinity_data.semantic.builder.AstBuilder`）消费。
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.infra.file import File
-from infinity_data.parser.models import (
+from infinity_data.parser import (
     Document,
     TemplateDef,
     TemplateImportItem,
@@ -86,7 +84,7 @@ class TemplateGraphResolver:
         root_scope = self._load_imported_templates(doc)
 
         # 解析数据导入语句（!env / !file）→ $ 引用命名空间
-        namespace = self._imports.resolve(doc, self._report)
+        namespace = self._imports.resolve(doc, self._collector)
 
         return ResolvedContext(
             templates=dict(self._templates),
@@ -268,7 +266,7 @@ class TemplateGraphResolver:
             from_path,
             base_dir=base_dir,
             source=source,
-            report=self._report,
+            collector=self._collector,
         )
         if file is None:
             return {}
@@ -348,12 +346,3 @@ class TemplateGraphResolver:
         if self._parse_cache is not None:
             self._parse_cache[file.identity] = doc
         return doc
-
-    def _report(
-        self,
-        severity: Severity,
-        code: str,
-        params: Mapping[str, Any],
-        source: SourceRange | None,
-    ) -> None:
-        self._collector.add(Diagnostic(severity=severity, code=code, params=dict(params), source=source))

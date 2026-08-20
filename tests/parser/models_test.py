@@ -1,7 +1,7 @@
 """parser/models.py 单元测试：RawAst 节点构造与默认值。"""
 
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser.models import (
+from infinity_data.parser import (
     ConstraintCall,
     ConstraintIdent,
     Constraints,

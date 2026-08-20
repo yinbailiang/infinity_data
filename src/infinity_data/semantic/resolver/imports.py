@@ -7,21 +7,21 @@
 - ``!from``（模板导入）：模板文件经 ``Sandbox.open_template`` 产出 File，
   模板定义的实际加载由 Phase 1 的 :class:`TemplateGraphResolver` 完成
 
-本层产出 ``$`` 引用命名空间（alias → Python 值），经 ``ReportFn`` 上报诊断
-（由调用方注入到共享收集器）。纯数据依赖：不引用任何 Phase 2 对象。
+本层产出 ``$`` 引用命名空间（alias → Python 值）；诊断直接写入调用方注入的
+共享 :class:`DiagnosticCollector`（与 resolver / builder 的收集器模式统一）。
+纯数据依赖：不引用任何 Phase 2 对象。
 """
 
 from __future__ import annotations
 
 import json
 import tomllib
-from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from infinity_data.infra.diagnostics import Severity
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.infra.file import File
-from infinity_data.parser.models import (
+from infinity_data.parser import (
     Document,
     EnvImportStmt,
     FileImportStmt,
@@ -30,8 +30,6 @@ from infinity_data.parser.models import (
 )
 from infinity_data.sandbox import Sandbox, SandboxConfig
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
-
-ReportFn = Callable[[Severity, str, Mapping[str, Any], SourceRange | None], None]
 
 _FORMAT_MAP: dict[str, str] = {
     '.json': 'json',
@@ -60,14 +58,14 @@ class ImportResolver:
     def base_dir(self) -> Path:
         return self._sandbox.base_dir
 
-    def resolve(self, doc: Document, report: ReportFn) -> dict[str, Any]:
-        """解析所有导入语句（env/file），返回 namespace。"""
+    def resolve(self, doc: Document, collector: DiagnosticCollector) -> dict[str, Any]:
+        """解析所有导入语句（env/file），返回 namespace；诊断写入 ``collector``。"""
         namespace: dict[str, Any] = {}
         for stmt in doc.statements:
             if isinstance(stmt, EnvImportStmt):
-                self._resolve_env(stmt, namespace, report)
+                self._resolve_env(stmt, namespace, collector)
             elif isinstance(stmt, FileImportStmt):
-                self._resolve_file(stmt, namespace, report)
+                self._resolve_file(stmt, namespace, collector)
         return namespace
 
     def _bind(
@@ -75,7 +73,7 @@ class ImportResolver:
         namespace: dict[str, Any],
         name: str,
         value: Any,
-        report: ReportFn,
+        collector: DiagnosticCollector,
         source: SourceRange | None,
     ) -> None:
         """绑定 ``$`` 命名空间条目；重复 alias → ERROR 并拒绝覆盖（保留先到者）。
@@ -83,7 +81,7 @@ class ImportResolver:
         与模板 scope 一致：``$`` 命名空间内不允许隐式的"后者覆盖前者"。
         """
         if name in namespace:
-            report(Severity.ERROR, 'namespace.duplicate', {'name': name}, source)
+            collector.add(Diagnostic(Severity.ERROR, 'namespace.duplicate', {'name': name}, source))
             return
         namespace[name] = value
 
@@ -93,7 +91,7 @@ class ImportResolver:
         self,
         stmt: EnvImportStmt,
         namespace: dict[str, Any],
-        report: ReportFn,
+        collector: DiagnosticCollector,
     ) -> None:
         """!env import NAME [as NEW_NAME]
 
@@ -101,28 +99,28 @@ class ImportResolver:
         :class:`SandboxError`，不会退化为空字符串注入。
         """
         name = stmt.alias or stmt.name
-        self._bind(namespace, name, self._sandbox.getenv(stmt.name, source=stmt.source), report, stmt.source)
+        self._bind(namespace, name, self._sandbox.getenv(stmt.name, source=stmt.source), collector, stmt.source)
 
     def _resolve_file(
         self,
         stmt: FileImportStmt,
         namespace: dict[str, Any],
-        report: ReportFn,
+        collector: DiagnosticCollector,
     ) -> None:
         """!file "path" [as fmt] import .path.to.key as alias, ..."""
         file = self._sandbox.open_file(stmt.file_path, source=stmt.source)
         if file is None:
-            report(Severity.WARNING, 'import.file_denied', {'path_src': stmt.file_path}, stmt.source)
+            collector.add(Diagnostic(Severity.WARNING, 'import.file_denied', {'path_src': stmt.file_path}, stmt.source))
             return
 
         fmt = stmt.format or _FORMAT_MAP.get(Path(stmt.file_path).suffix.lower(), 'json')
         try:
             text = file.read()
         except OSError:
-            report(Severity.WARNING, 'import.file_missing', {'name': file.name}, stmt.source)
+            collector.add(Diagnostic(Severity.WARNING, 'import.file_missing', {'name': file.name}, stmt.source))
             return
 
-        data = self._parse_data(text, fmt, report, stmt.source)
+        data = self._parse_data(text, fmt, collector, stmt.source)
         if data is None:
             return
 
@@ -130,9 +128,9 @@ class ImportResolver:
             try:
                 value = self._resolve_json_path(data, item.json_path)
             except (KeyError, IndexError, TypeError):
-                report(Severity.WARNING, 'import.path_failed', {'name': file.name}, item.source)
+                collector.add(Diagnostic(Severity.WARNING, 'import.path_failed', {'name': file.name}, item.source))
                 continue
-            self._bind(namespace, item.alias, value, report, item.source)
+            self._bind(namespace, item.alias, value, collector, item.source)
 
     # ── 模板导入路径解析（!from 由 TemplateGraphResolver 使用）──
 
@@ -142,12 +140,12 @@ class ImportResolver:
         *,
         base_dir: Path | None,
         source: SourceRange | None,
-        report: ReportFn,
+        collector: DiagnosticCollector,
     ) -> File | None:
         """!from 目标：经沙盒授权产出 File（相对路径以导入所在文件目录解析）。"""
         file = self._sandbox.open_template(from_path, base_dir=base_dir, source=source)
         if file is None:
-            report(Severity.WARNING, 'import.template_denied', {'path_src': from_path}, source)
+            collector.add(Diagnostic(Severity.WARNING, 'import.template_denied', {'path_src': from_path}, source))
         return file
 
     # ── 辅助 ──────────────────────────────────────────
@@ -156,7 +154,7 @@ class ImportResolver:
         self,
         text: str,
         fmt: str,
-        report: ReportFn,
+        collector: DiagnosticCollector,
         source: SourceRange,
     ) -> Any | None:
         """按格式解析数据内容（文本 loads）。"""
@@ -167,15 +165,15 @@ class ImportResolver:
                 try:
                     import yaml  # pyright: ignore[reportMissingModuleSource]
                 except ImportError:
-                    report(Severity.WARNING, 'import.yaml_missing', {}, source)
+                    collector.add(Diagnostic(Severity.WARNING, 'import.yaml_missing', {}, source))
                     return None
                 return yaml.safe_load(text)
             if fmt == 'toml':
                 return tomllib.loads(text)
-            report(Severity.WARNING, 'import.unsupported_format', {'format': fmt}, source)
+            collector.add(Diagnostic(Severity.WARNING, 'import.unsupported_format', {'format': fmt}, source))
             return None
         except Exception as e:
-            report(Severity.ERROR, 'import.parse_failed', {'error': e}, source)
+            collector.add(Diagnostic(Severity.ERROR, 'import.parse_failed', {'error': e}, source))
             return None
 
     # ── 辅助 ──────────────────────────────────────────

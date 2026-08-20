@@ -20,7 +20,7 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
-from infinity_data.parser.models import (
+from infinity_data.parser import (
     ArrayValue,
     ConstraintStmt,
     DictValue,

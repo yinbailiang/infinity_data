@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser.models import TemplateDef
+from infinity_data.parser import TemplateDef
 
 if TYPE_CHECKING:
     # 仅类型注解使用（from __future__ import annotations 下为惰性字符串）：

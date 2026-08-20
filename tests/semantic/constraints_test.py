@@ -1,7 +1,7 @@
 """semantic/constraints.py 单元测试：约束解析（resolve_constraint_list）。"""
 
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser.models import Constraint, ConstraintIdent
+from infinity_data.parser import Constraint, ConstraintIdent
 from infinity_data.semantic.constraints import resolve_constraint_list
 
 

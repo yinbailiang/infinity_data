@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
-from infinity_data.parser.models import (
+from infinity_data.parser import (
     Constraint,
     ConstraintCall,
     ConstraintIdent,
