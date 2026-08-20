@@ -1,10 +1,36 @@
 [project]
 name = "infinity-data"
-version = "0.1.0"
+version = "1.0.0"
 description = "InfinityData：声明式配置语言（.infd/.inft）的 Python 编译器库"
 readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "infinity_system: yin_bailiang" },
+]
+keywords = [
+    "config",
+    "configuration",
+    "declarative",
+    "dsl",
+    "compiler",
+    "infinity-data",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 requires-python = ">=3.12"
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/yinbailiang/infinity_data"
+Documentation = "https://github.com/yinbailiang/infinity_data#readme"
 
 [dependency-groups]
 # 测试组：仅运行测试所需（CI test job 只装这组，更快）
