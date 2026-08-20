@@ -110,7 +110,11 @@ class TokenStream(LL1Stream[Token]):
             return self._synthetic(token_cls, source=rng)
         if not isinstance(tok, token_cls):
             self._errors.add(
-                diag('parse.unexpected_token', {'expected': token_cls.__name__, 'actual': tok.raw.type.name}, tok.raw.source)
+                diag(
+                    'parse.unexpected_token',
+                    {'expected': token_cls.__name__, 'actual': tok.raw.type.name},
+                    tok.raw.source,
+                )
             )
             self.advance()
             return self._synthetic(token_cls, source=tok.raw.source)

@@ -37,9 +37,17 @@ register_diagnostic_define(
         '[{location}] {label}超出沙盒授权: {path_src}',
         en='[{location}] {label} denied by sandbox: {path_src}',
     ),
-    diagnostic_define('schema.undefined_template', '未定义的 schema 模板 {template!r}', en='undefined schema template {template!r}'),
-    diagnostic_define('schema.failed', '顶层 schema 校验失败: {detail}', en='top-level schema validation failed: {detail}'),
-    diagnostic_define('schema.extra_fields', '顶层 schema 不允许额外字段: {fields}', en='top-level schema does not allow extra fields: {fields}'),
+    diagnostic_define(
+        'schema.undefined_template', '未定义的 schema 模板 {template!r}', en='undefined schema template {template!r}'
+    ),
+    diagnostic_define(
+        'schema.failed', '顶层 schema 校验失败: {detail}', en='top-level schema validation failed: {detail}'
+    ),
+    diagnostic_define(
+        'schema.extra_fields',
+        '顶层 schema 不允许额外字段: {fields}',
+        en='top-level schema does not allow extra fields: {fields}',
+    ),
     diagnostic_define('schema.extra_fields_lenient', '顶层 schema 存在额外字段（已保留）: {fields}'),
     diagnostic_define('schema.missing_required', '{path_prefix}顶层 schema 缺少必填字段 {field!r}（模板 {template}）'),
 )

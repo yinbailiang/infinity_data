@@ -105,8 +105,7 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
 
     # 单一诊断收集器：词法 → 语法 → 语义（Phase 1/2a/2b）全程复用
     collector = DiagnosticCollector()
-    doc, front_diagnostics = parse_source(file)
-    collector.extend(front_diagnostics)
+    doc, _ = parse_source(file, collector)
 
     sandbox_impl = Sandbox(
         config=options.effective_sandbox(),

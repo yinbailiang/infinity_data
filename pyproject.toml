@@ -7,10 +7,18 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-dev = [
+# 测试组：仅运行测试所需（CI test job 只装这组，更快）
+test = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+# 开发组：lint/类型/钩子 + 测试组（本地开发与 CI pre-commit job 装这组）
+dev = [
     "ruff>=0.15.21",
     "pyright",
+    "pre-commit>=4.0",
+    "interrogate>=1.7.0",
+    { include-group = "test" },
 ]
 
 [build-system]

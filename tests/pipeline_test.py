@@ -587,7 +587,8 @@ def test_duplicate_template_still_validates_internals() -> None:
 
 
 def test_env_import() -> None:
-    result = compile_source('''\
+    result = compile_source(
+        """\
 # 测试 !env import
 !env import USER as system_user
 !env import HOME
@@ -597,21 +598,28 @@ app {
     user = $system_user
     home = $HOME
 }
-''', env={'USER': 'alice', 'HOME': '/home/alice'})
+""",
+        env={'USER': 'alice', 'HOME': '/home/alice'},
+    )
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'app': {'user': 'alice', 'home': '/home/alice'}}
 
 
 def test_file_import(infd_file: Callable[[str, str], Path]) -> None:
     # M3 零信任：!file 需要显式授权（allow_files glob 白名单）
-    infd_file('test_config.json', '''{
+    infd_file(
+        'test_config.json',
+        """{
     "server": {
         "host": "prod.example.com",
         "port": 443,
         "features": ["http2", "tls1.3"]
     }
-}''')
-    path = infd_file('test_file_import.infd', '''\
+}""",
+    )
+    path = infd_file(
+        'test_file_import.infd',
+        """\
 !file "test_config.json" as json import .server.host as srv_host, .server.port as srv_port, .server.features as srv_features
 
 config {
@@ -619,7 +627,8 @@ config {
     port = $srv_port
     features = $srv_features
 }
-''')
+""",
+    )
     result = load(
         path,
         sandbox=SandboxConfig(allow_files=['./test_config.json']),
@@ -801,7 +810,7 @@ def test_bang_at_eof_is_tokenize_error() -> None:
 
 
 def test_golden_test_infd() -> None:
-    result = compile_source('''\
+    result = compile_source("""\
 # ============================================================
 # 综合测试：覆盖语言各项语法特性
 # ============================================================
@@ -905,7 +914,7 @@ MyApp {
         null
     ]
 }
-''')
+""")
     errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
     assert not errors, [f'{d.location}: {d.message}' for d in errors]
 

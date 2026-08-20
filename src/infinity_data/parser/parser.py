@@ -565,9 +565,7 @@ class Parser:
 
     def _skip_to_field_boundary(self) -> None:
         """跳过当前模板字段的残余 token，直到分隔符或模板闭合符（错误恢复）。"""
-        while not self._stream.eof() and not isinstance(
-            self._stream.peek(), (CommaToken, NewlineToken, RbraceToken)
-        ):
+        while not self._stream.eof() and not isinstance(self._stream.peek(), (CommaToken, NewlineToken, RbraceToken)):
             self._stream.advance()
 
     # ═══════════════════════════════════════════════════════
@@ -847,7 +845,9 @@ class Parser:
                 nxt = self._stream.peek()
                 if isinstance(nxt, (EqualsToken, ColonToken)):
                     self._errors.add(diag('parse.value_field', {'name': ident.name}, self._stream.single_span(ident)))
-                    return ErrorValue(source=self._stream.single_span(ident), message=f'值位置出现字段定义: {ident.name}')
+                    return ErrorValue(
+                        source=self._stream.single_span(ident), message=f'值位置出现字段定义: {ident.name}'
+                    )
                 return self._parse_template_call(ident)
 
             case tok:

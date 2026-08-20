@@ -20,7 +20,7 @@ def test_non_drive_absolute_unchanged_on_windows() -> None:
 
 
 def test_relative_path_unchanged() -> None:
-    assert str(posix_to_native('./foo/bar', platform='win32')) == 'foo/bar'  # pathlib 归一化 ./ 
+    assert str(posix_to_native('./foo/bar', platform='win32')) == 'foo/bar'  # pathlib 归一化 ./
     assert posix_to_native('foo/bar', platform='linux') == Path('foo/bar')
 
 

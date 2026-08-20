@@ -4,7 +4,7 @@
 消除两处重复的 RawTokenizer → FinalTokenizer → Parser 组装。
 """
 
-from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import File
 from infinity_data.parser import Document
 from infinity_data.parser.parser import Parser
@@ -14,19 +14,24 @@ from infinity_data.tokenizer.tokenizer import RawTokenizer
 __all__ = ['parse_source']
 
 
-def parse_source(file: File) -> tuple[Document, list[Diagnostic]]:
-    """词法 + 语法分析，返回 RawAst Document 与前端诊断。
+def parse_source(
+    file: File,
+    collector: DiagnosticCollector | None = None,
+) -> tuple[Document, DiagnosticCollector]:
+    """词法 + 语法分析，返回 RawAst Document 与生效收集器。
 
-    容错：词法/语法错误经 DiagnosticCollector 收集而非抛出，调用方决定如何处置
-    （主文件 → 汇入最终诊断；外部模板 → 并入当前分析器诊断）。
+    容错：词法/语法错误经 :class:`DiagnosticCollector` 收集而非抛出。
+    传入 ``collector`` 时三阶段（RawTokenizer / FinalTokenizer / Parser）全程
+    复用同一收集器并**原样返回**（非副本）；缺省时内部新建并返回。
+    返回值第二元素为生效收集器，可直接查询 errors / warnings / has_errors。
     """
-    tokenize_collector = DiagnosticCollector()
-    parse_collector = DiagnosticCollector()
+    if collector is None:
+        collector = DiagnosticCollector()
 
-    raw_tokens = RawTokenizer(file=file, error_collector=tokenize_collector)
-    tokens = FinalTokenizer(raw_tokens)
-    parser = Parser(tokens, error_collector=parse_collector)
+    raw_tokens = RawTokenizer(file=file, error_collector=collector)
+    tokens = FinalTokenizer(raw_tokens, error_collector=collector)
+    parser = Parser(tokens, error_collector=collector)
     doc = parser.parse()
 
     # 词法/语法错误统一为 Diagnostic（纯数据，直接聚合）
-    return doc, [*tokenize_collector, *parse_collector]
+    return doc, collector

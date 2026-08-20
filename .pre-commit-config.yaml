@@ -1,0 +1,56 @@
+# 提交前钩子（参考 event_bus）：uv + pre-commit
+#
+# 安装：uv run pre-commit install
+# 全量运行：uv run pre-commit run --all-files
+#
+# Python 风格/类型/测试统一交给 pre-commit 与 CI；
+# 本地 pytest-cov 钩子保证提交时测试全绿且覆盖率达标。
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-ast
+      - id: check-toml
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: end-of-file-fixer
+        exclude: '\.py$'
+      - id: trailing-whitespace
+        exclude: '\.py$'
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+        files: ^src/|^tests/
+      - id: ruff-format
+        files: ^src/|^tests/
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.411
+    hooks:
+      - id: pyright
+        args: ["--level", "error"]
+        files: ^src/|^tests/
+
+  - repo: https://github.com/econchick/interrogate
+    rev: 1.7.0
+    hooks:
+      - id: interrogate
+        # 当前实测 74.6%；阈值留余量，随 docstring 补充逐步上调
+        args: ["--fail-under=70"]
+        files: ^src/
+
+  - repo: local
+    hooks:
+      - id: pytest-cov
+        name: pytest coverage
+        entry: uv run pytest --cov=infinity_data --cov-fail-under=90 -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [python]

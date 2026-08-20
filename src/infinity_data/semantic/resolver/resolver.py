@@ -213,9 +213,7 @@ class TemplateGraphResolver:
         assert self._root_file is not None
         root_id = self._root_file.identity
         loaded: set[str] = set()
-        root_scope: Scope = {
-            tpl.name: key for key, tpl in self._templates.items() if key.identity == root_id
-        }
+        root_scope: Scope = {tpl.name: key for key, tpl in self._templates.items() if key.identity == root_id}
 
         # schema.from_file 隐式导入：独立 scope 供顶层校验使用
         if self._schema is not None and self._schema.from_file:
@@ -341,8 +339,7 @@ class TemplateGraphResolver:
             cached = self._parse_cache.get(file.identity)
             if cached is not None:
                 return cached
-        doc, diagnostics = parse_source(file)
-        self._collector.extend(diagnostics)
+        doc, _ = parse_source(file, self._collector)
         if self._parse_cache is not None:
             self._parse_cache[file.identity] = doc
         return doc

@@ -140,9 +140,11 @@ def render_message(
 
 
 class DiagnosticCollector:
-    """诊断收集器：收集 :class:`Diagnostic`（词法/语法阶段容错收集）。
+    """诊断收集器：收集 :class:`Diagnostic`（词法/语法/语义阶段容错收集）。
 
-    词法/语法阶段不抛异常：错误以 Diagnostic 形式收集，边界处直接聚合。
+    词法/语法/语义阶段不抛异常：错误以 Diagnostic 形式收集，边界处直接聚合。
+    只读查询按 severity 分离：``errors`` / ``warnings`` / ``diagnostics``，
+    ``has_errors`` 仅当含 ERROR 级别时成立（warning 不算错误）。
 
     用法::
 
@@ -166,20 +168,45 @@ class DiagnosticCollector:
         """批量添加诊断。"""
         self._errors.extend(errors)
 
-    # ── 只读查询 ──────────────────────────────────────
+    # ── 只读查询（severity 感知：warning 与 error 语义分离） ──
 
     @property
-    def errors(self) -> list[Diagnostic]:
-        """返回所有已收集诊断的副本。"""
+    def diagnostics(self) -> list[Diagnostic]:
+        """全部诊断的副本（含 ERROR / WARNING）。"""
         return self._errors.copy()
 
     @property
+    def errors(self) -> list[Diagnostic]:
+        """仅 ERROR 级别诊断的副本（warning 不算错误）。"""
+        return [d for d in self._errors if d.severity is Severity.ERROR]
+
+    @property
+    def warnings(self) -> list[Diagnostic]:
+        """仅 WARNING 级别诊断的副本。"""
+        return [d for d in self._errors if d.severity is Severity.WARNING]
+
+    @property
     def has_errors(self) -> bool:
-        """是否有已收集的诊断。"""
-        return len(self._errors) > 0
+        """是否含 ERROR 级别诊断（与 :class:`CompilationResult` 的 has_errors 语义一致）。"""
+        return any(d.severity is Severity.ERROR for d in self._errors)
+
+    @property
+    def has_warnings(self) -> bool:
+        """是否含 WARNING 级别诊断。"""
+        return any(d.severity is Severity.WARNING for d in self._errors)
 
     # ── 容器协议 ──────────────────────────────────────
 
     def __iter__(self) -> Iterator[Diagnostic]:
         """迭代所有已收集的诊断。"""
         return iter(self._errors)
+
+    def __len__(self) -> int:
+        """已收集诊断数量（容器协议）。
+
+        空收集器为 falsy（``bool(collector)`` = 是否收集到任何诊断，含 warning；
+        区别于 ``has_errors`` 的"是否含 ERROR"）——
+        因此缺省构造**不可用 ``error_collector or DiagnosticCollector()``**：
+        空收集器会被 `or` 判定为假而静默替换，丢弃调用方传入的收集器。
+        """
+        return len(self._errors)

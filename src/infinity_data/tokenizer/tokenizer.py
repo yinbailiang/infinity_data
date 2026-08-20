@@ -189,7 +189,11 @@ class RawTokenizer:
             self._stream.advance()
             if self._stream.eof():
                 self._errors.add(
-                    diag('tokenize.unterminated_comment', {'flag': '#' + '-' * plus_count}, SourceRange.at(self._file, self._current_source_info()))
+                    diag(
+                        'tokenize.unterminated_comment',
+                        {'flag': '#' + '-' * plus_count},
+                        SourceRange.at(self._file, self._current_source_info()),
+                    )
                 )
                 return
             ch = self._stream.peek()
@@ -225,7 +229,11 @@ class RawTokenizer:
             self._stream.advance()
 
         self._errors.add(
-            diag('tokenize.unterminated_comment', {'flag': '#' + '-' * depth}, SourceRange.at(self._file, self._current_source_info()))
+            diag(
+                'tokenize.unterminated_comment',
+                {'flag': '#' + '-' * depth},
+                SourceRange.at(self._file, self._current_source_info()),
+            )
         )
 
     # ── 单字符 token ──────────────────────────────────
@@ -282,7 +290,9 @@ class RawTokenizer:
             case 'from':
                 return self._make_token(RawTokenType.FROM_IMPORT, '!from', start=start)
             case _:
-                self._errors.add(diag('tokenize.invalid_bang', {'actual': repr(ident_tok.raw)}, SourceRange.at(self._file, start)))
+                self._errors.add(
+                    diag('tokenize.invalid_bang', {'actual': repr(ident_tok.raw)}, SourceRange.at(self._file, start))
+                )
                 return None
 
     # ── 单行字符串 ────────────────────────────────────
@@ -355,11 +365,7 @@ class RawTokenizer:
             if ch == '`':
                 # 检查是否有足够的反引号匹配
                 temp_count = 0
-                while (
-                    temp_count < backtick_count and 
-                    not self._stream.eof() and 
-                    self._stream.peek() == '`'
-                ):
+                while temp_count < backtick_count and not self._stream.eof() and self._stream.peek() == '`':
                     temp_count += 1
                     self._stream.advance()
                 if temp_count == backtick_count:
@@ -454,7 +460,11 @@ class RawTokenizer:
                 else:
                     # 有前置数字但 . 后无数字 (如 "42.") → 记录错误
                     self._errors.add(
-                        diag('tokenize.invalid_number', {'raw': ''.join(raw_parts) + '.'}, SourceRange.at(self._file, start))
+                        diag(
+                            'tokenize.invalid_number',
+                            {'raw': ''.join(raw_parts) + '.'},
+                            SourceRange.at(self._file, start),
+                        )
                     )
 
         # ── 4. 可选指数部分 ──
@@ -471,7 +481,9 @@ class RawTokenizer:
                     self._stream.advance()
 
             if self._stream.eof():
-                self._errors.add(diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start)))
+                self._errors.add(
+                    diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start))
+                )
             else:
                 ch = self._stream.peek()
                 if not isinstance(ch, NoNextType) and ch.isdigit():
@@ -492,7 +504,9 @@ class RawTokenizer:
         # ── 5. 确保至少有一位数字 ──
         raw = ''.join(raw_parts)
         if not any(c.isdigit() for c in raw):
-            self._errors.add(diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start)))
+            self._errors.add(
+                diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start))
+            )
 
         token_type = RawTokenType.FLOAT if is_float else RawTokenType.INTEGER
         return self._make_token(token_type, raw, start=start)

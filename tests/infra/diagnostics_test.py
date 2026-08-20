@@ -48,15 +48,29 @@ def test_diagnostic_location_and_message() -> None:
     assert '出错 7' in d.message
 
 
-def test_collector_iteration_and_has_errors() -> None:
+def test_collector_iteration_and_severity_queries() -> None:
     col = DiagnosticCollector()
     assert not col.has_errors
+    assert not col.has_warnings
     assert list(col) == []
     col.add(Diagnostic(Severity.ERROR, 'a.b', {}))
     col.add(Diagnostic(Severity.WARNING, 'c.d', {}))
     assert col.has_errors
+    assert col.has_warnings
     assert [d.code for d in col] == ['a.b', 'c.d']
-    assert col.errors == [d for d in col]  # errors 返回副本
+    assert [d.code for d in col.diagnostics] == ['a.b', 'c.d']  # diagnostics = 全部
+    assert [d.code for d in col.errors] == ['a.b']  # errors = 仅 ERROR
+    assert [d.code for d in col.warnings] == ['c.d']  # warnings = 仅 WARNING
+
+
+def test_collector_warning_only_is_not_errors() -> None:
+    """warning-only：has_errors 为 False（warning 不算错误），has_warnings 为 True。"""
+    col = DiagnosticCollector()
+    col.add(Diagnostic(Severity.WARNING, 'w.x', {}))
+    assert not col.has_errors
+    assert col.has_warnings
+    assert list(col.errors) == []
+    assert [d.code for d in col.warnings] == ['w.x']
 
 
 def test_sort_key_orders_by_location() -> None:

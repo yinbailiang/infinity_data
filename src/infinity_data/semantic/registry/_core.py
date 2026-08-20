@@ -201,7 +201,7 @@ def as_spec(arg: Any) -> ResolvedConstraint | None:
     if isinstance(arg, ResolvedConstraint):
         return arg
     if isinstance(arg, str):
-        return ResolvedConstraint(name=arg) # pyright: ignore[reportCallIssue]
+        return ResolvedConstraint(name=arg)  # pyright: ignore[reportCallIssue]
     return None
 
 

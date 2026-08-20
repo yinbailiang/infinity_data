@@ -13,6 +13,8 @@ import decimal
 import json
 from collections.abc import Iterable, Iterator
 
+from infinity_data.infra.diagnostics import DiagnosticCollector
+from infinity_data.tokenizer.diagnostics import diag
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
@@ -151,11 +153,21 @@ def _process_multiline_string(raw: str) -> tuple[str, list[str]]:
 
 
 class FinalTokenizer:
-    """终遍词法分析器：消费 RawToken 流，产出 Token 流。"""
+    """终遍词法分析器：消费 RawToken 流，产出 Token 流。
 
-    def __init__(self, source: Iterable[RawToken]) -> None:
+    ``error_collector``：与 :class:`RawTokenizer` 同一收集器（词法层容错收集）——
+    值转换失败（无效转义 / 无效数字）收集为诊断并产出恢复 token，**从不抛异常**。
+    """
+
+    def __init__(
+        self,
+        source: Iterable[RawToken],
+        error_collector: DiagnosticCollector | None = None,
+    ) -> None:
         self._iter: Iterator[RawToken] | None = None
         self._source: Iterable[RawToken] = source
+        # 注意：不能用 `or` —— 空 DiagnosticCollector 的 __bool__ 为 False，会静默丢弃传入的收集器
+        self._errors = error_collector if error_collector is not None else DiagnosticCollector()
 
     def __iter__(self) -> 'FinalTokenizer':
         return self
@@ -204,10 +216,18 @@ class FinalTokenizer:
 
     # ── 各类型转换 ────────────────────────────────────
 
-    @staticmethod
-    def _convert_string(raw: RawToken) -> SinglelineStringToken:
-        """处理单行字符串：通过 json.loads 解析转义。"""
-        return SinglelineStringToken(raw=raw, value=json.loads(raw.raw))
+    def _convert_string(self, raw: RawToken) -> SinglelineStringToken:
+        """处理单行字符串：通过 json.loads 解析转义。
+
+        无效转义（RawTokenizer 不校验，如 ``\\q`` / ``\\u``）→ 收集诊断，
+        恢复为去引号的原始内容（不做转义处理），保证下游继续。
+        """
+        try:
+            value = json.loads(raw.raw)
+        except json.JSONDecodeError:
+            self._errors.add(diag('tokenize.invalid_escape', {'raw': raw.raw}, raw.source))
+            value = raw.raw[1:-1] if len(raw.raw) >= 2 else raw.raw
+        return SinglelineStringToken(raw=raw, value=value)
 
     @staticmethod
     def _convert_multiline_string(raw: RawToken) -> MultilineStringToken:
@@ -215,14 +235,20 @@ class FinalTokenizer:
         content, tags = _process_multiline_string(raw.raw)
         return MultilineStringToken(raw=raw, value=content, tags=tags)
 
-    @staticmethod
-    def _convert_integer(raw: RawToken) -> IntegerToken:
-        """解析整数字面量。"""
-        return IntegerToken(raw=raw, value=int(raw.raw))
+    def _convert_integer(self, raw: RawToken) -> IntegerToken:
+        """解析整数字面量；失败收集诊断并回退 0（防御性：RawTokenizer 已校验）。"""
+        try:
+            value = int(raw.raw)
+        except ValueError:
+            self._errors.add(diag('tokenize.invalid_number', {'raw': raw.raw}, raw.source))
+            value = 0
+        return IntegerToken(raw=raw, value=value)
 
-    @staticmethod
-    def _convert_float(raw: RawToken) -> FloatToken:
-        """解析浮点字面量（含 nan, +inf, -inf）。"""
+    def _convert_float(self, raw: RawToken) -> FloatToken:
+        """解析浮点字面量（含 nan, +inf, -inf）。
+
+        Decimal 拒绝的输入（如 ``1e`` 尾指数无数字）→ 收集诊断并回退 0。
+        """
         s = raw.raw
         match s:
             case 'nan':
@@ -232,7 +258,11 @@ class FinalTokenizer:
             case '-inf':
                 value = decimal.Decimal('-Infinity')
             case _:
-                value = decimal.Decimal(s)
+                try:
+                    value = decimal.Decimal(s)
+                except decimal.InvalidOperation:
+                    self._errors.add(diag('tokenize.invalid_float', {'raw': raw.raw}, raw.source))
+                    value = decimal.Decimal(0)
         return FloatToken(raw=raw, value=value)
 
     @staticmethod

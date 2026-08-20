@@ -8,9 +8,9 @@ from infinity_data.infra.file import MemFile
 
 def test_parse_source_clean() -> None:
     file = MemFile(name='t.infd', root_path=Path('.'), content='a = 1\n')
-    doc, diags = parse_source(file)
+    doc, col = parse_source(file)
     assert len(doc.statements) == 1
-    assert diags == []
+    assert list(col) == []
 
 
 def test_parse_source_collects_errors() -> None:
