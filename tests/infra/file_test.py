@@ -35,5 +35,6 @@ def test_disk_read_and_identity(tmp_path: Path) -> None:
 
 def test_disk_root_path_derived() -> None:
     df = DiskFile.from_fullpath('/a/b/c.infd')
-    assert df.name == '/a/b/c.infd'
+    # name 是原生 Path 字符串（Windows 上为反斜杠）→ as_posix 归一化比较
+    assert Path(df.name).as_posix() == '/a/b/c.infd'
     assert df.root_path == Path('/a/b')

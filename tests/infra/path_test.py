@@ -10,17 +10,20 @@ def test_posix_on_linux_unchanged() -> None:
 
 
 def test_drive_mapped_on_windows() -> None:
-    assert str(posix_to_native('/c/foo/bar', platform='win32')) == 'C:/foo/bar'
-    assert str(posix_to_native('/d/etc', platform='win32')) == 'D:/etc'
+    # 按 Windows 语义断言（as_posix 归一化分隔符）：真实 Windows 上 Path.str() 为反斜杠
+    assert PureWindowsPath(posix_to_native('/c/foo/bar', platform='win32')).as_posix() == 'C:/foo/bar'
+    assert PureWindowsPath(posix_to_native('/d/etc', platform='win32')).as_posix() == 'D:/etc'
 
 
 def test_non_drive_absolute_unchanged_on_windows() -> None:
     # /usr/local 无盘符 → 原样（根于当前盘）
-    assert str(posix_to_native('/usr/local', platform='win32')) == '/usr/local'
+    p = PureWindowsPath(posix_to_native('/usr/local', platform='win32'))
+    assert p.as_posix() == '/usr/local'
+    assert p.drive == ''
 
 
 def test_relative_path_unchanged() -> None:
-    assert str(posix_to_native('./foo/bar', platform='win32')) == 'foo/bar'  # pathlib 归一化 ./
+    assert PureWindowsPath(posix_to_native('./foo/bar', platform='win32')).as_posix() == 'foo/bar'  # pathlib 归一化 ./
     assert posix_to_native('foo/bar', platform='linux') == Path('foo/bar')
 
 
