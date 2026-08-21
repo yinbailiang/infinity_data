@@ -37,6 +37,7 @@ class Severity(Enum):
     ERROR = 'error'
     WARNING = 'warning'
     INFO = 'info'
+    DEBUG = 'debug'
 
 
 @dataclass(frozen=True)

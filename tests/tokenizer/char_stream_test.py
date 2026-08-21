@@ -34,3 +34,24 @@ def test_info() -> None:
     stream = CharStream(iter('x\ny'))
     info = stream.info()
     assert (info.line, info.col, info.index) == (1, 1, 0)
+
+
+def test_crlf_treated_as_single_newline() -> None:
+    # CRLF：\n 触发换行，后续位置正确（\r 虚占列被 \n 重置）
+    stream = CharStream(iter('a\r\nb'))
+    stream.advance()  # a
+    stream.advance()  # \r
+    stream.advance()  # \n
+    assert (stream.line, stream.col) == (2, 1)
+    stream.advance()  # b
+    assert (stream.line, stream.col) == (2, 2)
+
+
+def test_lone_cr_not_a_newline() -> None:
+    # 单 \r（老 Mac CR）不支持换行，视为普通字符
+    stream = CharStream(iter('a\rb'))
+    stream.advance()  # a
+    stream.advance()  # \r
+    assert (stream.line, stream.col) == (1, 3)
+    stream.advance()  # b
+    assert (stream.line, stream.col) == (1, 4)

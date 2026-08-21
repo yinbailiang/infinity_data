@@ -92,7 +92,7 @@ EofToken 后 `peek()` 仍会返回 `NoNextType`，相关守卫只是从"兜底"�
 
 | 层 | 机制 | 错误 | 角色 |
 |---|---|---|---|
-| 词法 | `RawTokenizer` 维护括号栈（`[` `{` `(` `<` 开压闭弹），EOF 时逐条报告 | `tokenize.unterminated_bracket` | **根因**：指出未闭合的括号及其位置 |
+| 词法 | `RawTokenizer` 维护括号栈（`[` `{` `(` `<` 开压、配对弹栈，不配对/多余即时报），EOF 时逐条报告 | `tokenize.unterminated_bracket` / `tokenize.mismatched_bracket` / `tokenize.unexpected_close_bracket` | **根因**：指出未闭合/不匹配的括号及其位置 |
 | 语法 | `_parse_value` 识别 `Identifier` 后接 `=`/`:`（新语句边界） | `parse.value_field` | **后果**：解释下一行字段为何解析失败 |
 
 ### 为什么语法层也要处理

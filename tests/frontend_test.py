@@ -21,6 +21,16 @@ def test_parse_source_collects_errors() -> None:
 
 
 def test_parse_source_empty() -> None:
+    # 空源码 → 空配置（非错误），见 neo_desg.md §4.1
     file = MemFile(name='t.infd', root_path=Path('.'), content='')
-    _, diags = parse_source(file)
-    assert diags and any(d.code == 'parse.empty_token_list' for d in diags)
+    doc, diags = parse_source(file)
+    assert not diags
+    assert doc.statements == []
+
+
+def test_parse_source_only_comments() -> None:
+    # 仅注释 → 同样空配置（非错误）
+    file = MemFile(name='t.infd', root_path=Path('.'), content='# 注释\n#+ 多行 #-\n')
+    doc, diags = parse_source(file)
+    assert not diags
+    assert doc.statements == []

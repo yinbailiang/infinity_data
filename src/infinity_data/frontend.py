@@ -30,7 +30,7 @@ def parse_source(
 
     raw_tokens = RawTokenizer(file=file, error_collector=collector)
     tokens = FinalTokenizer(raw_tokens, error_collector=collector)
-    parser = Parser(tokens, error_collector=collector)
+    parser = Parser(tokens, collector=collector)
     doc = parser.parse()
 
     # 词法/语法错误统一为 Diagnostic（纯数据，直接聚合）

@@ -44,6 +44,11 @@ register_diagnostic_define(
         en='[{location}] missing separator between elements (comma or newline; space is not a separator)',
     ),
     diagnostic_define(
+        'parse.import_missing_comma',
+        '[{location}] 导入项之间必须用逗号分隔（import 列表不接受换行/空格分隔）',
+        en='[{location}] import items must be separated by commas (newlines/spaces are not allowed)',
+    ),
+    diagnostic_define(
         'parse.value_field',
         '[{location}] 值位置出现字段定义 {name}（外层数组/对象未闭合）',
         en='[{location}] field definition {name} in value position (enclosing array/object unclosed)',
@@ -57,6 +62,11 @@ register_diagnostic_define(
         'parse.template_field_no_constraint',
         '[{location}] 模板字段 {field} 必须有类型标注（如 {field}: int）',
         en='[{location}] template field {field} requires a type annotation (e.g. {field}: int)',
+    ),
+    diagnostic_define(
+        'parse.empty_type_annotation',
+        '[{location}] 字段 {field} 的类型标注为空（{field}: 后缺少约束）',
+        en='[{location}] field {field} has an empty type annotation (no constraint after {field}:)',
     ),
     diagnostic_define(
         'parse.invalid_cast',
@@ -83,6 +93,11 @@ register_diagnostic_define(
         'parse.template_config_value',
         '[{location}] 模板配置 {key} 必须是字面量（不支持 $ 引用 / 模板调用）',
         en='[{location}] template config {key} must be a literal (no $ refs / template calls)',
+    ),
+    diagnostic_define(
+        'parse.nesting_too_deep',
+        '[{location}] 嵌套层级超过上限 {limit}，深层内容被跳过',
+        en='[{location}] nesting depth exceeds limit {limit}; deeper content skipped',
     ),
 )
 

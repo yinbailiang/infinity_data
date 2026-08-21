@@ -13,6 +13,35 @@ from infinity_data.tokenizer.models.raw_tokens import (
 )
 
 
+def _is_ascii_letter(ch: str) -> bool:
+    """ASCII 字母（标识符/关键字只允许 ASCII，规范 [A-Za-z_]）。"""
+    return 'a' <= ch <= 'z' or 'A' <= ch <= 'Z'
+
+
+def _is_ascii_digit(ch: str) -> bool:
+    """ASCII 数字（数字字面量只允许 [0-9]）。"""
+    return '0' <= ch <= '9'
+
+
+def _is_ident_start(ch: str) -> bool:
+    """标识符起始字符：字母或下划线。"""
+    return _is_ascii_letter(ch) or ch == '_'
+
+
+def _is_ident_char(ch: str) -> bool:
+    """标识符组成字符：字母/数字/下划线。"""
+    return _is_ascii_letter(ch) or _is_ascii_digit(ch) or ch == '_'
+
+
+def _peek_char(stream: CharStream) -> str | None:
+    """安全取当前字符：EOF 返回 None，否则返回字符（不消费）。"""
+    if stream.eof():
+        return None
+    ch = stream.peek()
+    assert not isinstance(ch, NoNextType)
+    return ch
+
+
 class RawTokenizer:
     """将 infd/inft 源码转为 RawToken 流。"""
 
@@ -43,8 +72,20 @@ class RawTokenizer:
         'nan': RawTokenType.FLOAT,
     }
 
-    _open_brackets: frozenset[str] = frozenset({'{', '[', '(', '<'})
-    _close_brackets: frozenset[str] = frozenset({'}', ']', ')', '>'})
+    _open_to_close: dict[str, str] = {
+        '{': '}',
+        '[': ']',
+        '(': ')',
+        '<': '>',
+    }
+    _close_to_open: dict[str, str] = {close: open_ for open_, close in _open_to_close.items()}
+
+    _BANG_KEYWORDS: tuple[str, ...] = ('env', 'file', 'from')
+    _BANG_KEYWORD_TO_TYPE: dict[str, RawTokenType] = {
+        'env': RawTokenType.ENV_IMPORT,
+        'file': RawTokenType.FILE_IMPORT,
+        'from': RawTokenType.FROM_IMPORT,
+    }
 
     def __init__(
         self,
@@ -53,24 +94,24 @@ class RawTokenizer:
     ) -> None:
         self._file: File = file
         self._stream: CharStream = CharStream(file.chars())
-        # 注意：不能用 `or` —— 空 DiagnosticCollector 的 __bool__ 为 False，会静默丢弃传入的收集器
-        self._errors = error_collector if error_collector is not None else DiagnosticCollector()
+        self._diagnostic_collector = error_collector if error_collector is not None else DiagnosticCollector()
         self._eof_sent: bool = False
         self._open_stack: list[tuple[str, SourceInfo]] = []
-        self._detect_bom()
+        self._detect_bom(self._stream, self._diagnostic_collector, self._file)
 
-    def _detect_bom(self) -> None:
+    @staticmethod
+    def _detect_bom(stream: CharStream, collector: DiagnosticCollector, file: File) -> None:
         """检测文件 BOM（规范要求 UTF-8 NO BOM）：报 tokenize.bom 警告并跳过。"""
-        if not self._stream.eof() and self._stream.peek() == '\ufeff':
-            self._errors.add(
+        if not stream.eof() and stream.peek() == '\ufeff':
+            collector.add(
                 Diagnostic(
                     Severity.WARNING,
                     'tokenize.bom',
                     {},
-                    SourceRange.at(self._file, self._stream.info()),
+                    SourceRange.at(file, stream.info()),
                 )
             )
-            self._stream.advance()
+            stream.advance()
 
     def __iter__(self) -> 'RawTokenizer':
         return self
@@ -84,448 +125,594 @@ class RawTokenizer:
         return tok
 
     @property
-    def error_collector(self) -> DiagnosticCollector:
-        return self._errors
+    def diagnostic_collector(self) -> DiagnosticCollector:
+        return self._diagnostic_collector
 
     @property
     def file(self) -> File:
         return self._file
 
-    def _current_source_info(self) -> SourceInfo:
-        return self._stream.info()
-
     def next(self) -> RawToken:
         """返回下一个 token。"""
+        stream = self._stream
+        collector = self._diagnostic_collector
+        file = self._file
+
         while True:
-            self._skip_whitespace_and_comments()
+            self._skip_whitespace_and_comments(stream, collector, file)
 
-            if self._stream.eof():
-                self._report_unclosed_brackets()
-                return self._make_token(RawTokenType.EOF, '', self._current_source_info())
+            if stream.eof():
+                self._report_unclosed_brackets(self._open_stack, collector, file)
+                return self._make_token(RawTokenType.EOF, '', stream.info(), stream, file)
 
-            ch = self._stream.peek()
+            ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
             if ch in self._single_char_map:
-                tok = self._single_char(self._single_char_map[ch])
-                self._track_bracket(ch, tok)
+                tok = self._single_char(self._single_char_map[ch], stream, file)
+                self._track_bracket(ch, tok, self._open_stack, collector)
                 return tok
 
             if ch == '!':
-                tok = self._read_bang()
+                tok = self._read_bang(stream, collector, file)
                 if tok is not None:
                     return tok
                 continue  # 词法错误已报，跳过该 ! 序列
 
             if ch == '"':
-                return self._read_string()
+                return self._read_string(stream, collector, file)
 
             if ch == '`':
-                return self._read_multiline_string()
+                return self._read_multiline_string(stream, collector, file)
 
-            if ch.isdigit() or ch in ['+', '-']:
-                return self._read_number_fallback()
+            if _is_ascii_digit(ch) or ch in ['+', '-']:
+                tok = self._read_number_fallback(stream, collector, file)
+                if tok is not None:
+                    return tok
+                continue  # 非法数字序列已报错并跳过
 
             # ── 标识符 / 关键字 ───────────────────────
-            if ch.isalpha() or ch == '_':
-                return self._read_identifier_or_keyword()
+            if _is_ident_start(ch):
+                return self._read_identifier_or_keyword(stream, file)
 
             # ── 无法识别的字符 ────────────────────────
-            self._errors.add(
-                diag('tokenize.unknown_char', {'char': ch}, SourceRange.at(self._file, self._current_source_info()))
-            )
-            self._stream.advance()
+            collector.add(diag('tokenize.unknown_char', {'char': ch}, SourceRange.at(file, stream.info())))
+            stream.advance()
 
+    @staticmethod
     def _make_token(
-        self,
         token_type: RawTokenType,
         raw: str,
         start: SourceInfo,
+        stream: CharStream,
+        file: File,
     ) -> RawToken:
         return RawToken(
             type=token_type,
             raw=raw,
             source=SourceRange(
-                file=self._file,
+                file=file,
                 start=start,
-                end=self._current_source_info(),
+                end=stream.info(),
             ),
         )
 
     # ── 空白与注释跳过 ────────────────────────────────
 
-    def _skip_whitespace_and_comments(self) -> None:
+    @staticmethod
+    def _skip_whitespace_and_comments(stream: CharStream, collector: DiagnosticCollector, file: File) -> None:
         """跳过空白及注释（单行 # 和多行 #+...#-）。"""
-        while not self._stream.eof():
-            ch = self._stream.peek()
+        while not stream.eof():
+            ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
             # 跳过除换行外的空白
             if ch != '\n' and ch.isspace():
-                self._stream.advance()
+                stream.advance()
                 continue
 
             # 单行注释: # 到行尾
             if ch == '#':
-                self._handle_comment()
+                RawTokenizer._handle_comment(stream, collector, file)
                 continue
 
             break
 
-    def _handle_comment(self) -> None:
+    @staticmethod
+    def _handle_comment(stream: CharStream, collector: DiagnosticCollector, file: File) -> None:
         """处理注释：单行 # 或多行 #+...#-"""
-        self._stream.advance()  # 消费 '#'
+        stream.advance()  # 消费 '#'
 
-        if self._stream.eof():
+        if stream.eof():
             return
 
-        ch = self._stream.peek()
+        ch = stream.peek()
         assert not isinstance(ch, NoNextType)
 
         # 检查是否为多行注释起始标记 #+
         plus_count = 0
         while ch == '+':
             plus_count += 1
-            self._stream.advance()
-            if self._stream.eof():
-                self._errors.add(
+            stream.advance()
+            if stream.eof():
+                collector.add(
                     diag(
                         'tokenize.unterminated_comment',
                         {'flag': '#' + '-' * plus_count},
-                        SourceRange.at(self._file, self._current_source_info()),
+                        SourceRange.at(file, stream.info()),
                     )
                 )
                 return
-            ch = self._stream.peek()
+            ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
         if plus_count > 0:
             # 多行注释模式: 需要找到匹配的 # + '-' * plus_count
-            self._skip_multiline_comment(plus_count)
+            RawTokenizer._skip_multiline_comment(stream, collector, file, plus_count)
         else:
             # 单行注释: 跳到行尾
-            while not self._stream.eof() and self._stream.peek() != '\n':
-                self._stream.advance()
+            while not stream.eof() and stream.peek() != '\n':
+                stream.advance()
 
-    def _skip_multiline_comment(self, depth: int) -> None:
+    @staticmethod
+    def _skip_multiline_comment(stream: CharStream, collector: DiagnosticCollector, file: File, depth: int) -> None:
         """跳过多行注释直到找到匹配的结束标记 # + '-' * depth。"""
-        while not self._stream.eof():
-            ch = self._stream.peek()
+        while not stream.eof():
+            ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
             if ch == '#':
-                self._stream.advance()
-                if self._stream.eof():
+                stream.advance()
+                if stream.eof():
                     break
                 # 检查后续字符是否全是 '-'
                 minus_count = 0
-                while not self._stream.eof() and self._stream.peek() == '-':
+                while not stream.eof() and stream.peek() == '-':
                     minus_count += 1
-                    self._stream.advance()
+                    stream.advance()
                 if minus_count == depth:
                     return
                 continue
 
-            self._stream.advance()
+            stream.advance()
 
-        self._errors.add(
+        collector.add(
             diag(
                 'tokenize.unterminated_comment',
                 {'flag': '#' + '-' * depth},
-                SourceRange.at(self._file, self._current_source_info()),
+                SourceRange.at(file, stream.info()),
             )
         )
 
     # ── 单字符 token ──────────────────────────────────
-    def _single_char(self, token_type: RawTokenType) -> RawToken:
-        ch = self._stream.peek()
+    @staticmethod
+    def _single_char(token_type: RawTokenType, stream: CharStream, file: File) -> RawToken:
+        ch = stream.peek()
         assert not isinstance(ch, NoNextType)
-        start = self._current_source_info()
-        self._stream.advance()
-        return self._make_token(token_type, ch, start=start)
+        start = stream.info()
+        stream.advance()
+        return RawTokenizer._make_token(token_type, ch, start=start, stream=stream, file=file)
 
     # ── 括号栈（EOF 时报告未闭合）────────────────────
-    def _track_bracket(self, ch: str, tok: RawToken) -> None:
-        """维护括号栈：开括号压栈、闭括号弹栈，供 EOF 时报告未闭合括号。"""
-        if ch in self._open_brackets:
-            self._open_stack.append((ch, tok.source.start))
-        elif ch in self._close_brackets:
-            if self._open_stack:
-                self._open_stack.pop()
+    @staticmethod
+    def _track_bracket(
+        ch: str,
+        tok: RawToken,
+        open_stack: list[tuple[str, SourceInfo]],
+        collector: DiagnosticCollector,
+    ) -> None:
+        """维护括号栈并校验类型配对（开压闭弹）。
 
-    def _report_unclosed_brackets(self) -> None:
+        - 开括号：压栈
+        - 闭括号与栈顶配对：弹栈
+        - 闭括号与栈顶不配对：报 ``tokenize.mismatched_bracket`` 并弹出栈顶（错误恢复）
+        - 闭括号且栈为空：报 ``tokenize.unexpected_close_bracket``
+        """
+        if ch in RawTokenizer._open_to_close:
+            open_stack.append((ch, tok.source.start))
+        elif ch in RawTokenizer._close_to_open:
+            if not open_stack:
+                collector.add(diag('tokenize.unexpected_close_bracket', {'bracket': ch}, tok.source))
+                return
+            open_bracket, _ = open_stack[-1]
+            if open_bracket == RawTokenizer._close_to_open[ch]:
+                open_stack.pop()
+            else:
+                collector.add(
+                    diag(
+                        'tokenize.mismatched_bracket',
+                        {'open': open_bracket, 'close': ch},
+                        tok.source,
+                    )
+                )
+                open_stack.pop()
+
+    @staticmethod
+    def _report_unclosed_brackets(
+        open_stack: list[tuple[str, SourceInfo]],
+        collector: DiagnosticCollector,
+        file: File,
+    ) -> None:
         """EOF 时仍开着的括号 → 报 tokenize.unterminated_bracket（按开括号顺序）。"""
-        for bracket, start in self._open_stack:
-            self._errors.add(
-                diag('tokenize.unterminated_bracket', {'bracket': bracket}, SourceRange.at(self._file, start))
-            )
-        self._open_stack.clear()
+        for bracket, start in open_stack:
+            collector.add(diag('tokenize.unterminated_bracket', {'bracket': bracket}, SourceRange.at(file, start)))
+        open_stack.clear()
 
     # ── ! 导入关键字（词法组合，! 无独立语法）──
 
-    def _read_bang(self) -> RawToken | None:
+    @staticmethod
+    def _read_bang(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken | None:
         """读取 ``!`` 起始的 token。
 
         - ``!env`` / ``!file`` / ``!from`` → 组合导入关键字 token
         - 其他任何情况 → 词法错误（语言不允许单独 ``!``），返回 None 跳过
         """
-        start = self._current_source_info()
-        self._stream.advance()  # 消费 '!'
+        start = stream.info()
+        stream.advance()  # 消费 '!'
 
-        if self._stream.eof():
-            self._errors.add(diag('tokenize.invalid_bang', {'actual': 'EOF'}, SourceRange.at(self._file, start)))
+        if stream.eof():
+            collector.add(diag('tokenize.invalid_bang', {'actual': 'EOF'}, SourceRange.at(file, start)))
             return None
-        ch = self._stream.peek()
+        ch = stream.peek()
         assert not isinstance(ch, NoNextType)
-        if not (ch.isalpha() or ch == '_'):
-            self._errors.add(diag('tokenize.invalid_bang', {'actual': repr(ch)}, SourceRange.at(self._file, start)))
+        if not _is_ident_start(ch):
+            collector.add(diag('tokenize.invalid_bang', {'actual': repr(ch)}, SourceRange.at(file, start)))
+            stream.advance()  # 消费非法字符，避免下一轮重复处理（如 !@ 再报 unknown_char）
             return None
 
-        ident_tok = self._read_identifier_or_keyword()
+        ident_tok = RawTokenizer._read_identifier_or_keyword(stream, file)
         match ident_tok.raw:
             case 'env':
-                return self._make_token(RawTokenType.ENV_IMPORT, '!env', start=start)
+                return RawTokenizer._make_token(RawTokenType.ENV_IMPORT, '!env', start=start, stream=stream, file=file)
             case 'file':
-                return self._make_token(RawTokenType.FILE_IMPORT, '!file', start=start)
-            case 'from':
-                return self._make_token(RawTokenType.FROM_IMPORT, '!from', start=start)
-            case _:
-                self._errors.add(
-                    diag('tokenize.invalid_bang', {'actual': repr(ident_tok.raw)}, SourceRange.at(self._file, start))
+                return RawTokenizer._make_token(
+                    RawTokenType.FILE_IMPORT, '!file', start=start, stream=stream, file=file
                 )
-                return None
+            case 'from':
+                return RawTokenizer._make_token(
+                    RawTokenType.FROM_IMPORT, '!from', start=start, stream=stream, file=file
+                )
+            case _:
+                return RawTokenizer._recover_bang_typo(ident_tok.raw, start, stream, collector, file)
+
+    @staticmethod
+    def _edit_distance(a: str, b: str) -> int:
+        """计算两个字符串的编辑距离（Levenshtein：增/删/改各计 1）。"""
+        la, lb = len(a), len(b)
+        if la == 0:
+            return lb
+        if lb == 0:
+            return la
+        prev = list(range(lb + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            for j, cb in enumerate(b, 1):
+                cur.append(
+                    min(
+                        prev[j] + 1,  # 删除
+                        cur[j - 1] + 1,  # 插入
+                        prev[j - 1] + int(ca != cb),  # 替换
+                    )
+                )
+            prev = cur
+        return prev[lb]
+
+    @staticmethod
+    def _nearest_bang_keyword(actual: str) -> str | None:
+        """返回与 actual 编辑距离 <= 1 的最近导入关键字，否则 None。"""
+        best: str | None = None
+        best_dist = 2  # 阈值：仅接受单字符增/删/改
+        for keyword in RawTokenizer._BANG_KEYWORDS:
+            dist = RawTokenizer._edit_distance(actual, keyword)
+            if dist < best_dist:
+                best_dist = dist
+                best = keyword
+        return best
+
+    @staticmethod
+    def _recover_bang_typo(
+        actual: str,
+        start: SourceInfo,
+        stream: CharStream,
+        collector: DiagnosticCollector,
+        file: File,
+    ) -> RawToken | None:
+        """对 ! 后非关键字标识符做拼写纠正恢复。
+
+        - 与 env/file/from 编辑距离 <= 1 → 报 ``tokenize.bang_corrected`` 并恢复为对应导入关键字；
+        - 否则报 ``tokenize.invalid_bang`` 并返回 None（丢弃）。
+        """
+        suggestion = RawTokenizer._nearest_bang_keyword(actual)
+        if suggestion is not None:
+            collector.add(
+                diag(
+                    'tokenize.bang_corrected',
+                    {'actual': actual, 'suggestion': suggestion},
+                    SourceRange.at(file, start),
+                )
+            )
+            return RawTokenizer._make_token(
+                RawTokenizer._BANG_KEYWORD_TO_TYPE[suggestion],
+                '!' + suggestion,
+                start=start,
+                stream=stream,
+                file=file,
+            )
+        collector.add(diag('tokenize.invalid_bang', {'actual': repr(actual)}, SourceRange.at(file, start)))
+        return None
 
     # ── 单行字符串 ────────────────────────────────────
 
-    def _read_string(self) -> RawToken:
+    @staticmethod
+    def _read_string(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:
         """读取双引号包裹的单行字符串"""
-        start = self._current_source_info()
-        raw_parts: list[str] = [self._stream.advance()]  # 消费 '"'
+        start = stream.info()
+        raw_parts: list[str] = [stream.advance()]  # 消费 '"'
 
-        while not self._stream.eof():
-            ch = self._stream.peek()
+        def close() -> None:
+            """补全结束引号：若尾部是未完成的转义反斜杠则先丢弃，保证 raw 是合法 JSON 字符串。"""
+            if raw_parts and raw_parts[-1] == '\\':
+                raw_parts.pop()  # 丢弃未完成的转义反斜杠
+            raw_parts.append('"')
+
+        while not stream.eof():
+            ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
             if ch == '\\':
-                raw_parts.append(self._stream.advance())
-                if self._stream.eof():
-                    self._errors.add(
-                        diag('tokenize.unterminated_string', {'str_type': '字符串'}, SourceRange.at(self._file, start))
+                raw_parts.append(stream.advance())  # 消费反斜杠
+                if stream.eof():
+                    collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+                    close()
+                    return RawTokenizer._make_token(
+                        RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
                     )
-                    return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
-                raw_parts.append(self._stream.advance())
+                nxt = stream.peek()
+                assert not isinstance(nxt, NoNextType)
+                if nxt == '\n':
+                    # 单行字符串不允许真实换行（规范：json 风格转义）→ 与裸换行分支一致报错恢复
+                    collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+                    close()
+                    return RawTokenizer._make_token(
+                        RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
+                    )
+                raw_parts.append(stream.advance())
                 continue
 
             if ch == '"':
                 raw_parts.append(ch)
-                self._stream.advance()
-                return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
+                stream.advance()
+                return RawTokenizer._make_token(
+                    RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
+                )
 
             if ch == '\n':
-                self._errors.add(
-                    diag('tokenize.unterminated_string', {'str_type': '字符串'}, SourceRange.at(self._file, start))
+                collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+                close()
+                return RawTokenizer._make_token(
+                    RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
                 )
-                return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
 
             raw_parts.append(ch)
-            self._stream.advance()
+            stream.advance()
 
-        self._errors.add(
-            diag('tokenize.unterminated_string', {'str_type': '字符串'}, SourceRange.at(self._file, start))
-        )
-        raw_parts.append('"')  # 补上缺失的结束引号
-        return self._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start)
+        collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+        close()
+        return RawTokenizer._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file)
 
     # ── 多行字符串（Markdown 风格） ────────────────────
 
-    def _read_multiline_string(self) -> RawToken:
+    @staticmethod
+    def _read_multiline_string(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:
         """读取反引号包裹的多行字符串。
 
         语法: `...`
         - 起始 ` 可变长（>= 1 个反引号）
         """
-        start = self._current_source_info()
+        start = stream.info()
 
         # 统计起始反引号数量
         backtick_count = 0
-        while not self._stream.eof():
-            ch = self._stream.peek()
+        while not stream.eof():
+            ch = stream.peek()
             if ch == '`':
                 backtick_count += 1
-                self._stream.advance()
+                stream.advance()
             else:
                 break
 
         # 读取内容直到匹配的结束反引号
         raw = '`' * backtick_count
-        while not self._stream.eof():
-            ch = self._stream.peek()
+        while not stream.eof():
+            ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
             if ch == '`':
                 # 检查是否有足够的反引号匹配
                 temp_count = 0
-                while temp_count < backtick_count and not self._stream.eof() and self._stream.peek() == '`':
+                while temp_count < backtick_count and not stream.eof() and stream.peek() == '`':
                     temp_count += 1
-                    self._stream.advance()
+                    stream.advance()
                 if temp_count == backtick_count:
                     raw += '`' * temp_count
-                    return self._make_token(RawTokenType.MULTILINE_STRING, raw, start=start)
+                    return RawTokenizer._make_token(
+                        RawTokenType.MULTILINE_STRING, raw, start=start, stream=stream, file=file
+                    )
                 else:
                     raw += '`' * temp_count
                     continue
 
             raw += ch
-            self._stream.advance()
+            stream.advance()
 
-        self._errors.add(
-            diag('tokenize.unterminated_string', {'str_type': '多行字符串'}, SourceRange.at(self._file, start))
+        collector.add(
+            diag(
+                'tokenize.unterminated_multiline_string',
+                {'flag': '`' * backtick_count},
+                SourceRange.at(file, start),
+            )
         )
         raw += '`' * backtick_count
-        return self._make_token(RawTokenType.MULTILINE_STRING, raw, start=start)
+        return RawTokenizer._make_token(RawTokenType.MULTILINE_STRING, raw, start=start, stream=stream, file=file)
 
     # ── 数字 / 特殊浮点字面量 ─────────────────────────
 
-    def _read_number_fallback(self) -> RawToken:
-        """读取数字或特殊浮点字面量（nan, +inf, -inf）。
+    @staticmethod
+    def _read_number_fallback(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken | None:
+        """读取数字或特殊浮点字面量（nan, +inf, -inf, ±nan）。
 
         支持的格式：
         - 整数: 42, -80
         - 浮点: 3.14, 5.0, 1e10, 2.5e-3
-        - 特殊: +inf, -inf（nan 由关键字路径处理）
+        - 特殊: +inf, -inf（nan 由关键字路径处理）；+nan/-nan 合法但警告并归一化为 nan
+
+        错误恢复：绝不产出非法 raw 的数值 token。
+        - 残缺指数/小数（如 ``5e``、``5e+``、``42.``）→ 报错并补 ``0`` 恢复为合法浮点；
+        - 完全没有合法数字（如 ``+``、``+foo``）→ 消费整个非法序列并返回 None。
         """
-        start = self._current_source_info()
+        start = stream.info()
         raw_parts: list[str] = []
         is_float = False
 
-        # ── 1. 可选正负号 ──
-        ch = self._stream.peek()
-        if not isinstance(ch, NoNextType) and ch in '+-':
-            raw_parts.append(ch)
-            self._stream.advance()
+        def invalid(raw: str) -> None:
+            collector.add(diag('tokenize.invalid_number', {'raw': raw}, SourceRange.at(file, start)))
 
-        # ── 检查是否为特殊字面量 ──
+        # ── 1. 可选正负号 ──
+        ch = _peek_char(stream)
+        if ch is not None and ch in '+-':
+            raw_parts.append(ch)
+            stream.advance()
+
+        # ── 检查是否为特殊字面量（+inf / -inf / ±nan）──
         if raw_parts and raw_parts[0] in '+-':
-            ch = self._stream.peek()
-            if not isinstance(ch, NoNextType) and ch.isalpha():
+            ch = _peek_char(stream)
+            if ch is not None and _is_ident_start(ch):
                 # 尝试读取标识符 (如 +inf, -inf)
                 ident_parts: list[str] = []
-                while not self._stream.eof():
-                    c = self._stream.peek()
-                    if not isinstance(c, NoNextType) and (c.isalnum() or c == '_'):
+                while not stream.eof():
+                    c = _peek_char(stream)
+                    if c is not None and _is_ident_char(c):
                         ident_parts.append(c)
-                        self._stream.advance()
+                        stream.advance()
                     else:
                         break
-                ident = ''.join(ident_parts)
-                full = raw_parts[0] + ident
+                full = raw_parts[0] + ''.join(ident_parts)
                 if full == '+inf':
-                    return self._make_token(RawTokenType.FLOAT, full, start=start)
+                    return RawTokenizer._make_token(RawTokenType.FLOAT, full, start=start, stream=stream, file=file)
                 if full == '-inf':
-                    return self._make_token(RawTokenType.FLOAT, full, start=start)
-                self._errors.add(diag('tokenize.invalid_number', {'raw': full}, SourceRange.at(self._file, start)))
-                return self._make_token(RawTokenType.IDENTIFIER, full, start=start)
+                    return RawTokenizer._make_token(RawTokenType.FLOAT, full, start=start, stream=stream, file=file)
+                if full in ('+nan', '-nan'):
+                    # 带符号 NaN：合法但警告，归一化为 nan（NaN 无符号）
+                    collector.add(
+                        Diagnostic(
+                            Severity.WARNING,
+                            'tokenize.signed_nan',
+                            {'raw': full},
+                            SourceRange.at(file, start),
+                        )
+                    )
+                    return RawTokenizer._make_token(RawTokenType.FLOAT, 'nan', start=start, stream=stream, file=file)
+                # 非法（如 +foo）：整个序列已消费，跳过，不留非法 token
+                invalid(full)
+                return None
 
         # ── 2. 整数部分 ──
-        ch = self._stream.peek()
-        if not isinstance(ch, NoNextType) and ch.isdigit():
+        ch = _peek_char(stream)
+        if ch is not None and _is_ascii_digit(ch):
             raw_parts.append(ch)
-            self._stream.advance()
-            while not self._stream.eof():
-                ch = self._stream.peek()
-                if not isinstance(ch, NoNextType) and ch.isdigit():
+            stream.advance()
+            while not stream.eof():
+                ch = _peek_char(stream)
+                if ch is not None and _is_ascii_digit(ch):
                     raw_parts.append(ch)
-                    self._stream.advance()
+                    stream.advance()
                 else:
                     break
 
         # ── 3. 可选小数部分 ──
-        ch = self._stream.peek()
+        ch = _peek_char(stream)
         if ch == '.':
-            self._stream.advance()  # 消费 '.'
-            if not self._stream.eof():
-                next_ch = self._stream.peek()
-                if not isinstance(next_ch, NoNextType) and next_ch.isdigit():
-                    is_float = True
-                    raw_parts.append('.')
-                    raw_parts.append(next_ch)
-                    self._stream.advance()
-                    while not self._stream.eof():
-                        ch = self._stream.peek()
-                        if not isinstance(ch, NoNextType) and ch.isdigit():
-                            raw_parts.append(ch)
-                            self._stream.advance()
-                        else:
-                            break
-                else:
-                    # 有前置数字但 . 后无数字 (如 "42.") → 记录错误
-                    self._errors.add(
-                        diag(
-                            'tokenize.invalid_number',
-                            {'raw': ''.join(raw_parts) + '.'},
-                            SourceRange.at(self._file, start),
-                        )
-                    )
+            stream.advance()  # 消费 '.'
+            next_ch = _peek_char(stream)
+            if next_ch is not None and _is_ascii_digit(next_ch):
+                is_float = True
+                raw_parts.append('.')
+                raw_parts.append(next_ch)
+                stream.advance()
+                while not stream.eof():
+                    ch = _peek_char(stream)
+                    if ch is not None and _is_ascii_digit(ch):
+                        raw_parts.append(ch)
+                        stream.advance()
+                    else:
+                        break
+            else:
+                # . 后无数字（如 42. / 42.a）→ 报错并补 0 恢复为浮点
+                invalid(''.join(raw_parts) + '.')
+                raw_parts.extend(['.', '0'])
+                is_float = True
 
         # ── 4. 可选指数部分 ──
-        ch = self._stream.peek()
-        if not isinstance(ch, NoNextType) and ch in ['e', 'E']:
-            raw_parts.append(ch)
-            self._stream.advance()
-            is_float = True
+        ch = _peek_char(stream)
+        if ch is not None and ch in ['e', 'E']:
+            stream.advance()  # 消费 'e'/'E'
+            exponent_parts: list[str] = ['e']
+            ch = _peek_char(stream)
+            if ch is not None and ch in '+-':
+                exponent_parts.append(ch)
+                stream.advance()
 
-            if not self._stream.eof():
-                ch = self._stream.peek()
-                if not isinstance(ch, NoNextType) and ch in '+-':
-                    raw_parts.append(ch)
-                    self._stream.advance()
-
-            if self._stream.eof():
-                self._errors.add(
-                    diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start))
-                )
+            ch = _peek_char(stream)
+            if ch is None:
+                # 残缺指数（如 5e / 5e+）→ 报错并补 0 恢复为浮点
+                invalid(''.join(raw_parts) + ''.join(exponent_parts))
+                raw_parts.extend(exponent_parts)
+                raw_parts.append('0')
+                is_float = True
+            elif _is_ascii_digit(ch):
+                raw_parts.extend(exponent_parts)
+                is_float = True
+                raw_parts.append(ch)
+                stream.advance()
+                while not stream.eof():
+                    ch = _peek_char(stream)
+                    if ch is not None and _is_ascii_digit(ch):
+                        raw_parts.append(ch)
+                        stream.advance()
+                    else:
+                        break
             else:
-                ch = self._stream.peek()
-                if not isinstance(ch, NoNextType) and ch.isdigit():
-                    raw_parts.append(ch)
-                    self._stream.advance()
-                    while not self._stream.eof():
-                        ch = self._stream.peek()
-                        if not isinstance(ch, NoNextType) and ch.isdigit():
-                            raw_parts.append(ch)
-                            self._stream.advance()
-                        else:
-                            break
-                else:
-                    self._errors.add(
-                        diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start))
-                    )
+                # 指数后非数字（如 5e+foo）→ 报错并补 0 恢复为浮点
+                invalid(''.join(raw_parts) + ''.join(exponent_parts))
+                raw_parts.extend(exponent_parts)
+                raw_parts.append('0')
+                is_float = True
 
-        # ── 5. 确保至少有一位数字 ──
+        # ── 5. 确保至少有一位数字；否则跳过整个非法序列 ──
         raw = ''.join(raw_parts)
-        if not any(c.isdigit() for c in raw):
-            self._errors.add(
-                diag('tokenize.invalid_number', {'raw': ''.join(raw_parts)}, SourceRange.at(self._file, start))
-            )
+        if not any(_is_ascii_digit(c) for c in raw):
+            invalid(raw)
+            return None
 
         token_type = RawTokenType.FLOAT if is_float else RawTokenType.INTEGER
-        return self._make_token(token_type, raw, start=start)
+        return RawTokenizer._make_token(token_type, raw, start=start, stream=stream, file=file)
 
     # ── 标识符 / 关键字 ───────────────────────────────
 
-    def _read_identifier_or_keyword(self) -> RawToken:
+    @staticmethod
+    def _read_identifier_or_keyword(stream: CharStream, file: File) -> RawToken:
         """读取标识符，识别关键字。"""
-        start = self._current_source_info()
+        start = stream.info()
         raw_parts: list[str] = []
 
-        while not self._stream.eof():
-            ch = self._stream.peek()
-            if not isinstance(ch, NoNextType) and (ch.isalnum() or ch == '_'):
+        while not stream.eof():
+            ch = stream.peek()
+            if not isinstance(ch, NoNextType) and _is_ident_char(ch):
                 raw_parts.append(ch)
-                self._stream.advance()
+                stream.advance()
             else:
                 break
 
         raw = ''.join(raw_parts)
-        token_type = self._keywords_map.get(raw, RawTokenType.IDENTIFIER)
-        return self._make_token(token_type, raw, start=start)
+        token_type = RawTokenizer._keywords_map.get(raw, RawTokenType.IDENTIFIER)
+        return RawTokenizer._make_token(token_type, raw, start=start, stream=stream, file=file)

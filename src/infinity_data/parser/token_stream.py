@@ -37,12 +37,34 @@ class TokenStream(LL1Stream[Token]):
         super().__init__(source)
         self._errors: DiagnosticCollector = error_collector
         self._last: Token | None = None
+        self._nesting_depth: int = 0
+
+    # ── 嵌套深度（防 RecursionError）──────────────────
+
+    @property
+    def nesting_depth(self) -> int:
+        """当前嵌套深度（递归下降容器进入层级）。"""
+        return self._nesting_depth
+
+    def enter_nested(self) -> int:
+        """进入一层嵌套（dict/array/模板调用/约束调用），返回递增后深度。"""
+        self._nesting_depth += 1
+        return self._nesting_depth
+
+    def exit_nested(self) -> None:
+        """退出一层嵌套。"""
+        self._nesting_depth -= 1
 
     # ── LL1Stream 钩子 ────────────────────────────────────
 
     def _on_advance(self, item: Token) -> None:
-        """消费每个 token 时记录，用于 range 追踪。"""
-        self._last = item
+        """消费每个 token 时记录，用于 range 追踪。
+
+        换行 token 不计入 ``_last``——span 终点始终落在最后一个内容 token，
+        使节点 source 不吞入尾部换行（如 file 导入循环预读换行判断后续项时）。
+        """
+        if not isinstance(item, NewlineToken):
+            self._last = item
 
     def check(self, expect: RawTokenType) -> bool:
         token = self.peek()
@@ -88,7 +110,12 @@ class TokenStream(LL1Stream[Token]):
         if isinstance(first, NoNextType) or first is None:
             return SourceRange.empty()
         last = self._last if self._last else first
-        return SourceRange(file=first.raw.source.file, start=first.raw.source.start, end=last.raw.source.end)
+        start = first.raw.source.start
+        end = last.raw.source.end
+        if start.index > end.index:
+            # first 是未消费的 peek（位于已消费区之后，如 EOF 处）→ 退化为 first 单点
+            return SourceRange(file=first.raw.source.file, start=start, end=start)
+        return SourceRange(file=first.raw.source.file, start=start, end=end)
 
     @staticmethod
     def single_span(token: Token) -> SourceRange:
@@ -105,7 +132,7 @@ class TokenStream(LL1Stream[Token]):
         """
         tok = self.peek()
         if isinstance(tok, NoNextType):
-            rng = self.span_from(None)
+            rng = self._eof_span()
             self._errors.add(diag('parse.unexpected_token', {'expected': token_cls.__name__, 'actual': 'EOF'}, rng))
             return self._synthetic(token_cls, source=rng)
         if not isinstance(tok, token_cls):
@@ -122,7 +149,17 @@ class TokenStream(LL1Stream[Token]):
         return tok
 
     def _synthetic(self, token_cls: type[_TToken], *, source: SourceRange | None = None) -> _TToken:
-        """构造合成 token（错误恢复用）。"""
-        rng = source or self.span_from(None)
+        """构造合成 token（错误恢复用）。
+
+        source 缺省时定位到最后消费 token 的末尾单点（近似文件末尾）。
+        """
+        rng = source or self._eof_span()
         raw = RawToken(type=RawTokenType.EOF, raw='', source=rng)
         return token_cls(raw=raw)
+
+    def _eof_span(self) -> SourceRange:
+        """EOF 处定位：最后消费 token 的末尾单点（近似文件末尾）；未消费任何 token 则 empty。"""
+        if self._last is None:
+            return SourceRange.empty()
+        end = self._last.raw.source.end
+        return SourceRange(file=self._last.raw.source.file, start=end, end=end)

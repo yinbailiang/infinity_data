@@ -5,13 +5,17 @@ from infinity_data.tokenizer.models.raw_tokens import SourceInfo
 
 
 class LineCounter:
-    """行号/列号/字符序号计数器。"""
+    """行号/列号/字符序号计数器。
+
+    换行约定：仅 ``\\n`` 触发换行；``\\r`` 视为普通字符（不支持老 Mac 单 CR）。
+    CRLF（``\\r\\n``）由 ``\\n`` 归一换行——``\\r`` 会虚占一列，
+    但 ``\\n`` 立即重置 ``col=1``，后续位置不受影响。
+    """
 
     def __init__(self) -> None:
         self._index: int = 0
         self._line: int = 1
         self._col: int = 1
-        self._last_was_cr: bool = False
 
     def step(self, ch: str) -> None:
         """根据当前消费的字符推进 index/line/col。"""

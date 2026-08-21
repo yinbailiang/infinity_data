@@ -64,9 +64,9 @@ def test_invalid_unicode_escape_collected() -> None:
     assert any(d.code == 'tokenize.invalid_escape' for d in col)
 
 
-def test_invalid_float_collected_and_recovered() -> None:
-    """Decimal 拒绝的浮点（1e）→ 收集 tokenize.invalid_float，回退 0。"""
+def test_malformed_exponent_handled_at_lexer() -> None:
+    """残缺指数（1e）→ 词法层即报 tokenize.invalid_number，补 0 恢复为合法浮点 1e0。"""
     toks, col = _final('x = 1e\n')
-    assert any(d.code == 'tokenize.invalid_float' for d in col)
+    assert any(d.code == 'tokenize.invalid_number' for d in col)
     assert isinstance(toks[2], FloatToken)
-    assert toks[2].value == 0
+    assert toks[2].value == 1  # Decimal('1e0')

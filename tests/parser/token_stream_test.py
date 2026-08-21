@@ -46,6 +46,17 @@ def test_span_from() -> None:
     assert rng.end.index >= rng.start.index
 
 
+def test_span_from_peek_after_consumed_no_reverse() -> None:
+    # first 是未消费的 peek（位于已消费区之后，如 EOF）→ 不产生反转区间
+    s, _ = _make('a: ')
+    s.expect(IdentifierToken)  # a
+    s.advance()  # :  （消费）
+    first = s.peek()  # EOF，未消费
+    rng = s.span_from(first)
+    assert rng.start.index <= rng.end.index
+    assert rng.start.index == rng.end.index  # 退化为单点
+
+
 def test_expect_success() -> None:
     s, _ = _make('a = 1\n')
     tok = s.expect(IdentifierToken)

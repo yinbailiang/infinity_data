@@ -13,7 +13,7 @@ from infinity_data.tokenizer.tokenizer import RawTokenizer
 def _parse(src: str):
     file = MemFile(name='t.infd', root_path=Path('.'), content=src)
     col = DiagnosticCollector()
-    parser = Parser(FinalTokenizer(RawTokenizer(file=file, error_collector=col)), error_collector=col)
+    parser = Parser(FinalTokenizer(RawTokenizer(file=file, error_collector=col)), collector=col)
     doc = parser.parse()
     return doc, list(col)
 
@@ -60,3 +60,20 @@ def test_omitted_equals_requires_composite() -> None:
 def test_template_field_requires_constraint() -> None:
     _, diags = _parse('~X {\n    a\n}\n')
     assert any(d.code == 'parse.template_field_no_constraint' for d in diags)
+
+
+def test_malformed_template_config_no_crash() -> None:
+    """错误模板 config 不应 IndexError 或死循环（LSP 输入中途场景）。
+
+    回归：值缺失（~X(a=）、缺 =（~X(a, b=1)）、括号未闭合（~X(a=1）等。
+    """
+    for src in ['~X(a=\n', '~X(a=', '~X(a, b=1)\n', '~X(description=\n', '~X(allow_extra=\n', '~X(a=1\n']:
+        doc, _ = _parse(src)
+        assert doc is not None
+
+
+def test_unterminated_value_no_crash() -> None:
+    """未闭合数组/对象/约束不应崩溃（EOF 在值中间）。"""
+    for src in ['x = [1,\n', 'x = [1', 'x = {a = ', 'a: ', '~X { a: ']:
+        doc, _ = _parse(src)
+        assert doc is not None
