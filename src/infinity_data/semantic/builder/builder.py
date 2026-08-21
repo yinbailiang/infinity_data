@@ -261,8 +261,8 @@ class AstBuilder:
             match raw:
                 case LiteralValue(value=tok):
                     return self._convert_literal(tok)
-                case DollarValue(name=n, type_cast=tc):
-                    return self._resolve_dollar(n, tc, path)
+                case DollarValue(name=n, type_cast=tc, source=src):
+                    return self._resolve_dollar(n, tc, path, src)
                 case DictValue(fields=fs, constraints=cs):
                     std_fields: list[StdField] = []
                     for f in fs:
@@ -327,10 +327,15 @@ class AstBuilder:
                 return StdLiteral(kind='noexist', value=None)
         raise TypeError(f'未知字面量 token 类型: {type(tok)}')
 
-    def _resolve_dollar(self, name: str, type_cast: str | None, path: str) -> StdValue:
-        """解析 ``$name`` 引用，type_cast 为显式 as bool/int/float/str 转换。"""
+    def _resolve_dollar(
+        self, name: str, type_cast: str | None, path: str, source: SourceRange | None = None
+    ) -> StdValue:
+        """解析 ``$name`` 引用，type_cast 为显式 as bool/int/float/str 转换。
+
+        source 为 ``$name`` 表达式在源码中的位置
+        """
         if name not in self._namespace:
-            self._collector.add(Diagnostic(Severity.WARNING, 'dollar.undefined', {'name': name}, path=path))
+            self._collector.add(Diagnostic(Severity.WARNING, 'dollar.undefined', {'name': name}, source, path))
             return StdLiteral(kind='null', value=None)
 
         raw = self._namespace[name]
@@ -353,7 +358,8 @@ class AstBuilder:
                                 Severity.WARNING,
                                 'dollar.convert_failed',
                                 {'name': name, 'raw': raw, 'type': 'bool'},
-                                path=path,
+                                source,
+                                path,
                             )
                         )
                         val = False
@@ -365,7 +371,8 @@ class AstBuilder:
                             Severity.WARNING,
                             'dollar.convert_failed',
                             {'name': name, 'raw': raw, 'type': 'bool'},
-                            path=path,
+                            source,
+                            path,
                         )
                     )
                     val = False
@@ -379,7 +386,8 @@ class AstBuilder:
                             Severity.WARNING,
                             'dollar.convert_failed',
                             {'name': name, 'raw': raw, 'type': 'int'},
-                            path=path,
+                            source,
+                            path,
                         )
                     )
                     return StdLiteral(kind='int', value=0)
@@ -392,7 +400,8 @@ class AstBuilder:
                             Severity.WARNING,
                             'dollar.convert_failed',
                             {'name': name, 'raw': raw, 'type': 'float'},
-                            path=path,
+                            source,
+                            path,
                         )
                     )
                     return StdLiteral(kind='float', value=decimal.Decimal(0))

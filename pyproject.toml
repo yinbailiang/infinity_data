@@ -1,6 +1,6 @@
 [project]
 name = "infinity-data"
-version = "1.0.0"
+version = "1.1.0"
 description = "InfinityData：声明式配置语言（.infd/.inft）的 Python 编译器库"
 readme = "README.md"
 license = { text = "MIT" }
