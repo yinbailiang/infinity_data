@@ -477,6 +477,42 @@ x = X(a=2)
     assert not ok.has_errors
 
 
+def test_template_allow_extra_true_accepts_named_args() -> None:
+    """allow_extra=true：实例化接受额外命名参数并作为扩展字段内容。"""
+    value = compile_ok("""
+~X(allow_extra=true) {
+    a: int = 1
+}
+x = X(a=2, bogus=3)
+""")
+    assert value == {'x': {'a': 2, 'bogus': 3}}
+
+
+def test_template_allow_extra_true_accepts_extra_alone() -> None:
+    """allow_extra=true：只有额外参数也可（默认值生效 + 扩展字段）。"""
+    value = compile_ok("""
+~X(allow_extra=true) {
+    a: int = 1
+}
+x = X(extra = {k = 1})
+""")
+    assert value == {'x': {'a': 1, 'extra': {'k': 1}}}
+
+
+def test_template_allow_extra_false_rejects_named_args() -> None:
+    """allow_extra=false（默认）：额外命名参数 → unknown_argument ERROR，不进入内容。"""
+    result = compile_source("""
+~X {
+    a: int = 1
+}
+x = X(a=2, bogus=3)
+""")
+    assert result.has_errors
+    assert any(d.code == 'template.unknown_argument' for d in result.diagnostics)
+    # 额外参数不进入内容（字段展开只遍历声明字段）
+    assert result.value == {'x': {'a': 2}}
+
+
 def test_template_config_description_metadata() -> None:
     """description 是合法元数据（不消费，仅解析通过）。"""
     result = compile_source('~X(description="服务模板") {\n    a: int = 1\n}\nx = X()\n')

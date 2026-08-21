@@ -342,10 +342,32 @@ class AstBuilder:
                 if isinstance(raw, bool):
                     val: bool = raw
                 elif isinstance(raw, str):
-                    val = raw.lower() in ('true', '1')
-                elif isinstance(raw, int | float):
+                    low = raw.lower()
+                    if low in ('true', '1'):
+                        val = True
+                    elif low in ('false', '0'):
+                        val = False
+                    else:
+                        self._collector.add(
+                            Diagnostic(
+                                Severity.WARNING,
+                                'dollar.convert_failed',
+                                {'name': name, 'raw': raw, 'type': 'bool'},
+                                path=path,
+                            )
+                        )
+                        val = False
+                elif isinstance(raw, (int, float)):
                     val = bool(raw)
                 else:
+                    self._collector.add(
+                        Diagnostic(
+                            Severity.WARNING,
+                            'dollar.convert_failed',
+                            {'name': name, 'raw': raw, 'type': 'bool'},
+                            path=path,
+                        )
+                    )
                     val = False
                 return StdLiteral(kind='bool', value=val)
             case 'int':
@@ -445,19 +467,23 @@ class AstBuilder:
                 )
             )
 
-        # 未知命名参数 → ERROR（拒绝静默忽略）
+        # 未知命名参数：allow_extra=false 报错拒绝；allow_extra=true 接受为扩展字段内容
         declared = {tf.name for tf in template.fields}
-        for name in named_args:
+        extra_args: dict[str, Value] = {}
+        for name, arg_val in named_args.items():
             if name not in declared:
-                self._collector.add(
-                    Diagnostic(
-                        Severity.ERROR,
-                        'template.unknown_argument',
-                        {'template': template_name, 'arg': name},
-                        source,
-                        path,
+                if template.config.allow_extra:
+                    extra_args[name] = arg_val
+                else:
+                    self._collector.add(
+                        Diagnostic(
+                            Severity.ERROR,
+                            'template.unknown_argument',
+                            {'template': template_name, 'arg': name},
+                            source,
+                            path,
+                        )
                     )
-                )
 
         # 参数映射：位置参数按定义顺序绑定必填字段
         param_values: dict[str, Value] = dict(named_args)
@@ -516,6 +542,17 @@ class AstBuilder:
             specs, diags = resolve_constraints(tf.constraints, inner_scope)
             self._collector.extend(diags)
             std_fields.append(StdField(name=tf.name, value=v, source=tf.source, constraints=specs))
+
+        # allow_extra=true：额外命名参数作为扩展字段进入内容（按调用点 scope 解析）
+        for name, arg_val in extra_args.items():
+            child = f'{path}.{name}' if path else name
+            std_fields.append(
+                StdField(
+                    name=name,
+                    value=self._resolve_value(arg_val, child, scope),
+                    source=arg_val.source,
+                )
+            )
 
         # 模板级约束（: 起始，约束整个 dict）：解析后挂到实例节点
         tpl_specs, tpl_diags = resolve_constraint_list(template.constraints, inner_scope)

@@ -122,6 +122,29 @@ def test_dollar_cast_failure_warns_and_falls_back(tmp_path: Path) -> None:
     assert result.value == {'x': 0}
 
 
+def test_dollar_cast_bool_valid_strings(tmp_path: Path) -> None:
+    """as bool 合法字符串（不分大小写）：true/1 → True，false/0 → False。"""
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!env import A\n!env import B\n!env import C\n!env import D\n'
+        'a = $A as bool\nb = $B as bool\nc = $C as bool\nd = $D as bool\n',
+    )
+    result = load(f, env={'A': 'TRUE', 'B': '1', 'C': 'false', 'D': '0'})
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'a': True, 'b': True, 'c': False, 'd': False}
+
+
+def test_dollar_cast_bool_failure_warns(tmp_path: Path) -> None:
+    """as bool 非法字符串 → dollar.convert_failed 警告 + 回退 false（不构成错误）。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '!env import B\nx = $B as bool\n')
+    result = load(f, env={'B': 'not-a-bool'})
+    assert not result.has_errors
+    assert any(d.code == 'dollar.convert_failed' for d in result.diagnostics)
+    assert result.value == {'x': False}
+
+
 def test_env_authorized_read_from_os(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """allow_env 授权从真实 OS 环境实时读取（非注入快照）。"""
     monkeypatch.setenv('INF_DEMO_KEY', 'from-os')
