@@ -52,6 +52,23 @@ def test_unrecognized_statement_reported() -> None:
     assert any(d.code == 'parse.unrecognized_statement' for d in diags)
 
 
+def test_env_import_requires_newline() -> None:
+    """!env 无导入项列表：尾部必须换行/EOF，同一行逗号后接语句必须报错。
+
+    若不检查，同一行逗号会被顶层 skip_separators 吞掉（`!env import A as a, x = 1`
+    被误认为合法），与 !from / !file 的「尾部必须换行」行为不一致。
+    """
+    # 换行结尾 → 合法
+    _, diags = _parse('!env import A as a\n')
+    assert not diags
+    # 同一行逗号接语句 → 报错（逗号仍由顶层吞掉，x = 1 容错继续解析）
+    _, diags = _parse('!env import A as a, x = 1\n')
+    assert any(d.code == 'parse.import_requires_newline' for d in diags)
+    # 尾随逗号（逗号后 EOF）→ 报错
+    _, diags = _parse('!env import A as a,')
+    assert any(d.code == 'parse.import_requires_newline' for d in diags)
+
+
 def test_omitted_equals_requires_composite() -> None:
     _, diags = _parse('x 123\n')
     assert any(d.code == 'parse.field_requires_equals' for d in diags)

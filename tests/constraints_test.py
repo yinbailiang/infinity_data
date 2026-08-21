@@ -154,6 +154,28 @@ def test_field() -> None:
     assert compile_source('x: field(missing, int) = { port = 80 }\n').has_errors
 
 
+def test_has_noexist_default() -> None:
+    """回归：noexist 默认字段不算「存在」，one(has(a), has(b)) 只算实际提供的。
+
+    修复前 noexist 字段在 StdObject 中以非 None 哨兵存在，has() 误判为 true，
+    one(has(a), has(b)) 报 one_many。
+    """
+    # b 提供、a 默认 noexist → 只有 has(b) 满足，one 通过
+    compile_ok(
+        '~R {\n    a: <int?> = noexist,\n    b: <int?> = noexist,\n    : <one(has(a), has(b))>,\n}\nx = R(b = 1)\n'
+    )
+    # 都不提供 → 两个 has 都不满足 → one 失败
+    assert compile_source(
+        '~R {\n    a: <int?> = noexist,\n    b: <int?> = noexist,\n    : <one(has(a), has(b))>,\n}\nx = R()\n'
+    ).has_errors
+
+
+def test_field_noexist_is_missing() -> None:
+    """回归：noexist 默认字段对 field(name, c) 视为缺失（约束不满足）。"""
+    assert compile_source('~R {\n    a: <int?> = noexist,\n    : <field(a, eq(1))>,\n}\nx = R()\n').has_errors
+    compile_ok('~R {\n    a: <int?> = noexist,\n    : <field(a, eq(1))>,\n}\nx = R(a = 1)\n')
+
+
 # ═══════════════════════════════════════════════════════════
 # 逻辑约束
 # ═══════════════════════════════════════════════════════════

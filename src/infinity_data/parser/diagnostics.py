@@ -49,6 +49,11 @@ register_diagnostic_define(
         en='[{location}] import items must be separated by commas (newlines/spaces are not allowed)',
     ),
     diagnostic_define(
+        'parse.import_requires_newline',
+        '[{location}] 导入语句必须以换行结尾（同一行逗号后不能再接其他语句）',
+        en='[{location}] import statement must end with a newline (cannot be followed by more tokens on the same line)',
+    ),
+    diagnostic_define(
         'parse.value_field',
         '[{location}] 值位置出现字段定义 {name}（外层数组/对象未闭合）',
         en='[{location}] field definition {name} in value position (enclosing array/object unclosed)',

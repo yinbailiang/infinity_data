@@ -138,8 +138,13 @@ class Parser:
 
     @staticmethod
     def _parse_statement(stream: TokenStream, collector: DiagnosticCollector) -> Statement | None:
-        """解析一条顶层语句。"""
-        stream.skip_newlines()
+        """解析一条顶层语句。
+
+        顶层与块内一致，接受**逗号或换行**分隔（二者等价，可混用）——
+        整个文件（含模板定义、字段、结构级约束）可压缩成一行；
+        导入语句内部仍强制逗号分隔（见 §3.2）。
+        """
+        stream.skip_separators()
 
         # EofToken 或物理耗尽均视为流结束
         if stream.eof():
@@ -222,6 +227,21 @@ class Parser:
         if Parser._peek_keyword(stream, 'as'):
             stream.advance()
             alias = stream.expect(IdentifierToken).name
+
+        # 导入语句必须换行/EOF 结尾：!env 无导入项列表，若不加检查，同一行的逗号会被
+        # 顶层 skip_separators 吞掉（`!env import A as a, x = 1` 被误认为合法），与
+        # !from / !file 的「尾部必须换行」行为不一致。
+        tok = stream.peek()
+        # 显式排除 NoNextType 以收窄类型：stream.eof() 是方法调用，无法据此收窄 tok，
+        # 否则 tok 仍为 Token | NoNextType，访问 tok.raw 会触发类型错误。
+        if not isinstance(tok, NoNextType) and not (stream.eof() or isinstance(tok, NewlineToken)):
+            collector.add(
+                diag(
+                    'parse.import_requires_newline',
+                    {'actual': tok.raw.type.name},
+                    stream.single_span(tok),
+                )
+            )
 
         # 注意：不在此消费尾部换行——语句间分隔由 _parse_statement 开头统一处理，
         # 否则语句 source 会把下一行行首吞入（与 Field 不一致）
