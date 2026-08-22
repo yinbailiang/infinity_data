@@ -43,6 +43,7 @@ from infinity_data.parser.token_stream import TokenStream
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
+    CaretToken,
     ColonToken,
     CommaToken,
     DollarToken,
@@ -1307,11 +1308,23 @@ class Parser:
             )
 
         stream.expect(RparenToken)
-        # 调用级 ...：展开传播（本调用展开结果作为包围模板调用的轴，§2.8）
+        # 调用级后缀（顺序固定：^ 笛卡尔积 → ... 传播）：
+        #   T($a..., $b...)^    笛卡尔积展开（N×M，首轴最慢变化，§2.8）
+        #   T($a..., $b...)...  展开传播（结果作包围调用轴）
+        #   T($a..., $b...)^... 笛卡尔积 + 传播（可叠加）
+        #   反序 ...^ → 语法错误（parse.expand_suffix_order）
+        cartesian = False
         propagate = False
+        if isinstance(stream.peek(), CaretToken):
+            stream.advance()
+            cartesian = True
         if isinstance(stream.peek(), EllipsisToken):
             stream.advance()
             propagate = True
+            caret = stream.peek()
+            if isinstance(caret, CaretToken):
+                collector.add(diag('parse.expand_suffix_order', {}, stream.single_span(caret)))
+                stream.advance()
         return TemplateCallValue(
             source=stream.span_from(name_tok),
             template_name=name_tok.name,
@@ -1323,4 +1336,5 @@ class Parser:
             axis_named=frozenset(axis_named),
             axis_unpack_kwargs=frozenset(axis_unpack_kwargs),
             propagate=propagate,
+            cartesian=cartesian,
         )

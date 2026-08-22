@@ -44,6 +44,32 @@ def test_unknown_char_reported() -> None:
     assert any(d.code == 'tokenize.unknown_char' for d in col)
 
 
+def test_ellipsis_and_dot() -> None:
+    """合法点串：1 点 → DOT；3 点 → ELLIPSIS。"""
+    toks, col = _tokenize('x... .a')
+    assert not col.has_errors
+    assert [t.type for t in toks] == [
+        RawTokenType.IDENTIFIER,
+        RawTokenType.ELLIPSIS,
+        RawTokenType.DOT,
+        RawTokenType.IDENTIFIER,
+        RawTokenType.EOF,
+    ]
+
+
+def test_invalid_dot_run_reported() -> None:
+    """2 / >=4 个点 → tokenize.invalid_ellipsis（不静默吞点），仍按 DOT 恢复。"""
+    toks, col = _tokenize('a .. b ....')
+    assert [t.type for t in toks] == [
+        RawTokenType.IDENTIFIER,
+        RawTokenType.DOT,
+        RawTokenType.IDENTIFIER,
+        RawTokenType.DOT,
+        RawTokenType.EOF,
+    ]
+    assert [d.code for d in col].count('tokenize.invalid_ellipsis') == 2
+
+
 def test_bom_reported_as_warning() -> None:
     _, col = _tokenize('\ufeffa = 1\n')
     assert any(d.code == 'tokenize.bom' for d in col)

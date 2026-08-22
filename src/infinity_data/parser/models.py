@@ -485,11 +485,13 @@ class TemplateCallValue(AstNode):
     """模板调用: Name(args...)
 
     展开（§2.8）：参数值后缀 ``...`` = 展开轴；调用级（``)`` 后）``...`` = 展开传播
-    （本调用的展开结果作为包围模板调用的轴，整体模式逐元素重复）。
+    （本调用的展开结果作为包围模板调用的轴，整体模式逐元素重复）、``^`` = 笛卡尔积
+    （多轴全组合，首轴最慢变化；与 ``propagate`` 正交，``^...`` 可叠加）。
     - ``axis_positional``：位置参数中带 ``...`` 的索引
     - ``axis_named``：命名参数中带 ``...`` 的键
     - ``axis_unpack_kwargs``：``**expr`` 解包参数中带 ``...`` 的索引
     - ``propagate``：调用级 ``...``（展开传播；无 = 展开止于本调用）
+    - ``cartesian``：调用级 ``^``（笛卡尔积展开；无 = zip 配对）
     """
 
     template_name: str
@@ -501,6 +503,7 @@ class TemplateCallValue(AstNode):
     axis_named: frozenset[str] = field(default_factory=frozenset[str])
     axis_unpack_kwargs: frozenset[int] = field(default_factory=frozenset[int])
     propagate: bool = False
+    cartesian: bool = False
 
     def children(self) -> Iterable[AstNode]:
         return [
@@ -529,6 +532,8 @@ class TemplateCallValue(AstNode):
                 s += '...'
             args.append(s)
         out = f'{self.template_name}({", ".join(args)})'
+        if self.cartesian:
+            out += '^'
         if self.propagate:
             out += '...'
         return out

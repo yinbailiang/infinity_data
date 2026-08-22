@@ -21,6 +21,7 @@ from infinity_data.tokenizer.models.raw_tokens import (
 )
 from infinity_data.tokenizer.models.tokens import (
     BoolToken,
+    CaretToken,
     ColonToken,
     CommaToken,
     DollarToken,
@@ -78,6 +79,7 @@ _SIMPLE_MAP: dict[RawTokenType, type[Token]] = {
     RawTokenType.STAR: StarToken,
     RawTokenType.DOUBLE_STAR: DoubleStarToken,
     RawTokenType.ELLIPSIS: EllipsisToken,
+    RawTokenType.CARET: CaretToken,
     RawTokenType.NULL: NullToken,
     RawTokenType.NOEXIST: NoexistToken,
     RawTokenType.ENV_IMPORT: EnvImportToken,

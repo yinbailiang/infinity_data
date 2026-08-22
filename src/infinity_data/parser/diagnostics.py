@@ -32,6 +32,11 @@ register_diagnostic_define(
         en='[{location}] ... is only valid in template call argument context (expand axis / propagate)',
     ),
     diagnostic_define(
+        'parse.expand_suffix_order',
+        '[{location}] ... 后不能再跟 ^（调用级后缀顺序固定：^ 笛卡尔积 → ... 传播，§2.8）',
+        en='[{location}] ^ cannot follow ... (call-level suffix order: ^ cartesian → ... propagate)',
+    ),
+    diagnostic_define(
         'parse.template_arg_order',
         '[{location}] 位置参数不能出现在命名参数之后',
         en='[{location}] positional arguments cannot follow named arguments',

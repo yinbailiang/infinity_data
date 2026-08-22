@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import decimal
 from collections.abc import Iterator, Mapping, Sequence
+from itertools import product
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
@@ -472,9 +473,10 @@ class AstBuilder:
                     axis_named=axn,
                     axis_unpack_kwargs=axu,
                     propagate=prop,
+                    cartesian=cart,
                 ):
                     return self._expand_template_call(
-                        tn, pa, na, upa, upk, axp, axn, axu, prop, path, raw.source, scope
+                        tn, pa, na, upa, upk, axp, axn, axu, prop, cart, path, raw.source, scope
                     )
                 case ErrorValue():
                     # 值解析失败已在语法层报告（parse.value_field / parse.unrecognized_value），不重复
@@ -607,14 +609,17 @@ class AstBuilder:
         axis_named: frozenset[str],
         axis_unpack_kwargs: frozenset[int],
         propagate: bool,
+        cartesian: bool,
         path: str,
         source: SourceRange | None,
         scope: Scope,
     ) -> StdValue:
-        """模板调用：无轴 → 单次实例化；有轴 → zip 展开（§2.8，结果恒为 list）。
+        """模板调用：无轴 → 单次实例化；有轴 → zip / 笛卡尔积展开（§2.8，结果恒为 list）。
 
         ``propagate``（调用级 ``...``）= 展开传播：本调用的展开结果作为**包围模板调用**
         的轴继续展开——`B(A($list...)...)` ⟹ `[B(A(x)) for x]`，由外层调用消费。
+        ``cartesian``（调用级 ``^``）= 笛卡尔积：多轴全组合（首轴最慢变化）；
+        与 ``propagate`` 正交（``^...`` 可叠加）。
 
         每个展开实例是完整模板实例（默认值注入 + 约束照常）。
         """
@@ -658,33 +663,47 @@ class AstBuilder:
                     named[k] = rv
 
         if not axes:
-            # 调用级 ... 但无任何展开源（自身无轴、也无内层传播而来）→ 报错
-            if propagate:
+            # 调用级 ^ / ... 但无任何展开源（自身无轴、也无内层传播而来）→ 报错
+            if propagate or cartesian:
                 self._err('template.expand_no_source', {'template': template_name}, source, path)
             return self._instantiate_once(
                 template_name, pos_args, named, unpack_args, unpack_kwargs, path, source, scope
             )
 
-        # 组合：多轴 zip（等长配对；长度不等 → expand_length_mismatch）
-        lens = sorted({len(a.elements) for _, a in axes})
-        if len(lens) > 1:
-            self._err(
-                'template.expand_length_mismatch',
-                {'template': template_name, 'lens': lens},
-                source,
-                path,
-            )
-            return StdArray()
-        count = lens[0]
-        if count > self.MAX_EXPAND:
-            self._err(
-                'template.expand_too_large',
-                {'template': template_name, 'max': self.MAX_EXPAND, 'count': count},
-                source,
-                path,
-            )
-            return StdArray()
-        combos = zip(*(a.elements for _, a in axes))
+        # 组合：zip（等长配对）或笛卡尔积（全组合，首轴最慢变化）
+        if cartesian:
+            total = 1
+            for _, a in axes:
+                total *= len(a.elements)
+            if total > self.MAX_EXPAND:
+                self._err(
+                    'template.expand_too_large',
+                    {'template': template_name, 'max': self.MAX_EXPAND, 'count': total},
+                    source,
+                    path,
+                )
+                return StdArray()
+            combos = product(*(a.elements for _, a in axes))
+        else:
+            lens = sorted({len(a.elements) for _, a in axes})
+            if len(lens) > 1:
+                self._err(
+                    'template.expand_length_mismatch',
+                    {'template': template_name, 'lens': lens},
+                    source,
+                    path,
+                )
+                return StdArray()
+            count = lens[0]
+            if count > self.MAX_EXPAND:
+                self._err(
+                    'template.expand_too_large',
+                    {'template': template_name, 'max': self.MAX_EXPAND, 'count': count},
+                    source,
+                    path,
+                )
+                return StdArray()
+            combos = zip(*(a.elements for _, a in axes))
 
         results: list[StdValue] = []
         for combo in combos:

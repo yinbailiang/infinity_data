@@ -62,6 +62,11 @@ register_diagnostic_define(
         en="[{location}] expected env/file/from after '!', got {actual}",
     ),
     diagnostic_define(
+        'tokenize.invalid_ellipsis',
+        '[{location}] 非法点串（{count} 个点）：只有单点 . 与三连点 ... 合法',
+        en='[{location}] invalid dot run of {count}: only . (1) and ... (3) are valid',
+    ),
+    diagnostic_define(
         'tokenize.bang_corrected',
         '[{location}] ! 后 {actual} 疑似 {suggestion} 的笔误，已纠正为 !{suggestion}',
         en='[{location}] {actual} after ! looks like a typo for {suggestion}; corrected to !{suggestion}',

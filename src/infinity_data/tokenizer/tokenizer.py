@@ -58,6 +58,7 @@ class RawTokenizer:
         ':': RawTokenType.COLON,
         ',': RawTokenType.COMMA,
         '~': RawTokenType.TILDE,
+        '^': RawTokenType.CARET,
         '?': RawTokenType.QUESTION,
         '$': RawTokenType.DOLLAR,
         # '.' 不在此：需识别 '...'（ELLIPSIS）与单点（DOT），见 _read_dot_or_ellipsis
@@ -151,7 +152,7 @@ class RawTokenizer:
             assert not isinstance(ch, NoNextType)
 
             if ch == '.':
-                return self._read_dot_or_ellipsis(stream, file)
+                return self._read_dot_or_ellipsis(stream, collector, file)
 
             if ch == '*':
                 return self._read_star(stream, file)
@@ -206,11 +207,11 @@ class RawTokenizer:
         )
 
     @staticmethod
-    def _read_dot_or_ellipsis(stream: CharStream, file: File) -> RawToken:
+    def _read_dot_or_ellipsis(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:
         """读取 `.`（DOT，JSON path）或 `...`（ELLIPSIS，展开标记）。
 
-        连续点数：1 → DOT；3 → ELLIPSIS；其他数量（2 / >=4）按 DOT 恢复
-        （罕见错误场景，多余点由语法层报错）。
+        连续点数：1 → DOT；3 → ELLIPSIS；其他数量（2 / >=4）→ 报
+        ``tokenize.invalid_ellipsis``（词法错误，不静默吞点），仍按 DOT 恢复。
         """
         start = stream.info()
         count = 0
@@ -226,6 +227,15 @@ class RawTokenizer:
                 type=RawTokenType.ELLIPSIS,
                 raw='...',
                 source=SourceRange(file=file, start=start, end=stream.info()),
+            )
+        if count >= 2:
+            # 2 / >=4 个点：非法点串（只有 1 点 DOT 与 3 点 ELLIPSIS 合法），不静默吞点
+            collector.add(
+                diag(
+                    'tokenize.invalid_ellipsis',
+                    {'count': count},
+                    SourceRange(file=file, start=start, end=stream.info()),
+                )
             )
         return RawToken(
             type=RawTokenType.DOT,

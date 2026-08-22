@@ -1,8 +1,9 @@
 """模板在 list 上展开（§2.8）测试。
 
 - 参数级 ``...`` = 展开轴（zip 默认）；调用级 ``...`` = 展开传播（内层展开结果作外层轴）
+- 调用级 ``^`` = 笛卡尔积（多轴全组合，首轴最慢变化；与传播可叠加 ``^...``）
 - ``**`` 解包轴（list[dict] 逐元素解包）；结果恒为 list
-- 错误：轴非 list / zip 长度不等 / 调用级 ``...`` 无展开源 / ``...`` 普通值位置
+- 错误：轴非 list / zip 长度不等 / 调用级 ``^``/``...`` 无展开源 / 后缀反序 / ``...`` 普通值位置
 """
 
 import tempfile
@@ -183,6 +184,62 @@ def test_expand_no_source() -> None:
     """调用级 ... 但零轴（无展开源）→ template.expand_no_source。"""
     _, c = _build('~T { a: int = 0 }\nx = T()...\n')
     assert 'template.expand_no_source' in _codes(c)
+
+
+def test_expand_cartesian() -> None:
+    """调用级 ^ = 笛卡尔积：多轴全组合，首轴最慢变化（可审计、可预测）。"""
+    std, c = _build(
+        '~Node {\n    host: str\n    port: <int, range(1, 65535)> = 80\n}\n'
+        'x = Node(host = ["a", "b"]..., port = [443, 8443]...)^\n'
+    )
+    assert not _codes(c)
+    objs = _arr_objs(_root_field(std, 'x'))
+    assert len(objs) == 4
+    # 首轴（host）最慢变化：a×{443,8443}, b×{443,8443}
+    pairs = [(_as_str(_field_of(o, 'host')), _as_int(_field_of(o, 'port'))) for o in objs]
+    assert pairs == [('a', 443), ('a', 8443), ('b', 443), ('b', 8443)]
+
+
+def test_expand_cartesian_single_axis_noop() -> None:
+    """单轴 + 调用级 ^ → 合法 no-op（1 个轴无 zip/积之分）。"""
+    std, c = _build('~T { a: int = 0 }\nx = T(a = [1, 2]...)^\n')
+    assert not _codes(c)
+    objs = _arr_objs(_root_field(std, 'x'))
+    assert len(objs) == 2
+    assert _as_int(_field_of(objs[0], 'a')) == 1
+    assert _as_int(_field_of(objs[1], 'a')) == 2
+
+
+def test_expand_cartesian_propagate() -> None:
+    """积 + 传播（^...）：A 积展开结果作为包围调用 B 的轴。"""
+    std, c = _build(
+        '~A { h: str, p: int }\n'
+        '~B { a: A }\n'
+        '!var ["a", "b"] import . as hs\n'
+        '!var [80, 443] import . as ps\n'
+        'x = B(a = A(h = $hs..., p = $ps...)^...)\n'
+    )
+    assert not _codes(c)
+    objs = _arr_objs(_root_field(std, 'x'))
+    assert len(objs) == 4  # 2×2 积展开后逐元素构造 B
+    pairs: list[tuple[str, int]] = []
+    for o in objs:
+        a = _field_of(o, 'a')
+        assert isinstance(a.value, StdObject)
+        pairs.append((_as_str(_field_of(a.value, 'h')), _as_int(_field_of(a.value, 'p'))))
+    assert pairs == [('a', 80), ('a', 443), ('b', 80), ('b', 443)]
+
+
+def test_expand_cartesian_no_source() -> None:
+    """零轴 + 调用级 ^ → template.expand_no_source。"""
+    _, c = _build('~T { a: int = 0 }\nx = T()^\n')
+    assert 'template.expand_no_source' in _codes(c)
+
+
+def test_expand_suffix_order() -> None:
+    """后缀反序 ...^ → parse.expand_suffix_order（^ 必须先于 ...）。"""
+    _, c = _build('~T { a: int = 0 }\nx = T(a = [1]...)...^\n')
+    assert 'parse.expand_suffix_order' in _codes(c)
 
 
 def test_expand_outside_call() -> None:

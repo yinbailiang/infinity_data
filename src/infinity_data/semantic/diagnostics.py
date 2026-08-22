@@ -78,7 +78,7 @@ register_diagnostic_define(
     ),
     diagnostic_define(
         'template.expand_no_source',
-        '{path_prefix}模板 {template!r} 的调用级 ... 没有展开源（自身无轴、也无内层传播而来）',
+        '{path_prefix}模板 {template!r} 的调用级 ^ / ... 没有展开源（自身无轴、也无内层传播而来）',
     ),
     diagnostic_define(
         'template.too_many_positional',

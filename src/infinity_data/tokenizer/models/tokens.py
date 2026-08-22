@@ -148,6 +148,13 @@ class EllipsisToken(Token):
 
 
 @dataclass
+class CaretToken(Token):
+    """^（调用级后缀：笛卡尔积展开，§2.8）"""
+
+    pass
+
+
+@dataclass
 class VarImportToken(Token):
     """!var（本地 $ 空间注入：值表达式 + JSON path 投影）"""
 
