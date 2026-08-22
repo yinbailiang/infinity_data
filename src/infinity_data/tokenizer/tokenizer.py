@@ -60,7 +60,8 @@ class RawTokenizer:
         '~': RawTokenType.TILDE,
         '?': RawTokenType.QUESTION,
         '$': RawTokenType.DOLLAR,
-        '.': RawTokenType.DOT,
+        # '.' 不在此：需识别 '...'（ELLIPSIS）与单点（DOT），见 _read_dot_or_ellipsis
+        # '*' 不在此：需识别 '**'（DOUBLE_STAR）与单星（STAR），见 _read_star
         '\n': RawTokenType.NEWLINE,
     }
 
@@ -80,11 +81,12 @@ class RawTokenizer:
     }
     _close_to_open: dict[str, str] = {close: open_ for open_, close in _open_to_close.items()}
 
-    _BANG_KEYWORDS: tuple[str, ...] = ('env', 'file', 'from')
+    _BANG_KEYWORDS: tuple[str, ...] = ('env', 'file', 'from', 'var')
     _BANG_KEYWORD_TO_TYPE: dict[str, RawTokenType] = {
         'env': RawTokenType.ENV_IMPORT,
         'file': RawTokenType.FILE_IMPORT,
         'from': RawTokenType.FROM_IMPORT,
+        'var': RawTokenType.VAR_IMPORT,
     }
 
     def __init__(
@@ -148,6 +150,12 @@ class RawTokenizer:
             ch = stream.peek()
             assert not isinstance(ch, NoNextType)
 
+            if ch == '.':
+                return self._read_dot_or_ellipsis(stream, file)
+
+            if ch == '*':
+                return self._read_star(stream, file)
+
             if ch in self._single_char_map:
                 tok = self._single_char(self._single_char_map[ch], stream, file)
                 self._track_bracket(ch, tok, self._open_stack, collector)
@@ -195,6 +203,55 @@ class RawTokenizer:
                 start=start,
                 end=stream.info(),
             ),
+        )
+
+    @staticmethod
+    def _read_dot_or_ellipsis(stream: CharStream, file: File) -> RawToken:
+        """读取 `.`（DOT，JSON path）或 `...`（ELLIPSIS，展开标记）。
+
+        连续点数：1 → DOT；3 → ELLIPSIS；其他数量（2 / >=4）按 DOT 恢复
+        （罕见错误场景，多余点由语法层报错）。
+        """
+        start = stream.info()
+        count = 0
+        while not stream.eof():
+            ch = stream.peek()
+            assert not isinstance(ch, NoNextType)
+            if ch != '.':
+                break
+            stream.advance()
+            count += 1
+        if count == 3:
+            return RawToken(
+                type=RawTokenType.ELLIPSIS,
+                raw='...',
+                source=SourceRange(file=file, start=start, end=stream.info()),
+            )
+        return RawToken(
+            type=RawTokenType.DOT,
+            raw='.',
+            source=SourceRange(file=file, start=start, end=stream.info()),
+        )
+
+    @staticmethod
+    def _read_star(stream: CharStream, file: File) -> RawToken:
+        """读取 `*`（STAR）或 `**`（DOUBLE_STAR）。"""
+        start = stream.info()
+        stream.advance()
+        if not stream.eof():
+            ch = stream.peek()
+            assert not isinstance(ch, NoNextType)
+            if ch == '*':
+                stream.advance()
+                return RawToken(
+                    type=RawTokenType.DOUBLE_STAR,
+                    raw='**',
+                    source=SourceRange(file=file, start=start, end=stream.info()),
+                )
+        return RawToken(
+            type=RawTokenType.STAR,
+            raw='*',
+            source=SourceRange(file=file, start=start, end=stream.info()),
         )
 
     # ── 空白与注释跳过 ────────────────────────────────
@@ -372,6 +429,8 @@ class RawTokenizer:
                 return RawTokenizer._make_token(
                     RawTokenType.FROM_IMPORT, '!from', start=start, stream=stream, file=file
                 )
+            case 'var':
+                return RawTokenizer._make_token(RawTokenType.VAR_IMPORT, '!var', start=start, stream=stream, file=file)
             case _:
                 return RawTokenizer._recover_bang_typo(ident_tok.raw, start, stream, collector, file)
 

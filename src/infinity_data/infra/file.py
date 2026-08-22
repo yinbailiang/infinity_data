@@ -35,7 +35,7 @@ class File:
 
     @property
     def identity(self) -> str:
-        """唯一身份（循环导入防护 / 模板身份（TemplateKey）基础，含来源路径）。"""
+        """唯一身份（循环导入防护 / parse_cache 键；模板身份已改用依赖闭包哈希，§2.5）。"""
         raise NotImplementedError
 
     def content_hash(self) -> str:
@@ -67,7 +67,7 @@ class DiskFile(File):
 
 @dataclass(frozen=True)
 class MemFile(File):
-    """内存源码（测试/嵌入式场景）。身份 = 根路径:mem:内容hash（含路径）。"""
+    """内存源码（测试/嵌入式场景）。身份 = 根路径:mem:内容hash（循环导入防护 / 缓存键）。"""
 
     content: str
 

@@ -51,6 +51,19 @@ register_diagnostic_define(
         'template.arg_conflict', '{path_prefix}模板 {template!r} 字段 {field!r} 同时以位置和命名参数提供'
     ),
     diagnostic_define(
+        'template.dup_argument',
+        '{path_prefix}模板 {template!r} 的命名参数 {arg!r} 重复提供',
+        en='{path_prefix}duplicate named argument {arg!r} for template {template!r}',
+    ),
+    diagnostic_define(
+        'template.variadic_target_missing',
+        '{path_prefix}模板 {template!r} 的收集配置引用了未声明字段 {field!r}（extra_*_vars 指向的字段必须在模板中声明）',
+    ),
+    diagnostic_define(
+        'template.variadic_positional_conflict',
+        '{path_prefix}模板 {template!r} 的 extra_positional_vars 与 positional=false 冲突',
+    ),
+    diagnostic_define(
         'template.too_many_positional',
         '{path_prefix}模板 {template!r} 只有 {count} 个必填字段，提供了 {given} 个位置参数',
     ),
@@ -85,6 +98,18 @@ register_diagnostic_define(
         '{path_prefix}noexist 仅用于 dict 字段，数组元素中无意义（如需空位请用 null）',
         en='{path_prefix}noexist is only for dict fields; meaningless in array elements (use null for a slot)',
     ),
+    diagnostic_define(
+        'dict.duplicate_key',
+        '{path_prefix}键 {name!r} 重复定义（同一 dict 内不允许同名键），保留先到者',
+        en='{path_prefix}duplicate key {name!r} (duplicate keys are not allowed in a dict); first wins',
+    ),
+    diagnostic_define(
+        'unpack.type_error',
+        '{path_prefix}解包目标必须是 {want}（** 为 dict，* 为 list），实际类型不符',
+        en='{path_prefix}unpack target must be {want} (** is dict, * is list)',
+    ),
+    diagnostic_define('var.cycle', '{path_prefix}!var 别名 {alias!r} 形成循环依赖（前向引用不允许环）'),
+    diagnostic_define('var.path_failed', '{path_prefix}!var 别名 {alias!r} 的 JSON path 取不到目标'),
     diagnostic_define(
         'dollar.undefined', '{path_prefix}未找到导入变量 ${name}', en='{path_prefix}undefined import variable ${name}'
     ),

@@ -7,9 +7,9 @@
 - ``!from``（模板导入）：模板文件经 ``Sandbox.open_template`` 产出 File，
   模板定义的实际加载由 Phase 1 的 :class:`TemplateGraphResolver` 完成
 
-本层产出 ``$`` 引用命名空间（alias → Python 值）；诊断直接写入调用方注入的
-共享 :class:`DiagnosticCollector`（与 resolver / builder 的收集器模式统一）。
-纯数据依赖：不引用任何 Phase 2 对象。
+本层产出 ``$`` 引用命名空间（alias → StdValue）：外部数据经
+:func:`python_to_std` 直接转为 AST，与 ``!var`` 注入统一；诊断直接写入调用方
+注入的共享 :class:`DiagnosticCollector`（与 resolver / builder 的收集器模式统一）。
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ from infinity_data.parser import (
     Document,
     EnvImportStmt,
     FileImportStmt,
-    JsonPathIndex,
-    JsonPathKey,
 )
 from infinity_data.sandbox import Sandbox, SandboxConfig
+from infinity_data.semantic.jsonpath import apply_json_path
+from infinity_data.semantic.std import StdValue, python_to_std
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 _FORMAT_MAP: dict[str, str] = {
@@ -58,9 +58,9 @@ class ImportResolver:
     def base_dir(self) -> Path:
         return self._sandbox.base_dir
 
-    def resolve(self, doc: Document, collector: DiagnosticCollector) -> dict[str, Any]:
-        """解析所有导入语句（env/file），返回 namespace；诊断写入 ``collector``。"""
-        namespace: dict[str, Any] = {}
+    def resolve(self, doc: Document, collector: DiagnosticCollector) -> dict[str, StdValue]:
+        """解析所有导入语句（env/file），返回 namespace（StdValue）；诊断写入 ``collector``。"""
+        namespace: dict[str, StdValue] = {}
         for stmt in doc.statements:
             if isinstance(stmt, EnvImportStmt):
                 self._resolve_env(stmt, namespace, collector)
@@ -70,9 +70,9 @@ class ImportResolver:
 
     def _bind(
         self,
-        namespace: dict[str, Any],
+        namespace: dict[str, StdValue],
         name: str,
-        value: Any,
+        value: StdValue,
         collector: DiagnosticCollector,
         source: SourceRange | None,
     ) -> None:
@@ -90,7 +90,7 @@ class ImportResolver:
     def _resolve_env(
         self,
         stmt: EnvImportStmt,
-        namespace: dict[str, Any],
+        namespace: dict[str, StdValue],
         collector: DiagnosticCollector,
     ) -> None:
         """!env import NAME [as NEW_NAME]
@@ -99,12 +99,13 @@ class ImportResolver:
         :class:`SandboxError`，不会退化为空字符串注入。
         """
         name = stmt.alias or stmt.name
-        self._bind(namespace, name, self._sandbox.getenv(stmt.name, source=stmt.source), collector, stmt.source)
+        raw = self._sandbox.getenv(stmt.name, source=stmt.source)
+        self._bind(namespace, name, python_to_std(raw), collector, stmt.source)
 
     def _resolve_file(
         self,
         stmt: FileImportStmt,
-        namespace: dict[str, Any],
+        namespace: dict[str, StdValue],
         collector: DiagnosticCollector,
     ) -> None:
         """!file "path" [as fmt] import .path.to.key as alias, ..."""
@@ -123,10 +124,12 @@ class ImportResolver:
         data = self._parse_data(text, fmt, collector, stmt.source)
         if data is None:
             return
+        # 外部数据直接转 AST：统一处理流程（JSON path / 约束 / 输出全部操作 StdValue）
+        root = python_to_std(data)
 
         for item in stmt.imports:
             try:
-                value = self._resolve_json_path(data, item.json_path)
+                value = apply_json_path(root, item.json_path)
             except (KeyError, IndexError, TypeError):
                 collector.add(Diagnostic(Severity.WARNING, 'import.path_failed', {'name': file.name}, item.source))
                 continue
@@ -175,17 +178,3 @@ class ImportResolver:
         except Exception as e:
             collector.add(Diagnostic(Severity.ERROR, 'import.parse_failed', {'error': e}, source))
             return None
-
-    # ── 辅助 ──────────────────────────────────────────
-
-    @staticmethod
-    def _resolve_json_path(data: Any, segments: list[JsonPathKey | JsonPathIndex]) -> Any:
-        """按结构化路径段定位数据；空路径 = 整个文件。"""
-        current = data
-        for seg in segments:
-            match seg:
-                case JsonPathKey(key=k):
-                    current = current[k]
-                case JsonPathIndex(index=i):
-                    current = current[i]
-        return current

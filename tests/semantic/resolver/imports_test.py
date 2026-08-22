@@ -6,6 +6,7 @@ from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
 from infinity_data.sandbox import Sandbox, SandboxConfig
+from infinity_data.semantic.builder.models import python_to_std
 from infinity_data.semantic.resolver import ImportResolver
 
 
@@ -19,7 +20,7 @@ def test_resolve_env_into_namespace() -> None:
     sb = Sandbox(SandboxConfig(env={'USER': 'alice'}), base_dir=Path('.'))
     collector = DiagnosticCollector()
     ns = ImportResolver(sandbox=sb).resolve(doc, collector)
-    assert ns['USER'] == 'alice'
+    assert ns['USER'] == python_to_std('alice')
     assert not list(collector)
 
 
@@ -29,7 +30,7 @@ def test_resolve_env_duplicate_binds_first() -> None:
     sb = Sandbox(SandboxConfig(env={'USER': 'alice'}), base_dir=Path('.'))
     collector = DiagnosticCollector()
     ns = ImportResolver(sandbox=sb).resolve(doc, collector)
-    assert ns['USER'] == 'alice'
+    assert ns['USER'] == python_to_std('alice')
     assert 'namespace.duplicate' in _codes(collector)
 
 

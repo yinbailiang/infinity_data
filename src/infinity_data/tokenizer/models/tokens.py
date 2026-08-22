@@ -1,4 +1,5 @@
 import decimal
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -125,6 +126,34 @@ class DotToken(Token):
     pass
 
 
+@dataclass
+class StarToken(Token):
+    """*（单星：list 解包 / 可变参数位置捕获）"""
+
+    pass
+
+
+@dataclass
+class DoubleStarToken(Token):
+    """**（双星：dict 解包 / 可变参数命名捕获）"""
+
+    pass
+
+
+@dataclass
+class EllipsisToken(Token):
+    """...（三连点：模板展开轴 / 笛卡尔积标记）"""
+
+    pass
+
+
+@dataclass
+class VarImportToken(Token):
+    """!var（本地 $ 空间注入：值表达式 + JSON path 投影）"""
+
+    pass
+
+
 # ── 字符串字面量 ───────────────────────────────────
 
 
@@ -139,12 +168,16 @@ class StringToken(Token):
             'StringToken 是抽象字符串基类，不能直接实例化；请使用 SinglelineStringToken 或 MultilineStringToken'
         )
 
+    def canonical(self) -> str:
+        return json.dumps(self.value, ensure_ascii=False)
+
 
 @dataclass
 class SinglelineStringToken(StringToken):
     """双引号单行字符串（默认值仅用于错误恢复时的合成 token）"""
 
-    pass
+    def canonical(self) -> str:
+        return json.dumps(self.value, ensure_ascii=False)
 
 
 @dataclass
@@ -152,6 +185,10 @@ class MultilineStringToken(StringToken):
     """反引号多行字符串（默认值仅用于错误恢复时的合成 token）"""
 
     tags: list[str] = field(default_factory=lambda: [])
+
+    def canonical(self) -> str:
+        # 多行 → 标准单行字符串字面量（tags 不进内容）
+        return json.dumps(self.value, ensure_ascii=False)
 
 
 # ── 数字字面量 ─────────────────────────────────────
@@ -163,12 +200,23 @@ class IntegerToken(Token):
 
     value: int = 0
 
+    def canonical(self) -> str:
+        return str(self.value)
+
 
 @dataclass
 class FloatToken(Token):
     """浮点数字面量（默认值仅用于错误恢复时的合成 token）"""
 
     value: decimal.Decimal = field(default_factory=lambda: decimal.Decimal(0))
+
+    def canonical(self) -> str:
+        v = self.value
+        if v.is_nan():
+            return 'nan'
+        if v.is_infinite():
+            return '+inf' if v > 0 else '-inf'
+        return str(v)
 
 
 # ── 布尔字面量 ─────────────────────────────────────
@@ -180,6 +228,9 @@ class BoolToken(Token):
 
     value: bool = False
 
+    def canonical(self) -> str:
+        return 'true' if self.value else 'false'
+
 
 # ── 存在性字面量 ───────────────────────────────────
 
@@ -188,14 +239,16 @@ class BoolToken(Token):
 class NullToken(Token):
     """null"""
 
-    pass
+    def canonical(self) -> str:
+        return 'null'
 
 
 @dataclass
 class NoexistToken(Token):
     """noexist"""
 
-    pass
+    def canonical(self) -> str:
+        return 'noexist'
 
 
 # ── 标识符 ─────────────────────────────────────────

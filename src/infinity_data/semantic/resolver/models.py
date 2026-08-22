@@ -12,23 +12,24 @@ Phase 2（构建 / 执行）通过 :class:`ResolvedContext` 消费本层产物�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from infinity_data.parser import TemplateDef
+
+if TYPE_CHECKING:
+    from infinity_data.semantic.std import StdValue
 
 __all__ = ['ResolvedContext', 'Scope', 'TemplateKey']
 
 
 @dataclass(frozen=True)
 class TemplateKey:
-    """模板唯一身份：来源文件身份 + 模板本地名。
+    """模板唯一身份：依赖闭包组合哈希 + 模板本地名。
 
-    - ``identity``：来源文件身份（磁盘 = resolve 绝对路径；内存 = ``路径:mem:内容hash``）
+    - ``identity``：依赖闭包组合哈希（§2.5）——内容 + 依赖闭包相同 → 同身份，
+      与机器 / 路径无关（可复现构建、可签名）；计算见
+      :mod:`infinity_data.semantic.resolver.identity`
     - ``name``：模板在来源文件中的本地名（诊断显示用）
-
-    身份含来源路径：不同路径的文件即使内容相同也是不同模板身份——模板内部
-    ``!from`` 按定义文件所在目录解析，内容相同的文件其依赖语义可能不同，
-    不能互相覆盖（纯内容寻址无法表达这一区别）。
 
     frozen 保证可哈希，直接作为模板表等映射的键。
     """
@@ -57,11 +58,11 @@ class ResolvedContext:
     - ``template_scopes``：每个模板定义点的可见名表（展开/校验按定义点可见性解析）
     - ``root_scope``：入口文件可见名表（可见名 → :class:`TemplateKey`）
     - ``schema_scope``：schema.from_file 隐式导入的可见名表（无则 None）
-    - ``namespace``：``$`` 引用命名空间（``!env`` / ``!file`` 解析结果）
+    - ``namespace``：``$`` 引用命名空间（``!env`` / ``!file`` / ``!var`` 解析结果，统一为 StdValue）
     """
 
     templates: dict[TemplateKey, TemplateDef]
     template_scopes: dict[TemplateKey, Scope]
     root_scope: Scope
     schema_scope: Scope | None
-    namespace: dict[str, Any]
+    namespace: dict[str, 'StdValue']

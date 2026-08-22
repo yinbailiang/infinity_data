@@ -2,6 +2,7 @@
 
 from infinity_data.infra.location import SourceRange
 from infinity_data.parser import TemplateConfig, TemplateDef
+from infinity_data.semantic.builder.models import python_to_std
 from infinity_data.semantic.resolver import ResolvedContext, Scope, TemplateKey
 
 
@@ -35,9 +36,9 @@ def test_resolved_context_holds_phase1_product() -> None:
         template_scopes={key: {'A': key}},
         root_scope={'A': key},
         schema_scope=None,
-        namespace={'USER': 'alice'},
+        namespace={'USER': python_to_std('alice')},
     )
     assert ctx.templates[key].name == 'A'
     assert ctx.template_scopes[key] == ctx.root_scope
     assert ctx.schema_scope is None
-    assert ctx.namespace == {'USER': 'alice'}
+    assert ctx.namespace['USER'] == python_to_std('alice')

@@ -30,6 +30,9 @@ class RawTokenType(Enum):
     QUESTION = '?'
     DOLLAR = '$'  # 导入命名空间引用前缀
     DOT = '.'  # 导入命名空间引用分隔符
+    STAR = '*'  # 单星：list 解包 / 可变参数位置捕获
+    DOUBLE_STAR = '**'  # 双星：dict 解包 / 可变参数命名捕获
+    ELLIPSIS = '...'  # 三连点：模板展开轴 / 笛卡尔积标记
 
     # ── 字面量 ─────────────────────────────────────
     STRING = 'str'  # 双引号单行字符串
@@ -48,6 +51,7 @@ class RawTokenType(Enum):
     ENV_IMPORT = '!env'  # !env import NAME
     FILE_IMPORT = '!file'  # !file "path" import ...
     FROM_IMPORT = '!from'  # !from "path" import ...
+    VAR_IMPORT = '!var'  # !var <值表达式> import path as name（本地 $ 空间注入）
 
     # ── 换行 / EOF ─────────────────────────────────
     NEWLINE = 'newline'

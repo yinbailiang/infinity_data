@@ -25,6 +25,8 @@ from infinity_data.tokenizer.models.tokens import (
     CommaToken,
     DollarToken,
     DotToken,
+    DoubleStarToken,
+    EllipsisToken,
     EnvImportToken,
     EofToken,
     EqualsToken,
@@ -48,8 +50,10 @@ from infinity_data.tokenizer.models.tokens import (
     RbracketToken,
     RparenToken,
     SinglelineStringToken,
+    StarToken,
     TildeToken,
     Token,
+    VarImportToken,
 )
 
 # ── 单字符 token 映射 ──────────────────────────────
@@ -71,11 +75,15 @@ _SIMPLE_MAP: dict[RawTokenType, type[Token]] = {
     RawTokenType.QUESTION: QuestionToken,
     RawTokenType.DOLLAR: DollarToken,
     RawTokenType.DOT: DotToken,
+    RawTokenType.STAR: StarToken,
+    RawTokenType.DOUBLE_STAR: DoubleStarToken,
+    RawTokenType.ELLIPSIS: EllipsisToken,
     RawTokenType.NULL: NullToken,
     RawTokenType.NOEXIST: NoexistToken,
     RawTokenType.ENV_IMPORT: EnvImportToken,
     RawTokenType.FILE_IMPORT: FileImportToken,
     RawTokenType.FROM_IMPORT: FromImportToken,
+    RawTokenType.VAR_IMPORT: VarImportToken,
     RawTokenType.NEWLINE: NewlineToken,
 }
 

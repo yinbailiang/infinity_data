@@ -35,7 +35,9 @@ from infinity_data.parser.models import (
     TemplateField,
     TemplateImportItem,
     TemplateImportStmt,
+    UnpackValue,
     Value,
+    VarStmt,
 )
 from infinity_data.parser.token_stream import TokenStream
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceRange
@@ -45,6 +47,7 @@ from infinity_data.tokenizer.models.tokens import (
     CommaToken,
     DollarToken,
     DotToken,
+    DoubleStarToken,
     EnvImportToken,
     EofToken,
     EqualsToken,
@@ -66,17 +69,19 @@ from infinity_data.tokenizer.models.tokens import (
     RbracketToken,
     RparenToken,
     SinglelineStringToken,
+    StarToken,
     StringToken,
     TildeToken,
     Token,
+    VarImportToken,
 )
 
 _TToken = TypeVar('_TToken', bound=Token)
 
 # 模板配置项白名单（dataclass 字段即白名单，此处按类型分组）
 _CONFIG_BOOL_KEYS = frozenset({'allow_extra', 'positional'})
-_CONFIG_STR_KEYS = frozenset({'description'})
-_TEMPLATE_CONFIG_VALID = 'allow_extra, positional, description'
+_CONFIG_STR_KEYS = frozenset({'description', 'extra_positional_vars', 'extra_named_vars'})
+_TEMPLATE_CONFIG_VALID = 'allow_extra, positional, description, extra_positional_vars, extra_named_vars'
 
 # 嵌套深度上限：递归下降在超深容器/约束上以诊断 + 错误节点恢复，而非 RecursionError 崩溃
 _MAX_NESTING = 100
@@ -151,7 +156,7 @@ class Parser:
             return None
 
         match stream.peek():
-            case EnvImportToken() | FileImportToken() | FromImportToken():
+            case EnvImportToken() | FileImportToken() | FromImportToken() | VarImportToken():
                 return Parser._parse_import_statement(stream, collector)
             case TildeToken():
                 return Parser._parse_template_def(stream, collector)
@@ -159,6 +164,11 @@ class Parser:
                 return Parser._parse_field(stream, collector)
             case ColonToken():
                 return Parser._parse_constraint_stmt(stream, collector)
+            case DoubleStarToken():
+                # 顶层（隐式 dict）**expr 解包：展开为顶层字段（disjoint merge，§2.7）
+                tok = stream.expect(DoubleStarToken)
+                val = Parser._parse_value(stream, collector)
+                return UnpackValue(source=stream.span_from(tok), value=val, double=True)
             case _:
                 bad_tok = stream.advance()
                 collector.add(diag('parse.unrecognized_statement', {'name': bad_tok.raw.type.name}, bad_tok.raw.source))
@@ -184,6 +194,9 @@ class Parser:
             case FromImportToken() as tok:
                 stream.advance()
                 return Parser._parse_template_import(stream, collector, tok)
+            case VarImportToken() as tok:
+                stream.advance()
+                return Parser._parse_var_import(stream, collector, tok)
             case _:
                 first = stream.peek()
                 return ErrorStatement(source=stream.span_from(first), message='无法识别的导入语句')
@@ -216,6 +229,33 @@ class Parser:
             )
         )
         stream.advance()
+
+    @staticmethod
+    def _parse_var_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: VarImportToken) -> VarStmt:
+        """!var <值表达式> import [path] as <alias>（§2.10 本地 $ 空间注入）"""
+        value = Parser._parse_value(stream, collector)
+        Parser._expect_keyword(stream, collector, 'import')
+        json_path = Parser._parse_json_path(stream, collector)
+        Parser._expect_keyword(stream, collector, 'as')
+        alias_tok = stream.expect(IdentifierToken)
+
+        # 导入语句必须换行/EOF 结尾（同 !env）：否则同一行逗号后的语句会被误吞
+        tok = stream.peek()
+        if not isinstance(tok, NoNextType) and not (stream.eof() or isinstance(tok, NewlineToken)):
+            collector.add(
+                diag(
+                    'parse.import_requires_newline',
+                    {'actual': tok.raw.type.name},
+                    stream.single_span(tok),
+                )
+            )
+
+        return VarStmt(
+            source=stream.span_from(kw_tok),
+            value=value,
+            json_path=json_path,
+            alias=alias_tok.name,
+        )
 
     @staticmethod
     def _parse_env_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: EnvImportToken) -> EnvImportStmt:
@@ -366,7 +406,7 @@ class Parser:
             return []
         stream.advance()
 
-        # 第一个段：标识符（非 as）或字符串；`.` 后是 as（别名关键字）→ 整文件导入
+        # 第一个段：标识符（非 as）、字符串或下标；`.` 后是 as（别名关键字）→ 整文件导入
         tok = stream.peek()
         if isinstance(tok, IdentifierToken) and tok.name != 'as':
             segments.append(JsonPathKey(source=tok.raw.source, key=tok.name))
@@ -374,6 +414,20 @@ class Parser:
         elif isinstance(tok, SinglelineStringToken):
             segments.append(JsonPathKey(source=tok.raw.source, key=tok.value))
             stream.advance()
+        elif isinstance(tok, LbracketToken):
+            # 首段下标：.[N]（统一 path 语义，§4.4）
+            lbracket = stream.advance()
+            match stream.peek():
+                case IntegerToken(value=value):
+                    stream.advance()
+                    if isinstance(stream.peek(), RbracketToken):
+                        stream.advance()
+                    else:
+                        Parser._report_invalid_json_path(stream, collector, '：[ 下标后缺少 ]')
+                    segments.append(JsonPathIndex(source=stream.span_from(lbracket), index=value))
+                case _:
+                    Parser._report_invalid_json_path(stream, collector, '：[ 后须为整数下标')
+                    return []
         else:
             # 只有 .（或 . as alias）→ 导入整个文件
             return []
@@ -510,7 +564,15 @@ class Parser:
             while not stream.check(RawTokenType.RPAREN) and not stream.eof():
                 key_tok = stream.expect(IdentifierToken)
                 stream.expect(EqualsToken)
-                value = Parser._parse_value(stream, collector)
+                # 裸标识符 → 字段名字符串（extra_*_vars = 字段名，§2.9）；其余走通用值
+                if isinstance(stream.peek(), IdentifierToken):
+                    idv = stream.expect(IdentifierToken)
+                    value = LiteralValue(
+                        source=stream.single_span(idv),
+                        value=SinglelineStringToken(raw=idv.raw, value=idv.name),
+                    )
+                else:
+                    value = Parser._parse_value(stream, collector)
                 Parser._apply_template_config(collector, config, key_tok, value)
                 had_sep = stream.skip_separators()
                 Parser._missing_separator(
@@ -1088,6 +1150,7 @@ class Parser:
         stream.skip_separators()
 
         fields: list[Field] = []
+        unpacks: list[UnpackValue] = []
         constraints: list[Constraint] = []
         missing_sep_reported = [False]
         while not stream.check(RawTokenType.RBRACE) and not stream.eof():
@@ -1096,6 +1159,11 @@ class Parser:
                 stream.advance()
                 parsed = Parser._parse_constraints(stream, collector)
                 constraints.extend(parsed.constraints)
+            elif isinstance(stream.peek(), DoubleStarToken):
+                # **expr：dict 解包（展开为键值对并入字段集）
+                tok = stream.expect(DoubleStarToken)
+                val = Parser._parse_value(stream, collector)
+                unpacks.append(UnpackValue(source=stream.span_from(tok), value=val, double=True))
             else:
                 fields.append(Parser._parse_field(stream, collector))
             had_sep = stream.skip_separators()
@@ -1109,7 +1177,7 @@ class Parser:
             )
 
         stream.expect(RbraceToken)
-        return DictValue(source=stream.span_from(lbrace_tok), fields=fields, constraints=constraints)
+        return DictValue(source=stream.span_from(lbrace_tok), fields=fields, constraints=constraints, unpacks=unpacks)
 
     @staticmethod
     def _parse_array(stream: TokenStream, collector: DiagnosticCollector) -> ArrayValue:
@@ -1117,11 +1185,16 @@ class Parser:
         lbracket_tok = stream.expect(LbracketToken)
         stream.skip_newlines()
 
-        elements: list[Value] = []
+        elements: list[Value | UnpackValue] = []
         missing_sep_reported = [False]
         while not stream.check(RawTokenType.RBRACKET) and not stream.eof():
-            val = Parser._parse_value(stream, collector)
-            elements.append(val)
+            if isinstance(stream.peek(), StarToken):
+                # *expr：list 解包（展开为元素）
+                tok = stream.expect(StarToken)
+                val = Parser._parse_value(stream, collector)
+                elements.append(UnpackValue(source=stream.span_from(tok), value=val, double=False))
+            else:
+                elements.append(Parser._parse_value(stream, collector))
             had_sep = stream.skip_separators()
             Parser._missing_separator(
                 stream,
@@ -1145,6 +1218,8 @@ class Parser:
 
         positional: list[Value] = []
         named: dict[str, Value] = {}
+        unpack_args: list[UnpackValue] = []  # *expr（list → 位置参数）
+        unpack_kwargs: list[UnpackValue] = []  # **expr（dict → 命名参数）
         saw_named = False
         missing_sep_reported = [False]
 
@@ -1155,13 +1230,31 @@ class Parser:
 
             tok = stream.peek()
 
+            # 解包参数：**expr（dict → 命名参数）/ *expr（list → 位置参数）
+            if isinstance(tok, DoubleStarToken):
+                stream.advance()
+                val = Parser._parse_value(stream, collector)
+                unpack_kwargs.append(UnpackValue(source=stream.single_span(tok), value=val, double=True))
+                saw_named = True
+            elif isinstance(tok, StarToken):
+                stream.advance()
+                val = Parser._parse_value(stream, collector)
+                unpack_args.append(UnpackValue(source=stream.single_span(tok), value=val, double=False))
             # 分支 1：标识符 → 可能是命名参数或模板调用（位置参数）
-            if isinstance(tok, IdentifierToken):
+            elif isinstance(tok, IdentifierToken):
                 ident: IdentifierToken = stream.expect(IdentifierToken)  # 消费到缓冲区
                 nxt = stream.peek()  # 下一个 token
 
                 if isinstance(nxt, EqualsToken):
                     stream.advance()  # 消费 =
+                    if ident.name in named:
+                        collector.add(
+                            diag(
+                                'template.dup_argument',
+                                {'template': name_tok.name, 'arg': ident.name},
+                                stream.single_span(ident),
+                            )
+                        )
                     named[ident.name] = Parser._parse_value(stream, collector)
                     saw_named = True
                 else:
@@ -1189,4 +1282,6 @@ class Parser:
             template_name=name_tok.name,
             positional_args=positional,
             named_args=named,
+            unpack_args=unpack_args,
+            unpack_kwargs=unpack_kwargs,
         )

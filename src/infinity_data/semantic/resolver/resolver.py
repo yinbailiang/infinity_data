@@ -28,6 +28,7 @@ from infinity_data.parser import (
 )
 from infinity_data.sandbox import Schema
 from infinity_data.semantic.registry import ConstraintRegistry
+from infinity_data.semantic.resolver.identity import compute_identity_map
 from infinity_data.semantic.resolver.imports import ImportResolver
 from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -85,6 +86,9 @@ class TemplateGraphResolver:
 
         # 解析数据导入语句（!env / !file）→ $ 引用命名空间
         namespace = self._imports.resolve(doc, self._collector)
+
+        # 模板真名：依赖闭包组合哈希（§2.5）——内容 + 依赖相同 → 同身份（路径无关）
+        root_scope = self._remap_content_identities(root_scope)
 
         return ResolvedContext(
             templates=dict(self._templates),
@@ -329,6 +333,33 @@ class TemplateGraphResolver:
                         self._collector.add(Diagnostic(Severity.ERROR, 'inft.not_allowed', {}, s.source))
 
         return scope
+
+    def _remap_content_identities(self, root_scope: Scope) -> Scope:
+        """把全部模板 key 的 identity 重算为依赖闭包组合哈希（§2.5），并重键所有 scope。
+
+        在模板图 / 各定义点 scope 构建完成后调用：内容与依赖闭包相同的模板共享身份
+        （跨文件去重、路径无关、可复现构建）；诊断仍显示本地名（key.name）。
+        """
+        key_map = compute_identity_map(self._templates, self._template_scopes, self._registry.names)
+        if not key_map:
+            return root_scope
+        original_root = root_scope
+        new_root = self._remap_scope(root_scope, key_map)
+        self._templates = {key_map[k]: v for k, v in self._templates.items()}
+        new_scopes: dict[TemplateKey, Scope] = {}
+        for k, s in self._template_scopes.items():
+            if s is original_root:
+                new_scopes[key_map[k]] = new_root  # 保持「主文件模板 scope ≡ root_scope」同一对象
+            else:
+                new_scopes[key_map[k]] = self._remap_scope(s, key_map)
+        self._template_scopes = new_scopes
+        if self._schema_scope is not None:
+            self._schema_scope = self._remap_scope(self._schema_scope, key_map)
+        return new_root
+
+    @staticmethod
+    def _remap_scope(scope: Scope, key_map: dict[TemplateKey, TemplateKey]) -> Scope:
+        return {visible: key_map.get(key, key) for visible, key in scope.items()}
 
     def _parse_document(self, file: File) -> Document:
         """词法 + 语法分析一段源码（用于外部模板文件）。

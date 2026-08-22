@@ -40,7 +40,10 @@ from infinity_data.parser.models import (
     TemplateField,
     TemplateImportItem,
     TemplateImportStmt,
+    UnpackValue,
     Value,
+    VarStmt,
+    walk,
 )
 from infinity_data.parser.parser import Parser
 
@@ -75,5 +78,8 @@ __all__ = [
     'TemplateField',
     'TemplateImportItem',
     'TemplateImportStmt',
+    'UnpackValue',
     'Value',
+    'VarStmt',
+    'walk',
 ]

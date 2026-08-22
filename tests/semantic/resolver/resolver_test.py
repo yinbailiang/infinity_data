@@ -14,6 +14,7 @@ from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import DiskFile, MemFile
 from infinity_data.parser import Document
 from infinity_data.sandbox import Sandbox
+from infinity_data.semantic.builder.models import python_to_std
 from infinity_data.semantic.resolver import ImportResolver, ResolvedContext, TemplateGraphResolver
 
 
@@ -151,7 +152,7 @@ def test_resolve_env_namespace() -> None:
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
     assert not list(collector)
-    assert ctx.namespace == {'INF_RESOLVER_KEY': 'ok'}
+    assert ctx.namespace['INF_RESOLVER_KEY'] == python_to_std('ok')
 
 
 # ═══════════════════════════════════════════════════════════
