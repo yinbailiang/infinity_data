@@ -64,6 +64,23 @@ register_diagnostic_define(
         '{path_prefix}模板 {template!r} 的 extra_positional_vars 与 positional=false 冲突',
     ),
     diagnostic_define(
+        'template.expand_not_list',
+        '{path_prefix}模板 {template!r} 的展开轴必须是 list，实际类型不符',
+        en='{path_prefix}expand axis of template {template!r} must be a list',
+    ),
+    diagnostic_define(
+        'template.expand_length_mismatch',
+        '{path_prefix}模板 {template!r} 的展开轴长度不一致: {lens}',
+    ),
+    diagnostic_define(
+        'template.expand_too_large',
+        '{path_prefix}模板 {template!r} 的笛卡尔积组合数 {count} 超过上限 {max}',
+    ),
+    diagnostic_define(
+        'template.expand_no_source',
+        '{path_prefix}模板 {template!r} 的笛卡尔积展开没有轴',
+    ),
+    diagnostic_define(
         'template.too_many_positional',
         '{path_prefix}模板 {template!r} 只有 {count} 个必填字段，提供了 {given} 个位置参数',
     ),

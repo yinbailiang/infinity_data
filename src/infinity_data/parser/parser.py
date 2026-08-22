@@ -48,6 +48,7 @@ from infinity_data.tokenizer.models.tokens import (
     DollarToken,
     DotToken,
     DoubleStarToken,
+    EllipsisToken,
     EnvImportToken,
     EofToken,
     EqualsToken,
@@ -108,11 +109,13 @@ class Parser:
         source: Iterable[Token],
         collector: DiagnosticCollector | None = None,
     ) -> None:
+        """构造解析器：source token 流 + 诊断收集器（默认新建）。"""
         self._collector = collector if collector is not None else DiagnosticCollector()
         self._stream: TokenStream = TokenStream(source, self._collector)
 
     @property
     def diagnostic_collector(self) -> DiagnosticCollector:
+        """共享诊断收集器（容错收集用）。"""
         return self._collector
 
     # ═══════════════════════════════════════════════════════
@@ -120,6 +123,7 @@ class Parser:
     # ═══════════════════════════════════════════════════════
 
     def parse(self) -> Document:
+        """解析全部顶层语句为 Document（空源码 → 空配置，非错误）。"""
         # 懒初始化：预读第一个 token
         first_tok = self._stream.peek()
         # 仅物理耗尽（迭代器无任何 token，含 EOF 哨兵）才视为空列表；
@@ -229,6 +233,14 @@ class Parser:
             )
         )
         stream.advance()
+
+    @staticmethod
+    def _consume_ellipsis(stream: TokenStream) -> bool:
+        """若当前是 ``...`` 则消费并返回 True（展开轴标记，§2.8）。"""
+        if isinstance(stream.peek(), EllipsisToken):
+            stream.advance()
+            return True
+        return False
 
     @staticmethod
     def _parse_var_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: VarImportToken) -> VarStmt:
@@ -1102,6 +1114,12 @@ class Parser:
                     return ErrorValue(source=stream.single_span(ident), message=f'值位置出现字段定义: {ident.name}')
                 return Parser._parse_template_call(stream, collector, ident)
 
+            case EllipsisToken() as el_tok:
+                # ... 只在模板调用参数上下文合法（§2.8 展开轴 / 笛卡尔积）
+                stream.advance()
+                collector.add(diag('parse.expand_outside_call', {}, stream.single_span(el_tok)))
+                return ErrorValue(source=stream.single_span(el_tok), message='... 只能在模板调用参数上下文使用')
+
             case tok:
                 name = 'EOF' if isinstance(tok, NoNextType) else tok.raw.type.name
                 source = SourceRange.empty() if isinstance(tok, NoNextType) else tok.raw.source
@@ -1220,6 +1238,9 @@ class Parser:
         named: dict[str, Value] = {}
         unpack_args: list[UnpackValue] = []  # *expr（list → 位置参数）
         unpack_kwargs: list[UnpackValue] = []  # **expr（dict → 命名参数）
+        axis_positional: set[int] = set()  # 位置参数中带 ... 的索引（展开轴，§2.8）
+        axis_named: set[str] = set()  # 命名参数中带 ... 的键
+        axis_unpack_kwargs: set[int] = set()  # **expr 解包参数中带 ... 的索引
         saw_named = False
         missing_sep_reported = [False]
 
@@ -1234,7 +1255,10 @@ class Parser:
             if isinstance(tok, DoubleStarToken):
                 stream.advance()
                 val = Parser._parse_value(stream, collector)
+                idx = len(unpack_kwargs)
                 unpack_kwargs.append(UnpackValue(source=stream.single_span(tok), value=val, double=True))
+                if Parser._consume_ellipsis(stream):
+                    axis_unpack_kwargs.add(idx)  # **expr...：list[dict] 逐元素解包（§2.8）
                 saw_named = True
             elif isinstance(tok, StarToken):
                 stream.advance()
@@ -1256,15 +1280,21 @@ class Parser:
                             )
                         )
                     named[ident.name] = Parser._parse_value(stream, collector)
+                    if Parser._consume_ellipsis(stream):
+                        axis_named.add(ident.name)  # 命名参数轴
                     saw_named = True
                 else:
                     # 不是 = → 模板调用（位置参数），复用已消费的 ident
                     positional.append(Parser._parse_template_call(stream, collector, ident))
+                    if Parser._consume_ellipsis(stream):
+                        axis_positional.add(len(positional) - 1)
             else:
                 # 分支 2：其他 token → 一定是位置参数
                 if saw_named:
                     collector.add(diag('parse.template_arg_order', {}, stream.single_span(name_tok)))
                 positional.append(Parser._parse_value(stream, collector))
+                if Parser._consume_ellipsis(stream):
+                    axis_positional.add(len(positional) - 1)
 
             had_sep = stream.skip_separators()
             Parser._missing_separator(
@@ -1277,6 +1307,11 @@ class Parser:
             )
 
         stream.expect(RparenToken)
+        # 调用级 ...：笛卡尔积模式（§2.8）
+        cartesian = False
+        if isinstance(stream.peek(), EllipsisToken):
+            stream.advance()
+            cartesian = True
         return TemplateCallValue(
             source=stream.span_from(name_tok),
             template_name=name_tok.name,
@@ -1284,4 +1319,8 @@ class Parser:
             named_args=named,
             unpack_args=unpack_args,
             unpack_kwargs=unpack_kwargs,
+            axis_positional=frozenset(axis_positional),
+            axis_named=frozenset(axis_named),
+            axis_unpack_kwargs=frozenset(axis_unpack_kwargs),
+            cartesian=cartesian,
         )

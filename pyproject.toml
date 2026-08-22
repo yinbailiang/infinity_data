@@ -92,3 +92,8 @@ reportMissingImports = "error"
 exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv"]
 venvPath = "."
 venv = ".venv"
+
+[tool.interrogate]
+fail-under = 70
+# 测试函数名自解释，docstring 可选；产品代码（src）不豁免
+ignore-regex = ["^test_"]

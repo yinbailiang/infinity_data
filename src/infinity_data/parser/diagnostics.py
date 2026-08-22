@@ -27,6 +27,11 @@ register_diagnostic_define(
         en='[{location}] expected {expected}, got {actual}',
     ),
     diagnostic_define(
+        'parse.expand_outside_call',
+        '[{location}] ... 只能在模板调用参数上下文使用（展开轴 / 笛卡尔积，§2.8）',
+        en='[{location}] ... is only valid in template call argument context (expand axis / cartesian)',
+    ),
+    diagnostic_define(
         'parse.template_arg_order',
         '[{location}] 位置参数不能出现在命名参数之后',
         en='[{location}] positional arguments cannot follow named arguments',

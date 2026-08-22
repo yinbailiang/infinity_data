@@ -34,6 +34,7 @@ class TokenStream(LL1Stream[Token]):
         source: Iterable[Token],
         error_collector: DiagnosticCollector,
     ) -> None:
+        """构造 Token 流：source + 共享诊断收集器（错误恢复用）。"""
         super().__init__(source)
         self._errors: DiagnosticCollector = error_collector
         self._last: Token | None = None
@@ -67,6 +68,7 @@ class TokenStream(LL1Stream[Token]):
             self._last = item
 
     def check(self, expect: RawTokenType) -> bool:
+        """当前 token 是否匹配期望类型（物理耗尽 → False）。"""
         token = self.peek()
         if isinstance(token, NoNextType):
             return False

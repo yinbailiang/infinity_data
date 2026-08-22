@@ -48,6 +48,7 @@ def reduce_value(val: StdValue, *, keep_null: bool = True) -> Any:
 
 
 def _reduce_literal(lit: StdLiteral) -> Any:
+    """字面量降维：null / noexist → None；其余返回原始值。"""
     match lit.kind:
         case 'null' | 'noexist':
             return None

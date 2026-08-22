@@ -235,13 +235,13 @@ class TemplateField(AstNode):
 class TemplateConfig:
     """模板头部配置（``~X(key=value)``），语法层解析为类型化字段。
 
-    - ``allow_extra``：校验时是否放行额外字段（模板即约束 / schema）
-    - ``positional``：是否允许位置参数（false = 只接受命名参数）
-    - ``description``：模板文档（元数据，暂不消费，供 LSP/文档）
-    - ``extra_positional_vars``：多余位置参数收集到指定字段（list，§2.9）
-    - ``extra_named_vars``：未声明命名参数收集到指定字段（dict，§2.9）
+        - ``allow_extra``：校验时是否放行额外字段（模板即约束 / schema）
+        - ``positional``：是否允许位置参数（false = 只接受命名参数）
+        - ``description``：模板文档（元数据，暂不消费，供 LSP/文档）
+    ti ge    - ``extra_positional_vars``：多余位置参数收集到指定字段（list，§2.9）
+        - ``extra_named_vars``：未声明命名参数收集到指定字段（dict，§2.9）
 
-    未来新增配置项：在此加字段，parser 侧在对应键集合补一行（字段即白名单）。
+        未来新增配置项：在此加字段，parser 侧在对应键集合补一行（字段即白名单）。
     """
 
     allow_extra: bool = False
@@ -482,13 +482,24 @@ class ArrayValue(AstNode):
 
 @dataclass
 class TemplateCallValue(AstNode):
-    """模板调用: Name(args...)"""
+    """模板调用: Name(args...)
+
+    展开（§2.8）：参数值后缀 ``...`` = 展开轴；调用级（``)`` 后）``...`` = 笛卡尔积。
+    - ``axis_positional``：位置参数中带 ``...`` 的索引
+    - ``axis_named``：命名参数中带 ``...`` 的键
+    - ``axis_unpack_kwargs``：``**expr`` 解包参数中带 ``...`` 的索引
+    - ``cartesian``：调用级 ``...``（笛卡尔积；无 = zip）
+    """
 
     template_name: str
     positional_args: list[Value]
     named_args: dict[str, Value]
     unpack_args: list[UnpackValue] = field(default_factory=lambda: [])  # *expr（list → 位置参数）
     unpack_kwargs: list[UnpackValue] = field(default_factory=lambda: [])  # **expr（dict → 命名参数）
+    axis_positional: frozenset[int] = field(default_factory=frozenset[int])
+    axis_named: frozenset[str] = field(default_factory=frozenset[str])
+    axis_unpack_kwargs: frozenset[int] = field(default_factory=frozenset[int])
+    cartesian: bool = False
 
     def children(self) -> Iterable[AstNode]:
         return [
@@ -500,11 +511,26 @@ class TemplateCallValue(AstNode):
 
     def canonical(self) -> str:
         args: list[str] = []
-        args.extend(a.canonical() for a in self.positional_args)
+        for i, a in enumerate(self.positional_args):
+            s = a.canonical()
+            if i in self.axis_positional:
+                s += '...'
+            args.append(s)
         args.extend(u.canonical() for u in self.unpack_args)
-        args.extend(f'{k} = {v.canonical()}' for k, v in sorted(self.named_args.items()))
-        args.extend(u.canonical() for u in self.unpack_kwargs)
-        return f'{self.template_name}({", ".join(args)})'
+        for k, v in sorted(self.named_args.items()):
+            s = f'{k} = {v.canonical()}'
+            if k in self.axis_named:
+                s += '...'
+            args.append(s)
+        for j, u in enumerate(self.unpack_kwargs):
+            s = u.canonical()
+            if j in self.axis_unpack_kwargs:
+                s += '...'
+            args.append(s)
+        out = f'{self.template_name}({", ".join(args)})'
+        if self.cartesian:
+            out += '...'
+        return out
 
 
 # ═══════════════════════════════════════════════════════════

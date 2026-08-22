@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 import decimal
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
+from itertools import product
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
@@ -465,8 +466,14 @@ class AstBuilder:
                     named_args=na,
                     unpack_args=upa,
                     unpack_kwargs=upk,
+                    axis_positional=axp,
+                    axis_named=axn,
+                    axis_unpack_kwargs=axu,
+                    cartesian=cart,
                 ):
-                    return self._expand_template_call(tn, pa, na, upa, upk, path, raw.source, scope)
+                    return self._expand_template_call(
+                        tn, pa, na, upa, upk, axp, axn, axu, cart, path, raw.source, scope
+                    )
                 case ErrorValue():
                     # 值解析失败已在语法层报告（parse.value_field / parse.unrecognized_value），不重复
                     return None
@@ -585,6 +592,8 @@ class AstBuilder:
     # 模板展开
     # ═══════════════════════════════════════════════════════
 
+    MAX_EXPAND = 10000  # 笛卡尔积组合数上限（§2.8）
+
     def _expand_template_call(
         self,
         template_name: str,
@@ -592,11 +601,140 @@ class AstBuilder:
         named_args: dict[str, Value],
         unpack_args: list[UnpackValue],
         unpack_kwargs: list[UnpackValue],
+        axis_positional: frozenset[int],
+        axis_named: frozenset[str],
+        axis_unpack_kwargs: frozenset[int],
+        cartesian: bool,
         path: str,
         source: SourceRange | None,
         scope: Scope,
     ) -> StdValue:
-        """展开模板调用为 StdObject（名字经调用点 scope 翻译，展开用模板定义点 scope）。
+        """模板调用：无轴 → 单次实例化；有轴 → zip/笛卡尔积展开（§2.8，结果恒为 list）。
+
+        每个展开实例是完整模板实例（默认值注入 + 约束照常）。
+        """
+        # 收集轴值（每个轴解析为 list）
+        axes: list[tuple[tuple[str, str | int], StdArray]] = []
+        for i in sorted(axis_positional):
+            arr = self._resolve_axis(positional_args[i], scope, source, path, template_name)
+            if arr is not None:
+                axes.append((('pos', i), arr))
+        for k in sorted(axis_named):
+            arr = self._resolve_axis(named_args[k], scope, source, path, template_name)
+            if arr is not None:
+                axes.append((('named', k), arr))
+        for j in sorted(axis_unpack_kwargs):
+            arr = self._resolve_axis(unpack_kwargs[j].value, scope, source, path, template_name)
+            if arr is not None:
+                axes.append((('unpack', j), arr))
+
+        if not axes:
+            if cartesian:
+                self._err('template.expand_no_source', {'template': template_name}, source, path)
+            return self._instantiate_once(
+                template_name, positional_args, named_args, unpack_args, unpack_kwargs, path, source, scope
+            )
+
+        # 组合：zip（等长配对）或笛卡尔积（全组合，首轴最慢变化）
+        if cartesian:
+            total = 1
+            for _, a in axes:
+                total *= len(a.elements)
+            if total > self.MAX_EXPAND:
+                self._err(
+                    'template.expand_too_large',
+                    {'template': template_name, 'max': self.MAX_EXPAND, 'count': total},
+                    source,
+                    path,
+                )
+                return StdArray()
+            combos = product(*(a.elements for _, a in axes))
+        else:
+            lens = sorted({len(a.elements) for _, a in axes})
+            if len(lens) > 1:
+                self._err(
+                    'template.expand_length_mismatch',
+                    {'template': template_name, 'lens': lens},
+                    source,
+                    path,
+                )
+                return StdArray()
+            combos = zip(*(a.elements for _, a in axes))
+
+        results: list[StdValue] = []
+        for combo in combos:
+            pa, na, upa, upk = self._build_expand_args(
+                positional_args, named_args, unpack_args, unpack_kwargs, axes, combo
+            )
+            results.append(self._instantiate_once(template_name, pa, na, upa, upk, path, source, scope))
+        return StdArray(elements=results)
+
+    def _resolve_axis(
+        self,
+        raw: Value,
+        scope: Scope,
+        source: SourceRange | None,
+        path: str,
+        template_name: str,
+    ) -> StdArray | None:
+        """轴参数解析为 list；非 list → expand_not_list（§2.8，不静默退化）。"""
+        rv = self._resolve_value(raw, path, scope)
+        if isinstance(rv, StdArray):
+            return rv
+        if rv is None:
+            return None
+        self._err('template.expand_not_list', {'template': template_name}, source, path)
+        return None
+
+    @staticmethod
+    def _build_expand_args(
+        positional_args: list[Value],
+        named_args: dict[str, Value],
+        unpack_args: list[UnpackValue],
+        unpack_kwargs: list[UnpackValue],
+        axes: list[tuple[tuple[str, str | int], StdArray]],
+        combo: tuple[StdValue, ...],
+    ) -> tuple[list[Value | StdValue], dict[str, Value | StdValue], list[UnpackValue], list[UnpackValue]]:
+        """把组合元素替换进轴参数位，构造单次调用的参数视图。
+
+        ``**`` 解包轴：元素（dict）字段并入命名参数，移除该项（§2.8 轴与解包叠加）。
+        """
+        pa: list[Value | StdValue] = list(positional_args)
+        na: dict[str, Value | StdValue] = dict(named_args)
+        upa = list(unpack_args)
+        upk = list(unpack_kwargs)
+        unpack_removed: set[int] = set()
+        for (axis_spec, _arr), elem in zip(axes, combo):
+            kind, idx = axis_spec
+            if kind == 'pos':
+                assert isinstance(idx, int)
+                pa[idx] = elem
+            elif kind == 'named':
+                assert isinstance(idx, str)
+                na[idx] = elem
+            else:  # unpack 轴：元素（dict）字段并入命名参数
+                assert isinstance(idx, int)
+                if isinstance(elem, StdObject):
+                    for f in elem.fields:
+                        if f.value is not None and f.name not in na:
+                            na[f.name] = f.value
+                unpack_removed.add(idx)
+        if unpack_removed:
+            upk = [u for i, u in enumerate(upk) if i not in unpack_removed]
+        return pa, na, upa, upk
+
+    def _instantiate_once(
+        self,
+        template_name: str,
+        positional_args: Sequence[Value | StdValue],
+        named_args: Mapping[str, Value | StdValue],
+        unpack_args: list[UnpackValue],
+        unpack_kwargs: list[UnpackValue],
+        path: str,
+        source: SourceRange | None,
+        scope: Scope,
+    ) -> StdValue:
+        """单次模板实例化（§2.8 展开的每个组合调此；无展开时直接调用）。
 
         字段 / 模板级约束解析后挂到节点（不执行），由执行器统一校验。
         解包：``*expr``（list → 位置参数）/ ``**expr``（dict → 命名参数）；
@@ -651,7 +789,8 @@ class AstBuilder:
                 if named_vars is not None:
                     extra_named[name] = arg_val
                 elif template.config.allow_extra:
-                    extra_args[name] = (arg_val, arg_val.source)
+                    # 展开轴元素可能是 StdValue（无 source）；RawAst Value 带 source
+                    extra_args[name] = (arg_val, getattr(arg_val, 'source', None))
                 else:
                     self._err(
                         'template.unknown_argument',

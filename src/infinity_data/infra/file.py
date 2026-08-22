@@ -49,13 +49,16 @@ class DiskFile(File):
 
     @property
     def path(self) -> Path:
+        """完整路径（``name`` 的 :class:`Path` 视图）。"""
         return Path(self.name)
 
     def read(self) -> str:
+        """读取源码内容（utf-8）。"""
         return self.path.read_text(encoding='utf-8')
 
     @property
     def identity(self) -> str:
+        """解析后绝对路径（循环导入防护 / parse_cache 键）。"""
         return str(self.path.resolve())
 
     @classmethod
@@ -72,6 +75,7 @@ class MemFile(File):
     content: str
 
     def read(self) -> str:
+        """返回内存内容。"""
         return self.content
 
     def chars(self) -> Iterable[str]:
@@ -80,4 +84,5 @@ class MemFile(File):
 
     @property
     def identity(self) -> str:
+        """身份 = 根路径:mem:内容hash（循环导入防护 / 缓存键）。"""
         return str(self.root_path.resolve()) + ':mem:' + self.content_hash()

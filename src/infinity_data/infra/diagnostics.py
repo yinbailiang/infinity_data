@@ -58,6 +58,7 @@ class Diagnostic:
 
     @property
     def location(self) -> str:
+        """格式化的源码位置（``file:line:col``，零宽 / 区间统一）。"""
         return format_location(self.source)
 
     @property
