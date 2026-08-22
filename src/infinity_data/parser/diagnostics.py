@@ -28,8 +28,8 @@ register_diagnostic_define(
     ),
     diagnostic_define(
         'parse.expand_outside_call',
-        '[{location}] ... 只能在模板调用参数上下文使用（展开轴 / 笛卡尔积，§2.8）',
-        en='[{location}] ... is only valid in template call argument context (expand axis / cartesian)',
+        '[{location}] ... 只能在模板调用参数上下文使用（展开轴 / 展开传播，§2.8）',
+        en='[{location}] ... is only valid in template call argument context (expand axis / propagate)',
     ),
     diagnostic_define(
         'parse.template_arg_order',

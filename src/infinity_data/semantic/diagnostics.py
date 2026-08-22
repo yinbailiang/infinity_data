@@ -74,11 +74,11 @@ register_diagnostic_define(
     ),
     diagnostic_define(
         'template.expand_too_large',
-        '{path_prefix}模板 {template!r} 的笛卡尔积组合数 {count} 超过上限 {max}',
+        '{path_prefix}模板 {template!r} 的展开实例总数 {count} 超过上限 {max}',
     ),
     diagnostic_define(
         'template.expand_no_source',
-        '{path_prefix}模板 {template!r} 的笛卡尔积展开没有轴',
+        '{path_prefix}模板 {template!r} 的调用级 ... 没有展开源（自身无轴、也无内层传播而来）',
     ),
     diagnostic_define(
         'template.too_many_positional',

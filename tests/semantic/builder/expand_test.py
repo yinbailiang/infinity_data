@@ -1,8 +1,8 @@
 """模板在 list 上展开（§2.8）测试。
 
-- 参数级 ``...`` = 展开轴：zip（默认）/ 笛卡尔积（调用级 ``...``）
+- 参数级 ``...`` = 展开轴（zip 默认）；调用级 ``...`` = 展开传播（内层展开结果作外层轴）
 - ``**`` 解包轴（list[dict] 逐元素解包）；结果恒为 list
-- 错误：轴非 list / zip 长度不等 / 笛卡尔积零轴 / ``...`` 普通值位置
+- 错误：轴非 list / zip 长度不等 / 调用级 ``...`` 无展开源 / ``...`` 普通值位置
 """
 
 import tempfile
@@ -84,18 +84,55 @@ def test_expand_multi_axis_zip() -> None:
     assert _as_int(_field_of(objs[1], 'port')) == 9090
 
 
-def test_expand_cartesian() -> None:
-    """笛卡尔积（调用级 ...）：全组合，首轴最慢变化。"""
+def test_expand_propagate() -> None:
+    """调用级 ... = 展开传播：内层展开结果作为外层调用轴，整个模式逐元素重复。"""
+    std, c = _build('~A { v: int }\n~B { a: A }\n!var [1, 2, 3] import . as xs\nx = B(a = A(v = $xs...)...)\n')
+    assert not _codes(c)
+    objs = _arr_objs(_root_field(std, 'x'))
+    assert len(objs) == 3
+    for i, o in enumerate(objs):
+        a = _field_of(o, 'a')
+        assert isinstance(a.value, StdObject)
+        assert _as_int(_field_of(a.value, 'v')) == i + 1
+
+
+def test_expand_propagate_chain() -> None:
+    """链式传播：每层显式 ... ，整体模式逐元素重复（C(B(A(·)))）。"""
     std, c = _build(
-        '~Node {\n    host: str\n    port: <int, range(1, 65535)> = 80\n}\n'
-        'x = Node(host = ["a", "b"]..., port = [443, 8443]...)...\n'
+        '~A { v: int }\n~B { a: A }\n~C { b: B }\n!var [1, 2] import . as xs\nx = C(b = B(a = A(v = $xs...)...)...)\n'
     )
     assert not _codes(c)
     objs = _arr_objs(_root_field(std, 'x'))
-    assert len(objs) == 4
-    # 首轴（host）最慢变化：a×{443,8443}, b×{443,8443}
-    pairs = [(_as_str(_field_of(o, 'host')), _as_int(_field_of(o, 'port'))) for o in objs]
-    assert pairs == [('a', 443), ('a', 8443), ('b', 443), ('b', 8443)]
+    assert len(objs) == 2
+    for i, o in enumerate(objs):
+        b = _field_of(o, 'b')
+        assert isinstance(b.value, StdObject)
+        a = _field_of(b.value, 'a')
+        assert isinstance(a.value, StdObject)
+        assert _as_int(_field_of(a.value, 'v')) == i + 1
+
+
+def test_expand_propagate_top_noop() -> None:
+    """顶层字段尾部 ...：无包围模板调用 → no-op（结果仍为本调用展开 list）。"""
+    std, c = _build('~A { v: int = 0 }\nx = A(v = [1, 2]...)...\n')
+    assert not _codes(c)
+    objs = _arr_objs(_root_field(std, 'x'))
+    assert len(objs) == 2
+    assert _as_int(_field_of(objs[0], 'v')) == 1
+    assert _as_int(_field_of(objs[1], 'v')) == 2
+
+
+def test_expand_propagate_named_no_source() -> None:
+    """内层调用无展开源 + 调用级 ... → 恰好一次 template.expand_no_source（不重复报错）。"""
+    std, c = _build('~A { v: int = 0 }\n~B { a: A }\nx = B(a = A(v = 5)...)\n')
+    codes = _codes(c)
+    assert codes.count('template.expand_no_source') == 1
+    # 内层无源时报错并退回单实例（x 仍在产物中，为一个 B 实例）
+    x = _root_field(std, 'x')
+    assert isinstance(x.value, StdObject)
+    a = _field_of(x.value, 'a')
+    assert isinstance(a.value, StdObject)
+    assert _as_int(_field_of(a.value, 'v')) == 5
 
 
 def test_expand_unpack_axis() -> None:
@@ -143,7 +180,7 @@ def test_expand_length_mismatch() -> None:
 
 
 def test_expand_no_source() -> None:
-    """笛卡尔积但零轴 → template.expand_no_source。"""
+    """调用级 ... 但零轴（无展开源）→ template.expand_no_source。"""
     _, c = _build('~T { a: int = 0 }\nx = T()...\n')
     assert 'template.expand_no_source' in _codes(c)
 

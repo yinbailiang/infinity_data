@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import decimal
 from collections.abc import Iterator, Mapping, Sequence
-from itertools import product
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
@@ -49,7 +48,10 @@ from infinity_data.semantic.builder.models import (
     StdObject,
     StdValue,
 )
-from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
+from infinity_data.semantic.constraints import (
+    resolve_constraint_list,
+    resolve_constraints,
+)
 from infinity_data.semantic.jsonpath import apply_json_path
 from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
 from infinity_data.semantic.std import STD_VALUE_TYPES
@@ -469,10 +471,10 @@ class AstBuilder:
                     axis_positional=axp,
                     axis_named=axn,
                     axis_unpack_kwargs=axu,
-                    cartesian=cart,
+                    propagate=prop,
                 ):
                     return self._expand_template_call(
-                        tn, pa, na, upa, upk, axp, axn, axu, cart, path, raw.source, scope
+                        tn, pa, na, upa, upk, axp, axn, axu, prop, path, raw.source, scope
                     )
                 case ErrorValue():
                     # 值解析失败已在语法层报告（parse.value_field / parse.unrecognized_value），不重复
@@ -592,7 +594,7 @@ class AstBuilder:
     # 模板展开
     # ═══════════════════════════════════════════════════════
 
-    MAX_EXPAND = 10000  # 笛卡尔积组合数上限（§2.8）
+    MAX_EXPAND = 10000  # 展开实例总数上限（§2.8）
 
     def _expand_template_call(
         self,
@@ -604,16 +606,19 @@ class AstBuilder:
         axis_positional: frozenset[int],
         axis_named: frozenset[str],
         axis_unpack_kwargs: frozenset[int],
-        cartesian: bool,
+        propagate: bool,
         path: str,
         source: SourceRange | None,
         scope: Scope,
     ) -> StdValue:
-        """模板调用：无轴 → 单次实例化；有轴 → zip/笛卡尔积展开（§2.8，结果恒为 list）。
+        """模板调用：无轴 → 单次实例化；有轴 → zip 展开（§2.8，结果恒为 list）。
+
+        ``propagate``（调用级 ``...``）= 展开传播：本调用的展开结果作为**包围模板调用**
+        的轴继续展开——`B(A($list...)...)` ⟹ `[B(A(x)) for x]`，由外层调用消费。
 
         每个展开实例是完整模板实例（默认值注入 + 约束照常）。
         """
-        # 收集轴值（每个轴解析为 list）
+        # 收集本调用自身的轴值（参数级 ...，每个轴解析为 list）
         axes: list[tuple[tuple[str, str | int], StdArray]] = []
         for i in sorted(axis_positional):
             arr = self._resolve_axis(positional_args[i], scope, source, path, template_name)
@@ -628,44 +633,62 @@ class AstBuilder:
             if arr is not None:
                 axes.append((('unpack', j), arr))
 
+        # 传播轴：参数值是带调用级 ... 的模板调用 → 其展开结果（list）作为本调用的轴。
+        # 内层无展开源（结果非 list，expand_no_source 已在内层报告）→ 用解析值替换参数，
+        # 避免外层单次实例化时二次解析、重复报错。
+        pos_args: list[Value | StdValue] = list(positional_args)
+        named: dict[str, Value | StdValue] = dict(named_args)
+        for i, arg in enumerate(pos_args):
+            if i in axis_positional:
+                continue
+            if isinstance(arg, TemplateCallValue) and arg.propagate:
+                rv = self._resolve_value(arg, path, scope)
+                if isinstance(rv, StdArray):
+                    axes.append((('pos', i), rv))
+                elif rv is not None:
+                    pos_args[i] = rv
+        for k, arg in named.items():
+            if k in axis_named:
+                continue
+            if isinstance(arg, TemplateCallValue) and arg.propagate:
+                rv = self._resolve_value(arg, path, scope)
+                if isinstance(rv, StdArray):
+                    axes.append((('named', k), rv))
+                elif rv is not None:
+                    named[k] = rv
+
         if not axes:
-            if cartesian:
+            # 调用级 ... 但无任何展开源（自身无轴、也无内层传播而来）→ 报错
+            if propagate:
                 self._err('template.expand_no_source', {'template': template_name}, source, path)
             return self._instantiate_once(
-                template_name, positional_args, named_args, unpack_args, unpack_kwargs, path, source, scope
+                template_name, pos_args, named, unpack_args, unpack_kwargs, path, source, scope
             )
 
-        # 组合：zip（等长配对）或笛卡尔积（全组合，首轴最慢变化）
-        if cartesian:
-            total = 1
-            for _, a in axes:
-                total *= len(a.elements)
-            if total > self.MAX_EXPAND:
-                self._err(
-                    'template.expand_too_large',
-                    {'template': template_name, 'max': self.MAX_EXPAND, 'count': total},
-                    source,
-                    path,
-                )
-                return StdArray()
-            combos = product(*(a.elements for _, a in axes))
-        else:
-            lens = sorted({len(a.elements) for _, a in axes})
-            if len(lens) > 1:
-                self._err(
-                    'template.expand_length_mismatch',
-                    {'template': template_name, 'lens': lens},
-                    source,
-                    path,
-                )
-                return StdArray()
-            combos = zip(*(a.elements for _, a in axes))
+        # 组合：多轴 zip（等长配对；长度不等 → expand_length_mismatch）
+        lens = sorted({len(a.elements) for _, a in axes})
+        if len(lens) > 1:
+            self._err(
+                'template.expand_length_mismatch',
+                {'template': template_name, 'lens': lens},
+                source,
+                path,
+            )
+            return StdArray()
+        count = lens[0]
+        if count > self.MAX_EXPAND:
+            self._err(
+                'template.expand_too_large',
+                {'template': template_name, 'max': self.MAX_EXPAND, 'count': count},
+                source,
+                path,
+            )
+            return StdArray()
+        combos = zip(*(a.elements for _, a in axes))
 
         results: list[StdValue] = []
         for combo in combos:
-            pa, na, upa, upk = self._build_expand_args(
-                positional_args, named_args, unpack_args, unpack_kwargs, axes, combo
-            )
+            pa, na, upa, upk = self._build_expand_args(pos_args, named, unpack_args, unpack_kwargs, axes, combo)
             results.append(self._instantiate_once(template_name, pa, na, upa, upk, path, source, scope))
         return StdArray(elements=results)
 
@@ -688,8 +711,8 @@ class AstBuilder:
 
     @staticmethod
     def _build_expand_args(
-        positional_args: list[Value],
-        named_args: dict[str, Value],
+        positional_args: list[Value | StdValue],
+        named_args: dict[str, Value | StdValue],
         unpack_args: list[UnpackValue],
         unpack_kwargs: list[UnpackValue],
         axes: list[tuple[tuple[str, str | int], StdArray]],

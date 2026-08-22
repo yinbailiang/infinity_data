@@ -39,7 +39,7 @@
   → `template.dup_argument`（见 §2.2）
 - **逗号换行等价（双向）**：除导入语法（`!from "a" import X, Y` 必须用逗号和尾最后换行）外，
   任何需要逗号/换行的地方都可用另一方替代——顶层同样接受逗号分隔，
-  整个文件（含模板定义、字段、结构级约束）可压缩成一行：
+  任何不包含!特殊语句的文件（含模板定义、字段、结构级约束）可压缩成一行：
   `a = 1, b = [1, 2], ~T { x: int = 1 }, c = T(x = 2),`
 
 ### 1.2 约束
@@ -549,18 +549,24 @@ server2 = Multi(*$positional_list)
 ### 2.8 模板在 list 上展开（显式轴）
 
 > 把外部裸列表**批量构造**为模板实例（map 语义），与 `each`（只校验不构造）互补。
-> 语法致敬 C++ pack expansion：参数值后缀 `...` = 展开轴。
+> 语法致敬 C++ pack expansion：`...` 全语言只有一种含义——**展开/重复**，位置决定作用域：
+> 参数级 `...` = 该参数随轴变化（本调用展开）；调用级（`)` 后）`...` = **展开向外传播**，
+> 把本调用的展开结果作为**包围模板调用**的轴，整个嵌套模式逐元素重复。
 
 基础语法:
 - 参数级 `...` 后缀 = **展开轴**标记（位置/命名参数均可；与参数值来源无关——
   `$` 引用、字面量 list、模板构造 list 都能作轴）
 - 有 ≥1 轴 → 调用**展开**，结果**恒为 list**；0 轴 → 普通单次调用
-- 调用级（`)` 后）`...` = **笛卡尔积模式**；无 = 默认 **zip**
+- 调用级（`)` 后）`...` = **展开传播**：本调用的展开结果（list）作为**包围模板调用**
+  的轴继续展开——`B(A($list...)...)` ⟹ `[B(A(x)) for x]`
+- 传播可链式：`C(B(A($list...)...)...)` ⟹ `[C(B(A(x))) for x]`（每层显式写 `...`）
+- **多轴默认 zip**（等长配对）
 
 ```infd
-nodes = Node(host = $hosts...)                   # zip（单轴）：N 个实例
-pairs = Node(host = $hosts..., port = $ports...) # zip（多轴）：等长配对
-matrix = Node(host = $hosts..., port = [80, 443]...)...  # 笛卡尔积：全组合
+nodes = Node(host = $hosts...)                   # 单轴：N 个实例
+pairs = Node(host = $hosts..., port = $ports...) # 多轴 zip：等长配对
+wrapped = B(A($hosts...)...)                     # 传播：整个模式逐元素重复 → [B(A(h))…]
+chain = C(B(A($hosts...)...)...)                 # 链式传播：三层嵌套
 all = [*Node(host = $hosts...)..., "extra"]      # 展开结果 splice 进数组
 validated: <list, each(Node)> = Node(host = $hosts...)   # 展开 + each 双保险
 ```
@@ -574,19 +580,27 @@ services = Service(**$services...)     # list[dict] 逐元素解包为命名参�
 # → [Service(name="auth", port=8080), Service(name="billing")]
 ```
 
+**展开传播（调用级 `...`）**:
+- 传播把本调用的展开结果（list）**提升为包围模板调用的轴**：
+  `B(A($list...)...)` = 对 `$list` 每个元素构造 `B(A(x))`
+- 传播是**显式 opt-in**：`B(A($list...))`（无尾部 `...`）= 内层展开、B 收列表
+  （k8s 的 `PodSpec(containers = Container(**$containers...))` 即此用法，语义不变）；
+  加尾部 `...` 才把展开传出去
+- 传播**逐层显式**：每层要传下去就在该调用后写 `...`；不加则展开止于本调用
+- 传播目标必须是**包围的模板调用**；顶层字段 / dict 字段等非模板位置无处可传
+  → 尾部 `...` 为 no-op（结果仍为该调用自身的展开 list）
+- **尾部 `...` 但本调用无展开源**（自身无轴、也无内层传播而来）→ 报错
+  （`template.expand_no_source`）
+
 规则:
 - **轴与解包可叠加**：轴参数可带 `**`（list[dict]）——每个元素（dict）经 `**` 解包
   为命名参数后再实例化一次（≡ Python `[Service(**s) for s in services]`）。外部裸
   数据与模板字段对齐时，`Template(**$list...)` 是「导入 → 生成」闭环的一行式
 - **展开轴运行时必须是 list**：非 list → 报错（`template.expand_not_list`），
   不静默退化——保证「写了 `...` 就必须展开」的类型稳定性
-- **zip 模式**：多轴按位置配对，长度不等 → 报错（`template.expand_length_mismatch`）
-- **笛卡尔积模式**（调用级 `...`）：各轴独立全组合、无长度约束；
-  展开顺序**第一个轴最慢变化**（等于嵌套 `for` 的书写顺序，保证可审计、可预测）
-- **单轴 + 调用级 `...`** → 合法 no-op（1 个轴无 zip/积之分）
-- **零轴 + 调用级 `...`** → 报错（`template.expand_no_source`）
-- **组合数上限** `MAX_EXPAND`（如 10000）：笛卡尔积组合数超限 →
-  报错（`template.expand_too_large`），防止 `$` 数据源导致产物爆炸（可审计定位）
+- **zip 模式（默认）**：多轴按位置配对，长度不等 → 报错（`template.expand_length_mismatch`）
+- **实例总数上限** `MAX_EXPAND`（如 10000）：展开实例总数超限 → 报错
+  （`template.expand_too_large`），防止 `$` 数据源导致产物爆炸（可审计定位）
 - 每个实例是**完整模板实例**：默认值注入 + 结构级约束（`: <...>`）照常执行
   ——这是与 `each`（只校验、不注入默认值）的本质分界
 - `...` 只在模板调用参数上下文合法；普通值位置（`a = x...`）→ 语法错误
@@ -595,6 +609,7 @@ services = Service(**$services...)     # list[dict] 逐元素解包为命名参�
   平铺请用 `*`（`[*$list]`）。`...` 跟随模板调用遍布所有值位置
   （字段 / dict / list / `!var` / 模板默认值）
 - **dict 轴不支持**：dict 展开请用 `**$dict` 解包进一次调用，避免语义重叠
+- **优先级**: 先求解 `...` 展开再求解 `**`/`*`
 
 与 `*` / `**` 的分工（三个展开符号）:
 
@@ -602,8 +617,9 @@ services = Service(**$services...)     # list[dict] 逐元素解包为命名参�
 |---|---|
 | `Template(*$list)` | `*`：1 次调用，list → N 个位置参数（std::apply） |
 | `Template(**$cfg)` | `**`：1 次调用，dict → N 个命名参数（合并） |
-| `Template($list...)` | `...`（参数级）：N 次调用，zip |
-| `Template($a..., $b...)...` | `...`（调用级）：N 次调用，笛卡尔积 |
+| `Template($list...)` | `...`（参数级）：N 次调用 |
+| `Template(A($list...)...)` | `...`（调用级/传播）：N 次调用，内层 A 的展开结果作本调用轴 |
+| `Template($a..., $b...)` | 多轴 zip（默认）：N 次调用，等长配对 |
 
 ### 2.9 模板可变参数收集（模板配置）
 
@@ -622,8 +638,8 @@ services = Service(**$services...)     # list[dict] 逐元素解包为命名参�
     extra: <dict, each(str)> = {},
 }
 
-s = Service("svc", "extra-pos", 8080, env = "prod", tier = "web")
-# → name="svc", port=8080, rest=["extra-pos"], extra={env="prod", tier="web"}（值过 each(str) 校验）
+s = Service("svc", "extra-pos", env = "prod", tier = "web")
+# → name="svc", port=80, rest=["extra-pos"], extra={env="prod", tier="web"}（值过 each(str) 校验）
 ```
 
 规则:
@@ -642,7 +658,7 @@ s = Service("svc", "extra-pos", 8080, env = "prod", tier = "web")
 ```infd
 ~App(extra_named_vars = extras) { extras: <dict, each(int)> = {} }
 cfg = App(name = "x", **$tuning)                 # 解包 → 未知键进 extras，须全为 int
-batch = App(name = "x", **$tuning)...            # 展开（zip）+ 解包
+batch = App(name = "x", **$tuning...)            # 展开（zip）再 解包
 ```
 
 ### 2.10 本地注入（!var）

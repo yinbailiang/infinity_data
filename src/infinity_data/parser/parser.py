@@ -1115,7 +1115,7 @@ class Parser:
                 return Parser._parse_template_call(stream, collector, ident)
 
             case EllipsisToken() as el_tok:
-                # ... 只在模板调用参数上下文合法（§2.8 展开轴 / 笛卡尔积）
+                # ... 只在模板调用参数上下文合法（§2.8 展开轴 / 展开传播）
                 stream.advance()
                 collector.add(diag('parse.expand_outside_call', {}, stream.single_span(el_tok)))
                 return ErrorValue(source=stream.single_span(el_tok), message='... 只能在模板调用参数上下文使用')
@@ -1307,11 +1307,11 @@ class Parser:
             )
 
         stream.expect(RparenToken)
-        # 调用级 ...：笛卡尔积模式（§2.8）
-        cartesian = False
+        # 调用级 ...：展开传播（本调用展开结果作为包围模板调用的轴，§2.8）
+        propagate = False
         if isinstance(stream.peek(), EllipsisToken):
             stream.advance()
-            cartesian = True
+            propagate = True
         return TemplateCallValue(
             source=stream.span_from(name_tok),
             template_name=name_tok.name,
@@ -1322,5 +1322,5 @@ class Parser:
             axis_positional=frozenset(axis_positional),
             axis_named=frozenset(axis_named),
             axis_unpack_kwargs=frozenset(axis_unpack_kwargs),
-            cartesian=cartesian,
+            propagate=propagate,
         )

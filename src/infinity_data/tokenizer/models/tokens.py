@@ -142,7 +142,7 @@ class DoubleStarToken(Token):
 
 @dataclass
 class EllipsisToken(Token):
-    """...（三连点：模板展开轴 / 笛卡尔积标记）"""
+    """...（三连点：模板展开轴 / 展开传播标记）"""
 
     pass
 
