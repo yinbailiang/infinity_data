@@ -38,8 +38,23 @@ class TemplateKey:
         return f'{self.identity}:{self.name}'
 
 
-Scope = dict[str, TemplateKey]
-"""文件级可见名表：可见名 → 模板真名（:class:`TemplateKey`）。"""
+@dataclass(eq=False)
+class Scope:
+    """文件级作用域：可见名表 + 该文件就地解析的 `$` 命名空间（§1.8）。
+
+    - ``visible``：可见名表（可见名 → 模板真名）
+    - ``namespaces``：本文件 `$` 命名空间（!env/!file/!var 统一为 StdValue）
+    - ``var_statements``：本文件 ``!var`` 语句（builder 按文件求值）
+    - ``import_identities``：alias → 导入真名（§1.8；模板身份纳入数据依赖）
+
+    组合而非继承 dict（可哈希、无循环依赖、语义内聚）；命名空间随 scope 对象
+    携带——模板真名重算（remap）时 ``_remap_scope`` 复制字段，无需按对象 id 关联。
+    """
+
+    visible: dict[str, TemplateKey] = field(default_factory=lambda: {})
+    namespaces: dict[str, StdValue] = field(default_factory=lambda: {})
+    var_statements: list[VarStmt] = field(default_factory=lambda: [])
+    import_identities: dict[str, str] = field(default_factory=lambda: {})
 
 
 @dataclass(frozen=True)
@@ -55,11 +70,10 @@ class ResolvedContext:
     - ``template_scopes``：每个模板定义点的可见名表（展开/校验按定义点可见性解析）
     - ``root_scope``：入口文件可见名表（可见名 → :class:`TemplateKey`）
     - ``schema_scope``：schema.from_file 隐式导入的可见名表（无则 None）
-    - ``namespace``：**主文件** `$` 引用命名空间（便捷；等价 ``namespaces[id(root_scope)]``）
-    - ``namespaces``：**按文件就地解析**（§1.8）——``id(scope)`` → 该文件 `$` 命名空间
-      （含 root_scope；模板展开/默认值按定义文件 scope 查其命名空间）
-    - ``var_statements``：``id(scope)`` → 该文件的 ``!var`` 语句（builder 按文件求值）
-    - ``import_identities``：``id(scope)`` → alias → 导入真名（§1.8；模板身份纳入数据依赖）
+    - ``namespace``：**主文件** `$` 引用命名空间（便捷；等价 ``root_scope.namespaces``）
+
+    各文件的 `$` 命名空间 / ``!var`` / 导入真名由 :class:`Scope` 对象自身携带
+    （§1.8 就地解析），不在此平行存放。
     """
 
     templates: dict[TemplateKey, TemplateDef]
@@ -67,6 +81,3 @@ class ResolvedContext:
     root_scope: Scope
     schema_scope: Scope | None
     namespace: dict[str, StdValue]
-    namespaces: dict[int, dict[str, StdValue]] = field(default_factory=lambda: {})
-    var_statements: dict[int, list[VarStmt]] = field(default_factory=lambda: {})
-    import_identities: dict[int, dict[str, str]] = field(default_factory=lambda: {})

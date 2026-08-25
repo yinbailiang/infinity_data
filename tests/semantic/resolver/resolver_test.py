@@ -55,8 +55,8 @@ def test_resolve_collects_local_templates() -> None:
     ctx, collector = _resolve_text('~A {\n    a: int = 1\n}\nx = 1\n')
     assert not list(collector)
     # root_scope：本地模板可见名 → TemplateKey
-    assert 'A' in ctx.root_scope
-    key = ctx.root_scope['A']
+    assert 'A' in ctx.root_scope.visible
+    key = ctx.root_scope.visible['A']
     assert key.name == 'A'
     assert key in ctx.templates
     # 模板定义点 scope 已登记
@@ -102,8 +102,8 @@ def test_resolve_imported_template_scope(tmp_path: Path) -> None:
     ctx = resolver.resolve(doc, file, collector)
     assert not list(collector), [d.message for d in collector]
     # 可见名 Extra → 导入模板的 TemplateKey
-    assert 'Extra' in ctx.root_scope
-    key = ctx.root_scope['Extra']
+    assert 'Extra' in ctx.root_scope.visible
+    key = ctx.root_scope.visible['Extra']
     assert key.name == 'Extra'
     assert key in ctx.templates
     assert ctx.templates[key].fields[0].name == 'name'
@@ -120,7 +120,7 @@ def test_resolve_circular_import_guard(tmp_path: Path) -> None:
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
     assert not list(collector), [d.message for d in collector]
-    assert 'A' in ctx.root_scope
+    assert 'A' in ctx.root_scope.visible
     assert {'A', 'B'} <= {k.name for k in ctx.templates}
 
 
@@ -167,7 +167,8 @@ def test_resolve_idempotent() -> None:
     c1 = resolver.resolve(doc, file, DiagnosticCollector())
     c2 = resolver.resolve(doc, file, DiagnosticCollector())
     assert set(c1.templates) == set(c2.templates)
-    assert c1.root_scope == c2.root_scope
+    # Scope 按身份相等（dataclass eq=False）：幂等比较可见名表内容
+    assert c1.root_scope.visible == c2.root_scope.visible
     assert c1.namespace == c2.namespace
 
 
@@ -182,11 +183,11 @@ def test_parse_cache_reuse(tmp_path: Path) -> None:
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']), parse_cache=cache)
 
     c1 = resolver.resolve(doc, app, DiagnosticCollector())
-    assert 'T' in c1.root_scope
+    assert 'T' in c1.root_scope.visible
     assert tpl_file.identity in cache  # 导入文件解析结果已入缓存
 
     # 修改模板文件内容；缓存命中 → 仍返回旧定义（字段 a）
     _write(Path(tpl_file.name), '~T {\n    b: int = 2\n}\n')
     c2 = resolver.resolve(doc, app, DiagnosticCollector())
-    key = c2.root_scope['T']
+    key = c2.root_scope.visible['T']
     assert c2.templates[key].fields[0].name == 'a'

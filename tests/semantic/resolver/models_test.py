@@ -25,20 +25,25 @@ def test_template_key_frozen_and_hashable() -> None:
 
 
 def test_scope_maps_visible_name_to_key() -> None:
-    scope: Scope = {'A': TemplateKey(identity='i', name='A')}
-    assert scope['A'].name == 'A'
+    scope: Scope = Scope(visible={'A': TemplateKey(identity='i', name='A')})
+    assert scope.visible['A'].name == 'A'
+    # Scope 携带就地解析关联（§1.8）：默认空命名空间 / 无 !var / 无导入真名
+    assert scope.namespaces == {}
+    assert scope.var_statements == []
+    assert scope.import_identities == {}
 
 
 def test_resolved_context_holds_phase1_product() -> None:
     key = TemplateKey(identity='app.infd', name='A')
+    root = Scope(visible={'A': key})
     ctx = ResolvedContext(
         templates={key: _tpl('A')},
-        template_scopes={key: {'A': key}},
-        root_scope={'A': key},
+        template_scopes={key: root},
+        root_scope=root,
         schema_scope=None,
         namespace={'USER': python_to_std('alice')},
     )
     assert ctx.templates[key].name == 'A'
-    assert ctx.template_scopes[key] == ctx.root_scope
+    assert ctx.template_scopes[key] is ctx.root_scope
     assert ctx.schema_scope is None
     assert ctx.namespace['USER'] == python_to_std('alice')

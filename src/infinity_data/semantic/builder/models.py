@@ -31,7 +31,7 @@ from infinity_data.semantic.std import (
 )
 
 if TYPE_CHECKING:
-    from infinity_data.semantic.resolver.models import Scope, TemplateKey
+    from infinity_data.semantic.resolver.models import TemplateKey
 
 __all__ = [
     'LiteralKind',
@@ -58,8 +58,10 @@ class StdDocument:
 
     - ``root``：编译产物（顶层对象）
     - ``templates``：全部已加载模板（:class:`TemplateKey` → 定义，含 ``!from`` 导入的）
-    - ``scope``：**入口文件**的可见名表（可见名 → :class:`TemplateKey`），
-      与 ``templates`` 配合可完整解析：可见名 → TemplateKey → TemplateDef
+    - ``scope``：**入口文件**的可见名表快照（可见名 → :class:`TemplateKey`），
+      与 ``templates`` 配合可完整解析：可见名 → TemplateKey → TemplateDef。
+      纯快照（普通 dict）：各文件的 `$` 命名空间 / !var 关联在 Phase 1 的
+      :class:`Scope` 上（§1.8），不随产物下发。
 
     不携带诊断：所有诊断经共享 :class:`DiagnosticCollector` 收集，
     由流水线在 :class:`CompilationResult` 上承载——诊断不属于文档数据。
@@ -67,4 +69,4 @@ class StdDocument:
 
     root: StdObject = field(default_factory=StdObject)
     templates: dict[TemplateKey, TemplateDef] = field(default_factory=lambda: {})
-    scope: Scope = field(default_factory=lambda: {})
+    scope: dict[str, TemplateKey] = field(default_factory=lambda: {})

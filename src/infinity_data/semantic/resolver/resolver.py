@@ -34,7 +34,6 @@ from infinity_data.semantic.registry import ConstraintRegistry
 from infinity_data.semantic.resolver.identity import compute_identity_map
 from infinity_data.semantic.resolver.imports import ImportResolver
 from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
-from infinity_data.semantic.std import StdValue
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 MAX_IMPORT_DEPTH = 32
@@ -69,13 +68,9 @@ class TemplateGraphResolver:
         self._template_scopes: dict[TemplateKey, Scope] = {}
         self._scopes_by_file: dict[str, Scope] = {}  # 文件 identity → 已构建 scope（循环导入防护）
         self._root_file: File | None = None
-        self._root_scope: Scope = {}
+        self._root_scope: Scope = Scope()
         self._root_local_names: set[str] = set()
         self._schema_scope: Scope | None = None
-        # 按文件就地解析（§1.8）：id(scope) → 该文件 $ 命名空间 / !var 语句 / 导入真名
-        self._namespaces: dict[int, dict[str, StdValue]] = {}
-        self._var_statements: dict[int, list[VarStmt]] = {}
-        self._import_identities: dict[int, dict[str, str]] = {}
         # 本次 resolve 的共享诊断收集器（流水线单一收集器，resolve() 注入）
         self._collector: DiagnosticCollector = DiagnosticCollector()
 
@@ -103,10 +98,7 @@ class TemplateGraphResolver:
             template_scopes=dict(self._template_scopes),
             root_scope=root_scope,  # 与 template_scopes 内的定义点 scope 同一对象
             schema_scope=self._schema_scope,
-            namespace=dict(self._namespaces[id(root_scope)]),
-            namespaces=dict(self._namespaces),
-            var_statements=dict(self._var_statements),
-            import_identities=dict(self._import_identities),
+            namespace=dict(root_scope.namespaces),
         )
 
     @property
@@ -124,12 +116,9 @@ class TemplateGraphResolver:
         self._template_scopes = {}
         self._scopes_by_file = {}
         self._root_file = file
-        self._root_scope = {}
+        self._root_scope = Scope()
         self._root_local_names = set()
         self._schema_scope = None
-        self._namespaces = {}
-        self._var_statements = {}
-        self._import_identities = {}
         self._collector = collector
 
     # ═══════════════════════════════════════════════════════
@@ -207,14 +196,14 @@ class TemplateGraphResolver:
         - 可见名已存在（重复导入）→ ERROR，保留先到者（拒绝隐式覆盖）
         """
         for item in items:
-            dep_key = dep_scope.get(item.name)
+            dep_key = dep_scope.visible.get(item.name)
             if dep_key is None:
                 self._collector.add(
                     Diagnostic(Severity.ERROR, 'template.import_not_found', {'template': item.name}, item.source)
                 )
                 continue
             visible = item.alias or item.name
-            if visible in scope:
+            if visible in scope.visible:
                 if visible in local_names:
                     self._collector.add(
                         Diagnostic(Severity.ERROR, 'template.import_conflict_local', {'visible': visible}, item.source)
@@ -224,14 +213,16 @@ class TemplateGraphResolver:
                         Diagnostic(Severity.ERROR, 'template.import_duplicate', {'visible': visible}, item.source)
                     )
             else:
-                scope[visible] = dep_key
+                scope.visible[visible] = dep_key
 
     def _load_imported_templates(self, doc: Document) -> Scope:
         """构建主文件 scope（含 schema.from_file 隐式导入）。"""
         assert self._root_file is not None
         root_id = self._root_file.identity
         loaded: set[str] = set()
-        root_scope: Scope = {tpl.name: key for key, tpl in self._templates.items() if key.identity == root_id}
+        root_scope: Scope = Scope(
+            visible=dict((tpl.name, key) for key, tpl in self._templates.items() if key.identity == root_id)
+        )
 
         # schema.from_file 隐式导入：独立 scope 供顶层校验使用
         if self._schema is not None and self._schema.from_file:
@@ -276,7 +267,7 @@ class TemplateGraphResolver:
                     Severity.ERROR, 'template.import_depth', {'max': MAX_IMPORT_DEPTH, 'path_src': from_path}, source
                 )
             )
-            return {}
+            return Scope()
 
         file = self._imports.resolve_template_path(
             from_path,
@@ -285,12 +276,12 @@ class TemplateGraphResolver:
             collector=self._collector,
         )
         if file is None:
-            return {}
+            return Scope()
 
         file_id = file.identity
         if file_id in loaded:
             # 循环导入：返回已构建的本地名部分（本地模板先注册）
-            return self._scopes_by_file.get(file_id, {})
+            return self._scopes_by_file.get(file_id, Scope())
         loaded.add(file_id)
 
         try:
@@ -299,7 +290,7 @@ class TemplateGraphResolver:
             self._collector.add(
                 Diagnostic(Severity.ERROR, 'template.read_failed', {'file': file.name, 'error': e}, source)
             )
-            return {}
+            return Scope()
 
         imported_doc = self._parse_document(file)
 
@@ -307,7 +298,7 @@ class TemplateGraphResolver:
         #    身份含来源文件路径：不同路径的文件即使内容相同也是不同模板身份——
         #    模板内部 !from 按定义文件所在目录解析，内容相同的文件其依赖语义
         #    可能不同，不能互相覆盖（纯内容寻址无法表达这一区别）
-        scope: Scope = {}
+        scope: Scope = Scope()
         local_names: set[str] = set()
         for s in imported_doc.statements:
             if not isinstance(s, TemplateDef):
@@ -316,7 +307,7 @@ class TemplateGraphResolver:
                 continue
             key = TemplateKey(identity=file_id, name=s.name)
             self._templates[key] = s
-            scope[s.name] = key
+            scope.visible[s.name] = key
             local_names.add(s.name)
         self._scopes_by_file[file_id] = scope
 
@@ -360,15 +351,15 @@ class TemplateGraphResolver:
         - ``!file`` 相对路径按**本文件所在目录**解析（``base_dir``）
         - ``!var`` 语句收集给 builder 按文件求值（依赖图 / 环检测按文件隔离）
         - 每个绑定算**导入真名**（来源哈希，不含运行时值；供模板身份纳入数据依赖）
+        命名空间 / !var / 导入真名直接挂在 scope 对象上（§1.8，随 remap 复制）。
         """
-        sid = id(scope)
-        self._namespaces[sid] = self._imports.resolve(doc, self._collector, base_dir=base_dir)
+        scope.namespaces = self._imports.resolve(doc, self._collector, base_dir=base_dir)
         var_stmts = [s for s in doc.statements if isinstance(s, VarStmt)]
         if var_stmts:
-            self._var_statements[sid] = var_stmts
+            scope.var_statements = var_stmts
         idents = self._imports.import_identities(doc, base_dir=base_dir)
         if idents:
-            self._import_identities[sid] = idents
+            scope.import_identities = idents
 
     def _remap_content_identities(self, root_scope: Scope) -> Scope:
         """把全部模板 key 的 identity 重算为依赖闭包组合哈希（§2.5），并重键所有 scope。
@@ -377,56 +368,35 @@ class TemplateGraphResolver:
         （跨文件去重、路径无关、可复现构建）；诊断仍显示本地名（key.name）。
         `$` 数据依赖（导入真名）一并纳入身份（§2.5/§1.8）。
         """
-        key_map = compute_identity_map(
-            self._templates, self._template_scopes, self._registry.names, self._import_identities
-        )
+        key_map = compute_identity_map(self._templates, self._template_scopes, self._registry.names)
         if not key_map:
             return root_scope
         original_root = root_scope
         new_root = self._remap_scope(root_scope, key_map)
         self._templates = {key_map[k]: v for k, v in self._templates.items()}
         new_scopes: dict[TemplateKey, Scope] = {}
-        old_new: list[tuple[Scope, Scope]] = []
         for k, s in self._template_scopes.items():
             if s is original_root:
                 new_scopes[key_map[k]] = new_root  # 保持「主文件模板 scope ≡ root_scope」同一对象
             else:
-                ns = self._remap_scope(s, key_map)
-                new_scopes[key_map[k]] = ns
-                old_new.append((s, ns))
+                new_scopes[key_map[k]] = self._remap_scope(s, key_map)
         self._template_scopes = new_scopes
         if self._schema_scope is not None:
-            old_schema = self._schema_scope
             self._schema_scope = self._remap_scope(self._schema_scope, key_map)
-            old_new.append((old_schema, self._schema_scope))
-        self._migrate_scope_imports(old_new, original_root, new_root)
         return new_root
-
-    def _migrate_scope_imports(self, old_new: list[tuple[Scope, Scope]], original_root: Scope, new_root: Scope) -> None:
-        """就地解析关联随 scope 对象 remap 迁移（id(旧 scope) → id(新 scope)，§1.8）。
-
-        模板真名重键后各定义点 scope 是新 dict 对象，id 变化；把命名空间 / !var /
-        导入真名关联从旧对象 id 迁移到新对象 id，builder 才能按 scope 就地解析。
-        """
-        pairs = [(original_root, new_root), *old_new]
-        new_ns: dict[int, dict[str, StdValue]] = {}
-        new_var: dict[int, list[VarStmt]] = {}
-        new_import: dict[int, dict[str, str]] = {}
-        for old_s, new_s in pairs:
-            oid, nid = id(old_s), id(new_s)
-            if oid in self._namespaces:
-                new_ns[nid] = self._namespaces[oid]
-            if oid in self._var_statements:
-                new_var[nid] = self._var_statements[oid]
-            if oid in self._import_identities:
-                new_import[nid] = self._import_identities[oid]
-        self._namespaces = new_ns
-        self._var_statements = new_var
-        self._import_identities = new_import
 
     @staticmethod
     def _remap_scope(scope: Scope, key_map: dict[TemplateKey, TemplateKey]) -> Scope:
-        return {visible: key_map.get(key, key) for visible, key in scope.items()}
+        """模板真名重键：返回新 Scope（可见名 → 新 key），复制就地解析关联（§1.8）。
+
+        命名空间 / !var / 导入真名随 scope 对象携带，此处一并复制到新对象——
+        remap 后 builder 按 scope 就地解析依旧命中（无需按对象 id 迁移）。
+        """
+        new_scope = Scope(visible=dict((visible, key_map.get(key, key)) for visible, key in scope.visible.items()))
+        new_scope.namespaces = scope.namespaces
+        new_scope.var_statements = scope.var_statements
+        new_scope.import_identities = scope.import_identities
+        return new_scope
 
     def _parse_document(self, file: File) -> Document:
         """词法 + 语法分析一段源码（用于外部模板文件）。

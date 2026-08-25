@@ -90,7 +90,7 @@ line-ending = "lf"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
 reportMissingImports = "error"
-exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv", "build"]
 venvPath = "."
 venv = ".venv"
 

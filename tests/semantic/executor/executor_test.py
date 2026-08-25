@@ -15,7 +15,7 @@ from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.builder import ResolvedConstraint, StdField, StdLiteral, StdObject
 from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.registry import ConstraintRegistry
-from infinity_data.semantic.resolver import TemplateKey
+from infinity_data.semantic.resolver import Scope, TemplateKey
 
 _SRC = SourceRange.empty()
 
@@ -24,7 +24,7 @@ def _executor(templates: dict[TemplateKey, TemplateDef] | None = None) -> Constr
     return ConstraintExecutor(
         registry=ConstraintRegistry(),
         templates=templates or {},
-        template_scopes={key: {} for key in (templates or {})},
+        template_scopes={key: Scope() for key in (templates or {})},
     )
 
 
@@ -190,7 +190,7 @@ def test_schema_strict_extra_field_raises() -> None:
     executor = _executor({key: tpl})
     root = StdObject(fields=[StdField(name='extra', value=StdLiteral(kind='int', value=1))])
     with pytest.raises(SchemaError):
-        executor.apply_schema(root, Schema(template='Cfg', mode='strict'), tpl, {}, DiagnosticCollector())
+        executor.apply_schema(root, Schema(template='Cfg', mode='strict'), tpl, Scope(), DiagnosticCollector())
 
 
 def test_schema_lenient_extra_field_warns() -> None:

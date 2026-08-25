@@ -137,7 +137,7 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
                 if resolver.schema.from_file and context.schema_scope is not None
                 else context.root_scope
             )
-            key = scope.get(resolver.schema.template)
+            key = scope.visible.get(resolver.schema.template)
             if key is None:
                 raise SchemaError('schema.undefined_template', {'template': resolver.schema.template})
             tpl = std.templates[key]

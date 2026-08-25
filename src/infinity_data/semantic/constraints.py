@@ -141,7 +141,7 @@ def resolve_constraint_arg(c: Constraint, scope: Scope) -> tuple[Any, list[Diagn
 
 def translate_name(name: str, scope: Scope) -> str:
     """可见名 → 真名字符串。未命中（如 has(field) 的裸字段名）保留原名。"""
-    key = scope.get(name)
+    key = scope.visible.get(name)
     return str(key) if key is not None else name
 
 

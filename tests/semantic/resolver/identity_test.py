@@ -50,7 +50,7 @@ def _resolve_app(base: Path, source: str) -> tuple[ResolvedContext, DiagnosticCo
 
 
 def _identity_of(ctx: ResolvedContext, visible: str) -> str:
-    return ctx.root_scope[visible].identity
+    return ctx.root_scope.visible[visible].identity
 
 
 def _template_identity(ctx: ResolvedContext, name: str) -> str:
@@ -171,8 +171,8 @@ def test_identity_dedup_across_files(tmp_path: Path) -> None:
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
     assert not list(collector), [d.message for d in collector]
-    k1 = ctx.root_scope['E1']
-    k2 = ctx.root_scope['E2']
+    k1 = ctx.root_scope.visible['E1']
+    k2 = ctx.root_scope.visible['E2']
     assert k1.name == 'Extra' and k2.name == 'Extra'
     assert k1.identity == k2.identity  # 同内容同依赖 → 同身份
     # 同一身份只登记一次

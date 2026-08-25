@@ -82,10 +82,9 @@ class AstBuilder:
         # 执行期状态（每次 build 重置）
         self._templates: dict[TemplateKey, TemplateDef] = {}
         self._template_scopes: dict[TemplateKey, Scope] = {}
-        self._root_scope: Scope = {}
+        self._root_scope: Scope = Scope()
         self._schema_scope: Scope | None = None
-        # 按文件就地解析（§1.8）：id(scope) → 该文件 $ 命名空间（!env/!file/!var 统一为 StdValue）
-        self._namespaces: dict[int, dict[str, StdValue]] = {}
+        # $ 命名空间按文件就地解析（§1.8）：由各 Scope 对象自身携带（scope.namespaces）
         self._collector: DiagnosticCollector = DiagnosticCollector()  # 本次 build 的共享收集器
         self._depth = 0
         self._recursive_defaults: set[TemplateKey] = set()
@@ -108,9 +107,8 @@ class AstBuilder:
         """
         self._templates = {}
         self._template_scopes = {}
-        self._root_scope = {}
+        self._root_scope = Scope()
         self._schema_scope = None
-        self._namespaces = {}
         self._collector = collector
         self._depth = 0
         self._recursive_defaults = set()
@@ -120,7 +118,6 @@ class AstBuilder:
         self._template_scopes = context.template_scopes
         self._root_scope = context.root_scope
         self._schema_scope = context.schema_scope
-        self._namespaces = context.namespaces
 
         # 静态防护：默认值引用环检测（默认值禁止自引用，见 neo_desg.md 2.6）
         self._detect_recursive_defaults()
@@ -161,7 +158,7 @@ class AstBuilder:
         return StdDocument(
             root=StdObject(fields=self._finalize_object(root_fields, ''), constraints=root_constraints),
             templates=dict(self._templates),
-            scope=dict(self._root_scope),
+            scope=dict(self._root_scope.visible),
         )
 
     # ═══════════════════════════════════════════════════════
@@ -174,24 +171,28 @@ class AstBuilder:
         在 root 构建之前调用——前向引用经拓扑序天然支持；依赖环 → ``var.cycle``。
         值构造（模板展开 / 解包 / $ 引用）全部复用 :meth:`_resolve_value`，
         用**该文件**的 scope 就地解析、绑定**该文件**的 $ 命名空间（跨文件完全隔离）。
+        ``!var`` 语句由 scope 对象携带（``scope.var_statements``），此处遍历全部文件 scope。
+        Scope 按身份相等且可哈希（dataclass eq=False），直接用 set 去重。
         """
-        if not context.var_statements:
-            return
-        # scope_id → scope 对象（root + 各定义点 scope；同一 scope 被多模板共享，去重）
-        scope_by_id: dict[int, Scope] = {id(context.root_scope): context.root_scope}
+        seen: set[Scope] = set()
+        for scope in self._iter_scopes(context):
+            if scope in seen:
+                continue  # 同一 scope 被多模板共享，只处理一次
+            seen.add(scope)
+            if scope.var_statements:
+                self._resolve_var_file(scope, scope.var_statements)
+
+    def _iter_scopes(self, context: ResolvedContext) -> list[Scope]:
+        """context 中全部文件 scope（root + 各定义点 + schema 隐式导入）。"""
+        scopes: list[Scope] = [context.root_scope]
         if context.schema_scope is not None:
-            scope_by_id.setdefault(id(context.schema_scope), context.schema_scope)
-        for sc in context.template_scopes.values():
-            scope_by_id.setdefault(id(sc), sc)
-        for scope_id, stmts in context.var_statements.items():
-            scope = scope_by_id.get(scope_id)
-            if scope is None:
-                continue  # 防御：scope 对象不在 context（理论上不会）
-            self._resolve_var_file(scope, stmts)
+            scopes.append(context.schema_scope)
+        scopes.extend(context.template_scopes.values())
+        return scopes
 
     def _resolve_var_file(self, scope: Scope, stmts: list[VarStmt]) -> None:
         """单个文件内 !var 求值（用该文件 scope 解析，绑定该文件命名空间）。"""
-        namespace = self._namespaces.setdefault(id(scope), {})
+        namespace = scope.namespaces
         by_alias = {s.alias: i for i, s in enumerate(stmts)}
 
         # 1) 依赖图：!var 的 $ 引用指向同文件其他 !var 别名 → 边（walk 静态提取）
@@ -315,7 +316,7 @@ class AstBuilder:
             return
         for node in walk(v):
             if isinstance(node, TemplateCallValue):
-                k = scope.get(node.template_name)
+                k = scope.visible.get(node.template_name)
                 if k is not None:
                     yield k, node.source
 
@@ -534,7 +535,7 @@ class AstBuilder:
         type_cast 为显式 as bool/int/float/str 转换；source 为 ``$name`` 表达式在源码中的位置。
         本文件空间查不到 → ``dollar.undefined`` 警告取 null（不中断编译）。
         """
-        namespace = self._namespaces.get(id(scope), {}) if scope is not None else {}
+        namespace = scope.namespaces if scope is not None else {}
         if name not in namespace:
             self._warn('dollar.undefined', {'name': name}, source, path)
             return StdLiteral(kind='null', value=None)
@@ -821,7 +822,7 @@ class AstBuilder:
         解包：``*expr``（list → 位置参数）/ ``**expr``（dict → 命名参数）；
         解包键与已有参数冲突 → ``dict.duplicate_key``（disjoint merge，§2.7）。
         """
-        key = scope.get(template_name)
+        key = scope.visible.get(template_name)
         if key is None:
             self._collector.add(
                 Diagnostic(Severity.ERROR, 'template.undefined', {'template': template_name}, source, path)

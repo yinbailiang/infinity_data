@@ -56,21 +56,20 @@ def extract_dependencies(tpl: TemplateDef, scope: Scope, builtin_names: Collecti
     for n in names:
         if n in builtin_names:
             continue  # 注册约束（内置/自定义）名，非模板依赖
-        key = scope.get(n)
+        key = scope.visible.get(n)
         if key is not None:
             deps.add(key)
     return deps
 
 
-def extract_import_dependencies(
-    tpl: TemplateDef, scope: Scope, import_identities: dict[int, dict[str, str]]
-) -> set[str]:
+def extract_import_dependencies(tpl: TemplateDef, scope: Scope) -> set[str]:
     """模板 T 的 `$` 数据依赖：walk 收集 ``$`` 引用名，映射为定义文件命名空间的**导入真名**（§1.8）。
 
-    导入真名是叶子哈希（无递归），直接进入模板身份组合；找不到映射（如 `$` 未定义
-    或该文件无对应导入绑定）→ 跳过。数据来源变化 → 导入真名变化 → 模板身份变化。
+    导入真名由 scope 对象自身携带（``scope.import_identities``）；真名是叶子哈希
+    （无递归），直接进入模板身份组合；找不到映射（如 `$` 未定义或该文件无对应
+    导入绑定）→ 跳过。数据来源变化 → 导入真名变化 → 模板身份变化。
     """
-    idents = import_identities.get(id(scope), {})
+    idents = scope.import_identities
     if not idents:
         return set()
     names = {node.name for node in walk(tpl) if isinstance(node, DollarValue)}
@@ -90,22 +89,21 @@ def compute_identity_map(
     templates: dict[TemplateKey, TemplateDef],
     template_scopes: dict[TemplateKey, Scope],
     builtin_names: Collection[str],
-    import_identities: dict[int, dict[str, str]] | None = None,
 ) -> dict[TemplateKey, TemplateKey]:
     """计算 old → new 的 TemplateKey 映射（新 identity = 依赖闭包组合哈希 + $ 数据依赖）。
 
     - 无环：``identity = hash(content_hash || sorted(依赖 identity) || sorted(导入真名))``
     - 环：DFS 栈上依赖退化为内容 hash（不递归）——终止、确定、路径无关
+    - `$` 导入真名由各定义点 scope 自身携带（§1.8，``scope.import_identities``）
     """
     content_hashes: dict[TemplateKey, str] = {}
     dependencies: dict[TemplateKey, set[TemplateKey]] = {}
     import_deps: dict[TemplateKey, set[str]] = {}
-    import_map = import_identities or {}
     for key, tpl in templates.items():
         content_hashes[key] = _content_hash(tpl)
-        scope = template_scopes.get(key, {})
+        scope = template_scopes.get(key, Scope())
         dependencies[key] = extract_dependencies(tpl, scope, builtin_names)
-        import_deps[key] = extract_import_dependencies(tpl, scope, import_map)
+        import_deps[key] = extract_import_dependencies(tpl, scope)
 
     memo: dict[TemplateKey, str] = {}
     stack: set[TemplateKey] = set()
