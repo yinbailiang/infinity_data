@@ -61,23 +61,28 @@ Level 5: "我要控制安全边界"        → safe_load + SandboxConfig
 
 ```python
 from infinity_data import (
-    load,           # 主入口：加载 + 校验 + 编译
-    safe_load,      # 零信任加载：禁止所有导入
-    SandboxConfig,  # 沙盒配置
-    Schema,         # 顶层 schema 约束
+    load,               # 加载 + 校验 + 编译 → CompilationResult
+    safe_load,          # 零信任加载（deny_all）：禁止所有导入
+    compile_source,     # 编译源码字符串 → CompilationResult
+    check,              # 仅校验 → list[Diagnostic]
+    compile_document,   # 编译为 StdDocument（不降维）
+    SandboxConfig,      # 沙盒配置
+    Schema,             # 顶层 schema 约束
+    CompilationResult,  # 编译结果：value / diagnostics / has_errors / warnings
 )
 ```
 
 ### 2.2 safe_load —— 零信任加载
 
 ```python
-def safe_load(path: str) -> dict[str, Any]:
-    """加载纯 .infd 文件。所有导入语句报错。
+def safe_load(path: str) -> CompilationResult:
+    """零信任加载，等价于 load(path, sandbox=SandboxConfig.deny_all())。
 
-    等价于 load(path, sandbox=SandboxConfig.deny_all())
+    所有导入语句（!env / !file / !from）均报错；只允许纯字段定义、模板定义、字面量值。
+    返回 CompilationResult（.value / .diagnostics / .has_errors），不抛出。
 
     用途:
-    - 读取沙盒配置文件 (infd.sandbox.infd)
+    - 读取沙盒配置文件（自举：SandboxConfig(**safe_load(...).value)）
     - 读取纯模板文件 (.inft)
     - 读取不需要外部资源的配置
     """
@@ -93,22 +98,21 @@ def safe_load(path: str) -> dict[str, Any]:
 
 ```python
 def load(
-    path: str,
+    path: str | Path,
     *,
-    sandbox: SandboxConfig | None = None,  # 默认 deny_all()
-    schema: Schema | str | None = None,    # 顶层结构约束
-) -> dict[str, Any]:
-    """加载 .infd 文件，返回 Python dict。
+    env: Mapping[str, str] | None = None,       # 环境变量便捷授权（合并进 sandbox）
+    sandbox: SandboxConfig | None = None,       # 默认 deny_all()（零信任，库默认）
+    registry: ConstraintRegistry | None = None, # 自定义约束注册表
+    schema: Schema | None = None,               # 顶层模板约束
+) -> CompilationResult:
+    """加载 .infd/.inft 文件并编译，返回 CompilationResult。
 
     Args:
-        path: .infd 文件路径
-        sandbox: 沙盒配置。None = 零信任（库默认）
-        schema: 顶层模板约束。str = 模板名（从同文件或 sandbox 中查找）
+        path: 文件路径（相对导入以此为基准）
+        其余选项见 CompileOptions（env / sandbox / registry / schema）
 
-    Raises:
-        SandboxError: 导入超出沙盒授权
-        SchemaError: 输出不符合顶层 schema 约束
-        ConstraintError: 字段约束违反
+    沙盒/schema 违规**不抛出**：编译核心转为 ERROR 诊断，返回空文档
+    （result.has_errors / result.diagnostics / result.value）。
     """
 ```
 
@@ -117,42 +121,29 @@ def load(
 ```python
 @dataclass
 class SandboxConfig:
-    """控制 .infd 文件的导入权限。
+    """控制 .infd 文件的导入权限。默认零信任（deny_all）。"""
 
-    默认零信任：所有导入能力关闭，调用者必须显式开放。
-    """
+    # ── 环境变量注入：key → value。命中即返回，优先于 allow_env ──
+    env: dict[str, str] = field(default_factory=dict)
 
-    # ── 环境变量注入 ──
-    env: dict[str, str]          # key → value。未列出的变量 !env import 时报错
+    # ── 环境变量读取白名单：授权从真实 os.environ 实时读取。
+    #    None = 全部允许；[] = 全部禁止（默认，零信任）──
+    allow_env: list[str] | None = None
 
-    # ── 文件导入白名单 ──
-    allow_files: list[str]       # glob 模式。如 ["./configs/*.json"]
+    # ── 文件导入白名单（glob 模式；None = 全部允许）──
+    allow_files: list[str] | None = None
 
-    # ── 模板导入白名单 ──
-    allow_templates: list[str]   # glob 模式。如 ["./templates/*.inft", "github.com/**/*"]
+    # ── 模板导入白名单（glob 模式；None = 全部允许）──
+    allow_templates: list[str] | None = None
 
-    # ── 严格模式 ──
-    strict: bool = True          # True: 白名单外的导入 → 报错。False: 仅警告
+    # ── 严格模式：True 白名单外导入报错；False 仅警告 ──
+    strict: bool = True
 
     # ── 工厂方法 ──
-
-    @staticmethod
-    def deny_all() -> SandboxConfig:
-        """零信任：所有导入关闭。库默认。"""
-
-    @staticmethod
-    def full_access() -> SandboxConfig:
-        """全权限：继承当前进程的所有能力。CLI 默认。"""
-
-    @staticmethod
-    def development() -> SandboxConfig:
-        """开发模式：当前目录全权限 + 完整环境变量。"""
-
-    @staticmethod
-    def from_dict(d: dict) -> SandboxConfig:
-        """从 safe_load 的结果构造 SandboxConfig。
-        用于自举：用 safe_load 读 sandbox 定义，再构造沙盒。
-        """
+    # deny_all()  零信任（库默认）
+    # full_access() 全权限（全部环境变量 + 任意文件/模板，CLI 默认）
+    # development() 开发模式（**/* 全目录 + 全部环境变量）
+    # （无 from_dict；自举直接用 SandboxConfig(**safe_load(...).value) 构造）
 ```
 
 ### 2.5 Schema —— 顶层结构约束
@@ -180,12 +171,11 @@ class Schema:
 
 from infinity_data import load, safe_load, SandboxConfig, Schema
 
-# 1. 安全读取沙盒定义（Layer 0）
-sandbox_def = safe_load("environments/production.sandbox.infd")
-sandbox = SandboxConfig.from_dict(sandbox_def)
+# 1. 安全读取沙盒定义（Layer 0）——返回 CompilationResult，取 .value 构造沙盒
+sandbox = SandboxConfig(**safe_load("environments/production.sandbox.infd").value)
 
 # 2. 带沙盒 + 顶层 schema 加载配置（Layer 1）
-config = load(
+result = load(
     "app.infd",
     sandbox=sandbox,
     schema=Schema(
@@ -194,13 +184,18 @@ config = load(
         mode="strict",
     ),
 )
+config = result.value   # → dict；result.has_errors / result.diagnostics 可取诊断
 
 # sandbox  → 控制"能读什么"（输入安全）
 # schema   → 控制"产出什么"（结构安全）
 # 约束链    → 控制"值对不对"（数据安全）
 ```
 
-### 2.7 转换输出
+### 2.7 转换输出（规划 M4，**尚未实现**）
+
+> `to_json` / `to_yaml` / `to_toml` / `to_json_file` 为规划 API（emit 层），当前**未实现、未导出**。
+> 现有产物入口：`result.value`（降维 dict）与 `compile_document()`（StdDocument）。
+> 特殊值处理约定如下，实现时须遵循：
 
 ```python
 from infinity_data import load, to_json, to_yaml, to_toml
@@ -220,7 +215,9 @@ to_json_file(config, "dist/app.json")          # 直接写文件
 - `nan` → JSON: `"NaN"`（自定义 encoder）；YAML: `.nan`
 - `+inf`/`-inf` → JSON: `"Infinity"`/`"-Infinity"`；YAML: `.inf`/`-.inf`
 
-### 2.8 JSON Schema 转换
+### 2.8 JSON Schema 转换（规划 M5，**尚未实现**）
+
+> `to_json_schema` / `from_json_schema` / `verify_schema_equivalence` 为规划 API，当前**未实现、未导出**。
 
 ```python
 from infinity_data import (
@@ -258,7 +255,8 @@ diagnostics = check("app.infd", sandbox=sandbox, schema=...)
 
 # 编译为 StdDocument（不经过降维，不输出字符串）
 result = compile_document("app.infd", sandbox=sandbox, schema=...)
-# → StdDocument，含 .root (StdObject) 和 .diagnostics
+# → StdDocument，含 .root (StdObject) / .templates / .scope
+#   （纯数据，不携带诊断；诊断经 load().diagnostics 获取）
 ```
 
 ---
@@ -271,7 +269,7 @@ result = compile_document("app.infd", sandbox=sandbox, schema=...)
 Layer 0: safe_load()
   ├── 零导入能力
   ├── 纯数据 + 模板定义
-  └── 输出: dict → SandboxConfig.from_dict()
+  └── 输出: dict → SandboxConfig(**value)（无 from_dict，直接关键字构造）
 
 Layer 1: load(sandbox=..., schema=...)
   ├── 受控导入 (sandbox 授权)
@@ -291,7 +289,7 @@ Layer 1: load(sandbox=..., schema=...)
 
 | 导入类型 | sandbox 控制 | 默认 (deny_all) | 默认 (full_access) |
 |------|------|:--:|:--:|
-| `!env import NAME` | `env` dict | ❌ 禁止 | ✅ 真实 OS 环境变量 |
+| `!env import NAME` | `env` 注入 dict（优先）+ `allow_env` 白名单（OS 实时读取） | ❌ 禁止 | ✅ 真实 OS 环境变量 |
 | `!file "path"` | `allow_files` glob 列表 | ❌ 禁止 | ✅ 任意文件 |
 | `!from "path"` | `allow_templates` glob 列表 | ❌ 禁止 | ✅ 任意模板 |
 
@@ -677,9 +675,9 @@ Phase 5: 模板市场 + 推广 (持续)
   - [ ] `parser/__init__.py`
   - [ ] `tokenizer/__init__.py`
 - [ ] **实现 SandboxConfig**
-  - [ ] 完整沙盒模型（env、allow_files、allow_templates）
-  - [ ] 工厂方法（deny_all、full_access、development、from_dict）
-  - [ ] `SemanticAnalyzer` 集成沙盒
+  - [x] 完整沙盒模型（env、allow_env、allow_files、allow_templates、strict）
+  - [x] 工厂方法（deny_all、full_access、development；无 from_dict，自举用 SandboxConfig(**value)）
+  - [x] `SemanticAnalyzer` 集成沙盒
 - [ ] **实现 Schema 顶层约束**
   - [ ] `Schema` 数据类 + mode 参数
   - [ ] strict / lenient / strip 模式
