@@ -1,6 +1,9 @@
 """semantic/resolver/imports.py 单元测试：ImportResolver 命名空间解析。"""
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import DiagnosticCollector
@@ -107,3 +110,51 @@ def test_resolve_file_raw_path_on_string_warns(tmp_path: Path) -> None:
     ns = ImportResolver(sandbox=sb).resolve(doc, collector)
     assert 'x' not in ns
     assert [d.code for d in collector] == ['import.path_failed']
+
+
+def test_sandbox_properties() -> None:
+    """sandbox / base_dir property 透传。"""
+    sb = Sandbox(SandboxConfig.deny_all(), base_dir=Path('/x'))
+    r = ImportResolver(sandbox=sb)
+    assert r.sandbox is sb
+    assert r.base_dir == Path('/x')
+
+
+def test_import_identities_env_and_var() -> None:
+    """import_identities：env/var 的来源哈希（确定性，与值无关）。"""
+    file = MemFile(
+        name='t.infd', root_path=Path('.'), content='!env import PORT as port\n!var 42 import .timeout as t\n'
+    )
+    doc, _ = parse_source(file)
+    r = ImportResolver()
+    ids1 = r.import_identities(doc)
+    ids2 = r.import_identities(doc)
+    assert set(ids1) == {'port', 't'}
+    assert ids1 == ids2  # 确定性
+    assert all(v.startswith('h') is False for v in ids1.values())  # 是十六进制哈希串
+
+
+def test_import_identities_toml_file(tmp_path: Path) -> None:
+    """import_identities：!file 来源哈希含文件内容（内容变 → 真名变）。"""
+    (tmp_path / 'data.toml').write_text('port = 1\n', encoding='utf-8')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "data.toml" as toml import .port as p\n')
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(allow_files=['./data.toml']), base_dir=tmp_path)
+    r = ImportResolver(sandbox=sb)
+    ids1 = r.import_identities(doc)
+    (tmp_path / 'data.toml').write_text('port = 2\n', encoding='utf-8')
+    ids2 = r.import_identities(doc)
+    assert ids1['p'] != ids2['p']
+
+
+def test_parse_data_yaml_missing_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PyYAML 缺失 → import.yaml_missing 警告（import yaml 抛 ImportError）。"""
+    monkeypatch.setitem(sys.modules, 'yaml', None)  # sys.modules 中 None → import 抛 ImportError
+    (tmp_path / 'data.yaml').write_text('a: 1\n', encoding='utf-8')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "data.yaml" as yaml import .a as a\n')
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(allow_files=['./data.yaml']), base_dir=tmp_path)
+    collector = DiagnosticCollector()
+    ns = ImportResolver(sandbox=sb).resolve(doc, collector)
+    assert 'a' not in ns
+    assert [d.code for d in collector] == ['import.yaml_missing']

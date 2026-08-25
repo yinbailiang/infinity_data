@@ -212,6 +212,23 @@ def test_position_index_must_be_int() -> None:
     assert compile_source('x: <list, position(0.5, int)> = [1, 2]\n').has_errors
 
 
+def test_position_need_constraint_arg() -> None:
+    """position 第二参数非约束（字面量）→ position_need。"""
+    assert compile_source('x: <list, position(0, 5)> = [1, 2]\n').has_errors
+
+
+def test_range_arg_invalid() -> None:
+    """range 参数非数值 → range_arg。"""
+    assert compile_source('x: range("a") = 5\n').has_errors
+    assert compile_source('x: range(1, "a") = 5\n').has_errors
+
+
+def test_size_arg_invalid() -> None:
+    """size 参数非整数 → size_arg。"""
+    assert compile_source('x: size("a") = [1]\n').has_errors
+    assert compile_source('x: size(1, "a") = [1]\n').has_errors
+
+
 def test_position_with_template() -> None:
     """position 嵌套模板即约束（结构校验）。"""
     compile_ok('~S {\n    a: int = 1\n}\nx: <list, position(0, S)> = [{ a = 2 }, { a = "x" }]\n')

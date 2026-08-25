@@ -615,6 +615,268 @@ def test_template_import_nested(tmp_path: Path) -> None:
     assert result.value == {'m': {'base': {'id': 7}}}
 
 
+def test_inft_data_import_var_in_place(tmp_path: Path) -> None:
+    """.inft 允许 !var，模板 $ 就地解析（定义文件命名空间；主文件无需同名绑定）。"""
+    _write(tmp_path / 'templates' / 'svc.inft', '!var 8080 import . as port\n~S {\n    port: int = $port\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'s': {'port': 8080}}
+
+
+def test_inft_data_import_env_in_place(tmp_path: Path) -> None:
+    """.inft 的 !env 绑定该文件命名空间，模板 $ 就地解析。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!env import PORT as port\n~S {\n    port: int = $port as int\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft'], env={'PORT': '8080'}))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'s': {'port': 8080}}
+
+
+def test_inft_data_import_file_in_place(tmp_path: Path) -> None:
+    """.inft 的 !file 相对路径按 .inft 所在目录解析（与 !from 一致），模板 $ 就地解析。"""
+    _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "data.json" as json import .port as port\n~S {\n    port: int = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'s': {'port': 8080}}
+
+
+def test_inft_dollar_isolated_across_files(tmp_path: Path) -> None:
+    """跨文件隔离：.inft 模板不能隐式用主文件的 $（就地解析）→ dollar.undefined 取 null。"""
+    _write(tmp_path / 'templates' / 'svc.inft', '~S {\n    port: <int?> = $port\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\n!var 8080 import . as port\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert any(d.code == 'dollar.undefined' for d in result.diagnostics)
+    assert result.value == {'s': {'port': None}}
+
+
+def test_inft_same_alias_isolated_between_files(tmp_path: Path) -> None:
+    """两个 .inft 各自定义同名 $ 别名，各自模板就地解析，互不干扰。"""
+    _write(tmp_path / 'a.inft', '!var 1 import . as x\n~A {\n    v: int = $x\n}\n')
+    _write(tmp_path / 'b.inft', '!var 2 import . as x\n~B {\n    v: int = $x\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "a.inft" import A\n!from "b.inft" import B\na = A()\nb = B()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'a': {'v': 1}, 'b': {'v': 2}}
+
+
+def test_inft_var_forward_reference_in_place(tmp_path: Path) -> None:
+    """.inft 的 !var 前向引用 + 环检测按文件隔离（§2.10 / §1.8）。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft', '!var $b import . as a\n!var 1 import . as b\n~S {\n    v: int = $a\n}\n'
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'s': {'v': 1}}
+
+
+def test_inft_still_forbids_field(tmp_path: Path) -> None:
+    """.inft 仍禁止数据字段/结构级约束（仅导入语句放行）。"""
+    _write(tmp_path / 'templates' / 'svc.inft', '~S {\n    port: int = 80\n}\nx = 1\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert any(d.code == 'inft.not_allowed' for d in result.diagnostics)
+
+
+# ═══════════════════════════════════════════════════════
+# .inft 数据导入的报错与错误恢复（§1.8 / §3.2）
+# ═══════════════════════════════════════════════════════
+
+
+def test_inft_file_denied_warns_and_undefined(tmp_path: Path) -> None:
+    """.inft 的 !file 未授权（strict=False）→ import.file_denied 警告 + $ 未绑定 → dollar.undefined 取 null。"""
+    _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "data.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft'], strict=False))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    codes = [d.code for d in result.diagnostics]
+    assert 'import.file_denied' in codes
+    assert 'dollar.undefined' in codes
+    assert result.value == {'s': {'port': None}}
+
+
+def test_inft_file_denied_strict_fails(tmp_path: Path) -> None:
+    """.inft 的 !file 未授权（strict 默认）→ sandbox.access_denied ERROR + 空文档（与主文件一致）。"""
+    _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "data.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
+    assert result.has_errors
+    assert any(d.code == 'sandbox.access_denied' for d in result.diagnostics)
+    assert result.value == {}
+
+
+def test_inft_file_missing_warns(tmp_path: Path) -> None:
+    """.inft 的 !file 文件不存在 → import.file_missing 警告，$ 未绑定。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "nope.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert any(d.code == 'import.file_missing' for d in result.diagnostics)
+    assert result.value == {'s': {'port': None}}
+
+
+def test_inft_file_parse_failed_recovers(tmp_path: Path) -> None:
+    """.inft 的 !file 坏 JSON → import.parse_failed ERROR（不崩溃，容错继续）。"""
+    _write(tmp_path / 'templates' / 'bad.json', '{not json}')
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "bad.json" as json import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert any(d.code == 'import.parse_failed' for d in result.diagnostics)
+    assert any(d.code == 'dollar.undefined' for d in result.diagnostics)
+    assert result.value == {'s': {'port': None}}
+
+
+def test_inft_file_path_failed_warns(tmp_path: Path) -> None:
+    """.inft 的 !file JSON path 取不到 → import.path_failed 警告。"""
+    _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "data.json" as json import .missing as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert any(d.code == 'import.path_failed' for d in result.diagnostics)
+    assert result.value == {'s': {'port': None}}
+
+
+def test_inft_file_unsupported_format_warns(tmp_path: Path) -> None:
+    """.inft 的 !file 不支持格式 → import.unsupported_format 警告。"""
+    _write(tmp_path / 'templates' / 'data.xyz', 'x = 1')
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file "data.xyz" as xyz import . as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert any(d.code == 'import.unsupported_format' for d in result.diagnostics)
+
+
+def test_inft_var_cycle_in_place(tmp_path: Path) -> None:
+    """.inft 的 !var 依赖环 → var.cycle（环检测按文件隔离）。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!var $b import . as a\n!var $a import . as b\n~S {\n    v: <int?> = $a\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert any(d.code == 'var.cycle' for d in result.diagnostics)
+    assert result.value == {'s': {'v': None}}
+
+
+def test_inft_var_path_failed_in_place(tmp_path: Path) -> None:
+    """.inft 的 !var path 取不到 → var.path_failed 错误（不静默 null）。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!var { a = 1 } import .b as x\n~S {\n    v: <int?> = $x\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert any(d.code == 'var.path_failed' for d in result.diagnostics)
+    assert result.value == {'s': {'v': None}}
+
+
+def test_inft_namespace_duplicate_keeps_first(tmp_path: Path) -> None:
+    """.inft 内 !var 同名 → namespace.duplicate，保留先到者。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!var 1 import . as x\n!var 2 import . as x\n~S {\n    v: int = $x\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig.development())
+    assert any(d.code == 'namespace.duplicate' for d in result.diagnostics)
+    assert result.value == {'s': {'v': 1}}
+
+
+def test_inft_env_unauthorized_fails(tmp_path: Path) -> None:
+    """.inft 的 !env 未授权 → sandbox.env_unauthorized ERROR（沙盒违规 → 空文档，不静默）。"""
+    _write(tmp_path / 'templates' / 'svc.inft', '!env import SECRET as s\n~S {\n    v: str = $s\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.env_unauthorized']
+    assert result.value == {}
+
+
+# ═══════════════════════════════════════════════════════
+# 导入格式成功路径（toml / yaml）与未授权容错
+# ═══════════════════════════════════════════════════════
+
+
+def test_file_import_toml(tmp_path: Path) -> None:
+    """!file as toml：TOML 解析成功路径。"""
+    data = tmp_path / 'data.toml'
+    _write(data, 'port = 8080\nname = "api"\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "data.toml" as toml import .port as port, .name as name\np = $port\nn = $name\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./data.toml']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'p': 8080, 'n': 'api'}
+
+
+def test_file_import_yaml(tmp_path: Path) -> None:
+    """!file as yaml：YAML 解析成功路径（需 PyYAML）。"""
+    data = tmp_path / 'data.yaml'
+    _write(data, 'port: 8080\nname: api\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "data.yaml" as yaml import .port as port, .name as name\np = $port\nn = $name\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./data.yaml']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'p': 8080, 'n': 'api'}
+
+
+def test_template_import_denied_non_strict_warns(tmp_path: Path) -> None:
+    """!from 未授权（strict=False）→ import.template_denied 警告（open_template 返回 None 路径）。"""
+    tpl = tmp_path / 'templates' / 'extra.inft'
+    _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!from "templates/extra.inft" import Extra\nval = Extra()\n')
+    result = load(f, sandbox=SandboxConfig(allow_templates=['./allowed/*.inft'], strict=False))
+    assert any(d.code == 'import.template_denied' for d in result.diagnostics)
+
+
 def test_template_import_unauthorized_denied(tmp_path: Path) -> None:
     tpl = tmp_path / 'templates' / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')

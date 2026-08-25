@@ -84,7 +84,8 @@ class AstBuilder:
         self._template_scopes: dict[TemplateKey, Scope] = {}
         self._root_scope: Scope = {}
         self._schema_scope: Scope | None = None
-        self._namespace: dict[str, StdValue] = {}  # $ 引用解析目标（!env/!file/!var 统一为 StdValue）
+        # 按文件就地解析（§1.8）：id(scope) → 该文件 $ 命名空间（!env/!file/!var 统一为 StdValue）
+        self._namespaces: dict[int, dict[str, StdValue]] = {}
         self._collector: DiagnosticCollector = DiagnosticCollector()  # 本次 build 的共享收集器
         self._depth = 0
         self._recursive_defaults: set[TemplateKey] = set()
@@ -109,7 +110,7 @@ class AstBuilder:
         self._template_scopes = {}
         self._root_scope = {}
         self._schema_scope = None
-        self._namespace = {}
+        self._namespaces = {}
         self._collector = collector
         self._depth = 0
         self._recursive_defaults = set()
@@ -119,7 +120,7 @@ class AstBuilder:
         self._template_scopes = context.template_scopes
         self._root_scope = context.root_scope
         self._schema_scope = context.schema_scope
-        self._namespace = context.namespace
+        self._namespaces = context.namespaces
 
         # 静态防护：默认值引用环检测（默认值禁止自引用，见 neo_desg.md 2.6）
         self._detect_recursive_defaults()
@@ -127,8 +128,8 @@ class AstBuilder:
         # 模板配置校验：extra_*_vars 指向的字段必须在模板中声明（§2.9，定义即报错）
         self._check_variadic_config()
 
-        # !var 求值（§2.10）：root 构建前填充 $ 命名空间（前向引用 + 环检测）
-        self._resolve_var_statements(doc)
+        # !var 求值（§2.10）：root 构建前按文件填充 $ 命名空间（前向引用 + 环检测，就地解析）
+        self._resolve_var_statements(context)
 
         # 构建 root（顶层结构约束挂在 root.constraints，不执行）
         root_fields: list[StdField] = []
@@ -167,18 +168,33 @@ class AstBuilder:
     # !var 求值（§2.10）
     # ═══════════════════════════════════════════════════════
 
-    def _resolve_var_statements(self, doc: Document) -> None:
-        """!var 求值：静态依赖图 + 环检测 + 拓扑求值 + path 投影，填充 $ 命名空间。
+    def _resolve_var_statements(self, context: ResolvedContext) -> None:
+        """!var 求值（按文件就地解析，§1.8）：每文件独立依赖图 + 环检测 + 拓扑求值。
 
         在 root 构建之前调用——前向引用经拓扑序天然支持；依赖环 → ``var.cycle``。
-        值构造（模板展开 / 解包 / $ 引用）全部复用 :meth:`_resolve_value`。
+        值构造（模板展开 / 解包 / $ 引用）全部复用 :meth:`_resolve_value`，
+        用**该文件**的 scope 就地解析、绑定**该文件**的 $ 命名空间（跨文件完全隔离）。
         """
-        stmts = [s for s in doc.statements if isinstance(s, VarStmt)]
-        if not stmts:
+        if not context.var_statements:
             return
+        # scope_id → scope 对象（root + 各定义点 scope；同一 scope 被多模板共享，去重）
+        scope_by_id: dict[int, Scope] = {id(context.root_scope): context.root_scope}
+        if context.schema_scope is not None:
+            scope_by_id.setdefault(id(context.schema_scope), context.schema_scope)
+        for sc in context.template_scopes.values():
+            scope_by_id.setdefault(id(sc), sc)
+        for scope_id, stmts in context.var_statements.items():
+            scope = scope_by_id.get(scope_id)
+            if scope is None:
+                continue  # 防御：scope 对象不在 context（理论上不会）
+            self._resolve_var_file(scope, stmts)
+
+    def _resolve_var_file(self, scope: Scope, stmts: list[VarStmt]) -> None:
+        """单个文件内 !var 求值（用该文件 scope 解析，绑定该文件命名空间）。"""
+        namespace = self._namespaces.setdefault(id(scope), {})
         by_alias = {s.alias: i for i, s in enumerate(stmts)}
 
-        # 1) 依赖图：!var 的 $ 引用指向其他 !var 别名 → 边（walk 静态提取）
+        # 1) 依赖图：!var 的 $ 引用指向同文件其他 !var 别名 → 边（walk 静态提取）
         deps: dict[int, set[int]] = {}
         for i, s in enumerate(stmts):
             dep_indices: set[int] = set()
@@ -208,10 +224,10 @@ class AstBuilder:
         for i in range(len(stmts)):
             visit(i)
 
-        # 3) 拓扑序求值 → path 投影 → 填 namespace（duplicate 检测）
+        # 3) 拓扑序求值 → path 投影 → 填本文件命名空间（duplicate 检测）
         for i in order:
             s = stmts[i]
-            rv = self._resolve_value(s.value, '', self._root_scope)
+            rv = self._resolve_value(s.value, '', scope)
             if rv is None:
                 continue  # 值解析失败已报告
             if s.json_path:
@@ -220,10 +236,10 @@ class AstBuilder:
                 except (KeyError, IndexError, TypeError):
                     self._err('var.path_failed', {'alias': s.alias}, s.source, '')
                     continue
-            if s.alias in self._namespace:
+            if s.alias in namespace:
                 self._err('namespace.duplicate', {'name': s.alias}, s.source, '')
                 continue
-            self._namespace[s.alias] = rv
+            namespace[s.alias] = rv
 
     # ═══════════════════════════════════════════════════════
     # 递归默认值防护（方案 C：默认引用图 + 静态环检测）
@@ -430,7 +446,7 @@ class AstBuilder:
                 case LiteralValue(value=tok):
                     return self._convert_literal(tok)
                 case DollarValue(name=n, type_cast=tc, source=src):
-                    return self._resolve_dollar(n, tc, path, src)
+                    return self._resolve_dollar(n, tc, path, src, scope)
                 case DictValue(fields=fs, constraints=cs, unpacks=ups):
                     std_fields: list[StdField] = []
                     # **expr 解包：目标必须是 dict，展开为键值对（disjoint merge 查重在 _finalize_object）
@@ -506,17 +522,24 @@ class AstBuilder:
         raise TypeError(f'未知字面量 token 类型: {type(tok)}')
 
     def _resolve_dollar(
-        self, name: str, type_cast: str | None, path: str, source: SourceRange | None = None
+        self,
+        name: str,
+        type_cast: str | None,
+        path: str,
+        source: SourceRange | None = None,
+        scope: Scope | None = None,
     ) -> StdValue:
-        """解析 ``$name`` 引用，type_cast 为显式 as bool/int/float/str 转换。
+        """解析 ``$name`` 引用（按书写位置的 scope 就地查该文件 $ 命名空间，§1.8）。
 
-        source 为 ``$name`` 表达式在源码中的位置
+        type_cast 为显式 as bool/int/float/str 转换；source 为 ``$name`` 表达式在源码中的位置。
+        本文件空间查不到 → ``dollar.undefined`` 警告取 null（不中断编译）。
         """
-        if name not in self._namespace:
+        namespace = self._namespaces.get(id(scope), {}) if scope is not None else {}
+        if name not in namespace:
             self._warn('dollar.undefined', {'name': name}, source, path)
             return StdLiteral(kind='null', value=None)
 
-        raw = self._namespace[name]
+        raw = namespace[name]
         # namespace 统一存 StdValue（!env/!file/!var 均由 python_to_std / 求值产出）
         if type_cast is None:
             return raw

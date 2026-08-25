@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tomllib
 from pathlib import Path
@@ -25,6 +26,7 @@ from infinity_data.parser import (
     Document,
     EnvImportStmt,
     FileImportStmt,
+    VarStmt,
 )
 from infinity_data.sandbox import Sandbox, SandboxConfig
 from infinity_data.semantic.jsonpath import apply_json_path
@@ -41,6 +43,11 @@ _FORMAT_MAP: dict[str, str] = {
     '.md': 'raw',
     '.log': 'raw',
 }
+
+
+def _import_hash(s: str) -> str:
+    """导入真名哈希（§1.8，来源哈希，确定性）。"""
+    return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 
 class ImportResolver:
@@ -62,14 +69,24 @@ class ImportResolver:
     def base_dir(self) -> Path:
         return self._sandbox.base_dir
 
-    def resolve(self, doc: Document, collector: DiagnosticCollector) -> dict[str, StdValue]:
-        """解析所有导入语句（env/file），返回 namespace（StdValue）；诊断写入 ``collector``。"""
+    def resolve(
+        self,
+        doc: Document,
+        collector: DiagnosticCollector,
+        *,
+        base_dir: Path | None = None,
+    ) -> dict[str, StdValue]:
+        """解析所有导入语句（env/file），返回 namespace（StdValue）；诊断写入 ``collector``。
+
+        ``base_dir``：``!file`` 相对路径的解析基准（就地解析，§1.8）——
+        主文件传其目录；``.inft`` 模板文件传**该文件所在目录**（与 ``!from`` 一致）。
+        """
         namespace: dict[str, StdValue] = {}
         for stmt in doc.statements:
             if isinstance(stmt, EnvImportStmt):
                 self._resolve_env(stmt, namespace, collector)
             elif isinstance(stmt, FileImportStmt):
-                self._resolve_file(stmt, namespace, collector)
+                self._resolve_file(stmt, namespace, collector, base_dir)
         return namespace
 
     def _bind(
@@ -112,9 +129,10 @@ class ImportResolver:
         stmt: FileImportStmt,
         namespace: dict[str, StdValue],
         collector: DiagnosticCollector,
+        base_dir: Path | None = None,
     ) -> None:
-        """!file "path" [as fmt] import .path.to.key as alias, ..."""
-        file = self._sandbox.open_file(stmt.file_path, source=stmt.source)
+        """!file "path" [as fmt] import .path.to.key as alias, ...（相对路径以 base_dir 解析）"""
+        file = self._sandbox.open_file(stmt.file_path, source=stmt.source, base_dir=base_dir)
         if file is None:
             collector.add(Diagnostic(Severity.WARNING, 'import.file_denied', {'path_src': stmt.file_path}, stmt.source))
             return
@@ -139,6 +157,38 @@ class ImportResolver:
                 collector.add(Diagnostic(Severity.WARNING, 'import.path_failed', {'name': file.name}, item.source))
                 continue
             self._bind(namespace, item.alias, value, collector, item.source)
+
+    def import_identities(self, doc: Document, *, base_dir: Path | None = None) -> dict[str, str]:
+        """doc 中每个 $ 绑定的**导入真名**（来源哈希，不含运行时值；§1.8）。
+
+        - env: ``SHA256("env" || 变量名)``
+        - file: ``SHA256(fmt || jsonpath || 文件内容哈希)``（文件被拒/不可读 → 该绑定无真名）
+        - var: ``SHA256(canon(值表达式) || path)``
+
+        真名是身份/签名维度：相同来源 → 相同真名，与机器/环境无关
+        （env 的**值**不进哈希，否则身份随环境漂移）。供模板身份纳入数据依赖（§2.5）。
+        """
+        out: dict[str, str] = {}
+        for stmt in doc.statements:
+            if isinstance(stmt, EnvImportStmt):
+                for item in stmt.items:
+                    out[item.alias or item.name] = _import_hash(f'env:{item.name}')
+            elif isinstance(stmt, FileImportStmt):
+                file = self._sandbox.open_file(stmt.file_path, source=stmt.source, base_dir=base_dir)
+                if file is None:
+                    continue
+                try:
+                    content = file.content_hash()
+                except OSError:
+                    continue
+                fmt = stmt.format or _FORMAT_MAP.get(Path(stmt.file_path).suffix.lower(), 'json')
+                for item in stmt.imports:
+                    path = ''.join(seg.canonical() for seg in item.json_path) or '.'
+                    out[item.alias] = _import_hash(f'file:{fmt}|{path}|{content}')
+            elif isinstance(stmt, VarStmt):
+                path = ''.join(seg.canonical() for seg in stmt.json_path) or '.'
+                out[stmt.alias] = _import_hash(f'var:{stmt.value.canonical()}|{path}')
+        return out
 
     # ── 模板导入路径解析（!from 由 TemplateGraphResolver 使用）──
 

@@ -177,3 +177,100 @@ def test_identity_dedup_across_files(tmp_path: Path) -> None:
     assert k1.identity == k2.identity  # 同内容同依赖 → 同身份
     # 同一身份只登记一次
     assert sum(1 for k in ctx.templates if k.identity == k1.identity) == 1
+
+
+# ═══════════════════════════════════════════════════════════
+# $ 数据依赖：导入真名纳入身份（§1.8 / §2.5）
+# ═══════════════════════════════════════════════════════════
+
+
+def test_identity_import_dependency_different() -> None:
+    """内容相同的模板，$ 数据来源不同（!var 表达式不同）→ 不同身份。"""
+    c1, _ = _ctx('!var 1 import . as x\n~A {\n    v: int = $x\n}\n')
+    c2, _ = _ctx('!var 2 import . as x\n~A {\n    v: int = $x\n}\n')
+    assert _identity_of(c1, 'A') != _identity_of(c2, 'A')
+
+
+def test_identity_import_dependency_same() -> None:
+    """内容 + $ 数据来源相同 → 同身份（可复现）。"""
+    c1, _ = _ctx('!var 1 import . as x\n~A {\n    v: int = $x\n}\n')
+    c2, _ = _ctx('!var 1 import . as x\n~A {\n    v: int = $x\n}\n')
+    assert _identity_of(c1, 'A') == _identity_of(c2, 'A')
+
+
+def test_identity_import_unused_does_not_affect() -> None:
+    """模板不引用 $ 时，文件里的导入语句不影响其身份。"""
+    c1, _ = _ctx('!var 1 import . as x\n~A {\n    v: int = 1\n}\n')
+    c2, _ = _ctx('~A {\n    v: int = 1\n}\n')
+    assert _identity_of(c1, 'A') == _identity_of(c2, 'A')
+
+
+def test_identity_env_value_not_in_hash(tmp_path: Path) -> None:
+    """!env 的**值**不进身份哈希：变量名相同、值不同 → 模板身份相同（可复现构建）。"""
+    base = tmp_path
+    app = '!env import PORT as port\n~A {\n    v: int = $port as int\n}\n'
+
+    def resolve(name: str, port: str) -> ResolvedContext:
+        file = DiskFile.from_fullpath(base / name)
+        _write(Path(file.name), app)
+        doc, _ = parse_source(file)
+        sb = Sandbox(SandboxConfig(env={'PORT': port}), base_dir=base)
+        r = TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb))
+        return r.resolve(doc, file, DiagnosticCollector())
+
+    c1 = resolve('app1.infd', '1')
+    c2 = resolve('app2.infd', '9999')
+    assert _identity_of(c1, 'A') == _identity_of(c2, 'A')
+
+
+def _resolve_app_full(base: Path, source: str) -> tuple[ResolvedContext, DiagnosticCollector]:
+    """同 _resolve_app，但 !file / !env 也授权（full_access 沙盒）。"""
+    file = DiskFile.from_fullpath(base / 'app.infd')
+    _write(Path(file.name), source)
+    doc, _ = parse_source(file)
+    collector = DiagnosticCollector()
+    sb = Sandbox(SandboxConfig(allow_files=['**/*'], allow_templates=['**/*'], env={}), base_dir=base)
+    ctx = TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb)).resolve(doc, file, collector)
+    return ctx, collector
+
+
+def test_identity_file_dependency_different(tmp_path: Path) -> None:
+    """.inft 的 !file 内容不同 → 模板身份不同（导入真名含文件内容哈希）。"""
+    _write(tmp_path / 't1' / 'data.json', '{"port": 1}')
+    _write(tmp_path / 't2' / 'data.json', '{"port": 2}')
+    app = '!file "data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
+    c1, d1 = _resolve_app_full(tmp_path / 't1', app)
+    c2, d2 = _resolve_app_full(tmp_path / 't2', app)
+    assert not list(d1) and not list(d2)
+    assert _identity_of(c1, 'A') != _identity_of(c2, 'A')
+
+
+def test_identity_file_dependency_same(tmp_path: Path) -> None:
+    """.inft 的 !file 内容相同 + 模板内容相同 → 同身份（可复现）。"""
+    _write(tmp_path / 't1' / 'data.json', '{"port": 1}')
+    _write(tmp_path / 't2' / 'data.json', '{"port": 1}')
+    app = '!file "data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
+    c1, d1 = _resolve_app_full(tmp_path / 't1', app)
+    c2, d2 = _resolve_app_full(tmp_path / 't2', app)
+    assert not list(d1) and not list(d2)
+    assert _identity_of(c1, 'A') == _identity_of(c2, 'A')
+
+
+def test_identity_file_denied_no_import_identity(tmp_path: Path) -> None:
+    """.inft 的 !file 未授权 → 该 $ 绑定无导入真名 → 模板身份不纳入该数据依赖。"""
+    _write(tmp_path / 'data.json', '{"port": 1}')
+    app = '!file "data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
+    file = DiskFile.from_fullpath(tmp_path / 'app.infd')
+    _write(Path(file.name), app)
+    doc, _ = parse_source(file)
+    # 未授权 !file（strict=False → 返回 None，不抛）→ 无真名
+    sb_denied = Sandbox(SandboxConfig(allow_templates=['**/*'], strict=False), base_dir=tmp_path)
+    ctx_denied = TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb_denied)).resolve(
+        doc, file, DiagnosticCollector()
+    )
+    # 授权 !file → 有真名
+    sb_ok = Sandbox(SandboxConfig(allow_templates=['**/*'], allow_files=['**/*']), base_dir=tmp_path)
+    ctx_ok = TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb_ok)).resolve(
+        doc, file, DiagnosticCollector()
+    )
+    assert _identity_of(ctx_denied, 'A') != _identity_of(ctx_ok, 'A')

@@ -1,11 +1,13 @@
-"""模板真名计算：直接依赖组合哈希（§2.5）。
+"""模板真名计算：直接依赖组合哈希（§2.5，含 `$` 数据依赖）。
 
-    identity(T) = SHA256(canon(T) || sorted(identity(直接依赖模板)))
+    identity(T) = SHA256(canon(T) || sorted(identity(直接依赖模板)) || sorted(import_identity(T 的 $ 引用)))
 
 - ``canon(T)``：:meth:`TemplateDef.canonical` —— AST 规范化序列化，输出**标准
   infd 源码**（可被 parser 还原，round-trip；排除 source/位置，注释不影响）
 - 直接依赖：T 定义文件 scope 中、T 实际引用的模板（值位置模板调用 + 约束中的
   模板名，排除注册约束名——模板名不与已注册约束同名，见 ``template.shadows_builtin``）
+- ``import_identity``：T 定义文件命名空间中其 `$` 引用对应绑定的**导入真名**（§1.8）
+  ——模板身份覆盖数据依赖（!file/!env/!var 来源变化 → 身份变化，可审计）
 - 闭包无需显式计算（Merkle 式）：直接依赖的 identity 已含其自身依赖子树
 - 环处理：DFS 栈上的依赖退化为「该模板内容 hash」（不递归），保证终止、确定、路径无关
 
@@ -22,6 +24,7 @@ from collections.abc import Collection
 from infinity_data.parser import (
     ConstraintCall,
     ConstraintIdent,
+    DollarValue,
     TemplateCallValue,
     TemplateDef,
     walk,
@@ -59,6 +62,21 @@ def extract_dependencies(tpl: TemplateDef, scope: Scope, builtin_names: Collecti
     return deps
 
 
+def extract_import_dependencies(
+    tpl: TemplateDef, scope: Scope, import_identities: dict[int, dict[str, str]]
+) -> set[str]:
+    """模板 T 的 `$` 数据依赖：walk 收集 ``$`` 引用名，映射为定义文件命名空间的**导入真名**（§1.8）。
+
+    导入真名是叶子哈希（无递归），直接进入模板身份组合；找不到映射（如 `$` 未定义
+    或该文件无对应导入绑定）→ 跳过。数据来源变化 → 导入真名变化 → 模板身份变化。
+    """
+    idents = import_identities.get(id(scope), {})
+    if not idents:
+        return set()
+    names = {node.name for node in walk(tpl) if isinstance(node, DollarValue)}
+    return {idents[n] for n in names if n in idents}
+
+
 # ═══════════════════════════════════════════════════════════
 # 依赖闭包组合哈希
 # ═══════════════════════════════════════════════════════════
@@ -72,17 +90,22 @@ def compute_identity_map(
     templates: dict[TemplateKey, TemplateDef],
     template_scopes: dict[TemplateKey, Scope],
     builtin_names: Collection[str],
+    import_identities: dict[int, dict[str, str]] | None = None,
 ) -> dict[TemplateKey, TemplateKey]:
-    """计算 old → new 的 TemplateKey 映射（新 identity = 依赖闭包组合哈希）。
+    """计算 old → new 的 TemplateKey 映射（新 identity = 依赖闭包组合哈希 + $ 数据依赖）。
 
-    - 无环：``identity = hash(content_hash || sorted(依赖 identity))``
+    - 无环：``identity = hash(content_hash || sorted(依赖 identity) || sorted(导入真名))``
     - 环：DFS 栈上依赖退化为内容 hash（不递归）——终止、确定、路径无关
     """
     content_hashes: dict[TemplateKey, str] = {}
     dependencies: dict[TemplateKey, set[TemplateKey]] = {}
+    import_deps: dict[TemplateKey, set[str]] = {}
+    import_map = import_identities or {}
     for key, tpl in templates.items():
         content_hashes[key] = _content_hash(tpl)
-        dependencies[key] = extract_dependencies(tpl, template_scopes.get(key, {}), builtin_names)
+        scope = template_scopes.get(key, {})
+        dependencies[key] = extract_dependencies(tpl, scope, builtin_names)
+        import_deps[key] = extract_import_dependencies(tpl, scope, import_map)
 
     memo: dict[TemplateKey, str] = {}
     stack: set[TemplateKey] = set()
@@ -94,7 +117,8 @@ def compute_identity_map(
             return content_hashes[key]  # 环：依赖退化为内容 hash（不递归）
         stack.add(key)
         dep_ids = sorted(identity_of(d) for d in dependencies[key])
-        combined = content_hashes[key] + '|' + ','.join(dep_ids)
+        import_ids = sorted(import_deps[key])
+        combined = content_hashes[key] + '|' + ','.join(dep_ids) + '|' + ','.join(import_ids)
         ident = IDENTITY_PREFIX + hashlib.sha256(combined.encode('utf-8')).hexdigest()
         memo[key] = ident
         stack.remove(key)
