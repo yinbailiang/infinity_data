@@ -4,7 +4,7 @@ from pathlib import Path
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
-from infinity_data.parser import DictValue, Field, TemplateDef, TemplateField
+from infinity_data.parser import DictValue, EnvImportStmt, Field, TemplateDef, TemplateField
 from infinity_data.parser.parser import Parser
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.tokenizer import RawTokenizer
@@ -53,20 +53,31 @@ def test_unrecognized_statement_reported() -> None:
 
 
 def test_env_import_requires_newline() -> None:
-    """!env 无导入项列表：尾部必须换行/EOF，同一行逗号后接语句必须报错。
+    """!env 多导入项：项之间必须用逗号分隔；尾部必须换行/EOF。
 
-    若不检查，同一行逗号会被顶层 skip_separators 吞掉（`!env import A as a, x = 1`
-    被误认为合法），与 !from / !file 的「尾部必须换行」行为不一致。
+    若不检查尾部，同一行逗号后的语句会被顶层 skip_separators 吞掉
+    （`!env import A as a, x = 1` 被误认为合法），与 !from / !file 的
+    「尾部必须换行」行为不一致。
     """
     # 换行结尾 → 合法
     _, diags = _parse('!env import A as a\n')
     assert not diags
-    # 同一行逗号接语句 → 报错（逗号仍由顶层吞掉，x = 1 容错继续解析）
+    # 多导入项（逗号分隔，as 别名可选）→ 合法
+    doc, diags = _parse('!env import A as a, B, C as c\n')
+    assert not diags
+    stmt = doc.statements[0]
+    assert isinstance(stmt, EnvImportStmt)
+    assert [i.name for i in stmt.items] == ['A', 'B', 'C']
+    assert [i.alias for i in stmt.items] == ['a', None, 'c']
+    # 同一行逗号接语句 → 报错（逗号后 x 被容错当作导入项，尾部检查报错）
     _, diags = _parse('!env import A as a, x = 1\n')
     assert any(d.code == 'parse.import_requires_newline' for d in diags)
-    # 尾随逗号（逗号后 EOF）→ 报错
+    # 尾随逗号（逗号后 EOF）→ 报错（expect IdentifierToken 失败）
     _, diags = _parse('!env import A as a,')
-    assert any(d.code == 'parse.import_requires_newline' for d in diags)
+    assert any(d.code == 'parse.unexpected_token' for d in diags)
+    # 同一行空格分隔（漏逗号）→ 报缺失逗号，容错继续
+    _, diags = _parse('!env import A B\n')
+    assert any(d.code == 'parse.import_missing_comma' for d in diags)
 
 
 def test_omitted_equals_requires_composite() -> None:

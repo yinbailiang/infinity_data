@@ -145,6 +145,114 @@ def test_dollar_cast_bool_failure_warns(tmp_path: Path) -> None:
     assert result.value == {'x': False}
 
 
+def test_env_import_multi(tmp_path: Path) -> None:
+    """!env 一次导入多个变量：逗号分隔，as 别名可选。"""
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!env import USER as u, HOME, PORT as p\nuser = $u\nhome = $HOME\nport = $p as int\n',
+    )
+    result = load(f, env={'USER': 'alice', 'HOME': '/home/alice', 'PORT': '8080'})
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'user': 'alice', 'home': '/home/alice', 'port': 8080}
+
+
+def test_dollar_cast_any_import_string(tmp_path: Path) -> None:
+    """as 转换对任何导入空间的字符串可用：!file(raw) / !file(json) / !var 全部生效。
+
+    ``$name as type`` 作用于命名空间里的任何字符串 StdValue，与来源无关。
+    """
+    data = tmp_path / 'num.txt'
+    _write(data, '8080')
+    cfg = tmp_path / 'data.json'
+    _write(cfg, '{"port": "443", "ratio": "1.5", "flag": "true"}')
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!file "num.txt" as raw import . as n\n'
+        '!file "data.json" as json import .port as port, .ratio as ratio, .flag as flag\n'
+        '!var "42" import . as v\n'
+        'a = $n as int\n'
+        'b = $port as int\n'
+        'c = $v as int\n'
+        'd = $ratio as float\n'
+        'e = $flag as bool\n'
+        's = $n as str\n',
+    )
+    result = load(f, sandbox=SandboxConfig(allow_files=['./num.txt', './data.json']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {
+        'a': 8080,
+        'b': 443,
+        'c': 42,
+        'd': Decimal('1.5'),
+        'e': True,
+        's': '8080',
+    }
+
+
+def test_dollar_cast_str_any_literal(tmp_path: Path) -> None:
+    """as str 字符串化：任意字面量按语言风格转字符串，不泄漏 Python 内部表示。
+
+    bool → true/false、float 特殊值 → nan/+inf/-inf、int/float → 十进制；
+    **空字面量保持传播**：null → null、noexist → noexist（三态可空不因 as 丢失）。
+    """
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!var 42 import . as i\n'
+        '!var 1.5 import . as fl\n'
+        '!var true import . as bt\n'
+        '!var false import . as bf\n'
+        '!var null import . as n\n'
+        '!var noexist import . as nx\n'
+        '!var nan import . as nn\n'
+        '!var +inf import . as pi\n'
+        '!var -inf import . as ni\n'
+        's_i = $i as str\n'
+        's_fl = $fl as str\n'
+        's_bt = $bt as str\n'
+        's_bf = $bf as str\n'
+        's_n = $n as str\n'
+        's_nx = $nx as str\n'
+        's_nn = $nn as str\n'
+        's_pi = $pi as str\n'
+        's_ni = $ni as str\n',
+    )
+    result = load(f)
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {
+        's_i': '42',
+        's_fl': '1.5',
+        's_bt': 'true',
+        's_bf': 'false',
+        's_n': None,  # null 保持传播
+        's_nn': 'nan',
+        's_pi': '+inf',
+        's_ni': '-inf',
+        # s_nx 为 noexist → 保持传播，键不出现在输出
+    }
+
+
+def test_dollar_cast_null_noexist_propagates(tmp_path: Path) -> None:
+    """as 转换对空字面量保持传播：null → null、noexist → noexist（无警告、无回退）。"""
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!var null import . as n\n'
+        '!var noexist import . as nx\n'
+        'a = $n as int\n'
+        'b = $n as bool\n'
+        'c = $n as float\n'
+        'd = $n as str\n'
+        'e = $nx as int\n',
+    )
+    result = load(f)
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'a': None, 'b': None, 'c': None, 'd': None}
+    # e 为 noexist → 键不出现在输出
+
+
 def test_env_authorized_read_from_os(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """allow_env 授权从真实 OS 环境实时读取（非注入快照）。"""
     monkeypatch.setenv('INF_DEMO_KEY', 'from-os')
@@ -251,6 +359,52 @@ def test_invalid_json_path_reported(tmp_path: Path) -> None:
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert result.has_errors
     assert any(d.code == 'parse.invalid_json_path' for d in result.diagnostics)
+
+
+def test_file_import_raw_explicit(tmp_path: Path) -> None:
+    """raw：显式 as raw 导入文件原文为字符串（保留换行等，不做任何解析）。"""
+    data = tmp_path / 'note.txt'
+    _write(data, 'line one\nline two\n  \n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "note.txt" as raw import . as note\ncontent = $note\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./note.txt']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'content': 'line one\nline two\n  \n'}
+
+
+def test_file_import_raw_suffix_detection(tmp_path: Path) -> None:
+    """raw：不写 as 时按后缀检测（.md / .txt → raw），原文整体绑定。"""
+    data = tmp_path / 'README.md'
+    _write(data, '# Title\n\nbody text\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "README.md" import . as readme\ncontent = $readme\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./README.md']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'content': '# Title\n\nbody text\n'}
+
+
+def test_file_import_raw_path_on_string_warns(tmp_path: Path) -> None:
+    """raw：对字符串做 path 投影 → import.path_failed 警告（不中断编译）。"""
+    data = tmp_path / 'seed.txt'
+    _write(data, 'seed-data')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "seed.txt" as raw import .nope as x\nv = $x\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./seed.txt']))
+    assert not result.has_errors
+    assert [d.code for d in result.diagnostics] == ['import.path_failed', 'dollar.undefined']
+    # 绑定失败 → $x 未定义 → 取 null
+    assert result.value == {'v': None}
+
+
+def test_file_import_raw_multi_bind(tmp_path: Path) -> None:
+    """raw：一次导入多个别名（整文件 + 前缀），各自绑定同一份原文。"""
+    data = tmp_path / 'seed.txt'
+    _write(data, 'AB\nCD\n')
+    f = tmp_path / 'app.infd'
+    _write(f, '!file "seed.txt" as raw import . as a, . as b\na1 = $a\nb1 = $b\n')
+    result = load(f, sandbox=SandboxConfig(allow_files=['./seed.txt']))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'a1': 'AB\nCD\n', 'b1': 'AB\nCD\n'}
 
 
 # ═══════════════════════════════════════════════════════

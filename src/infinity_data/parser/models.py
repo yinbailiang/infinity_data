@@ -120,16 +120,30 @@ class TemplateImportStmt(AstNode):
 
 
 @dataclass
-class EnvImportStmt(AstNode):
-    """环境变量导入: !env import NAME [as NEW_NAME]"""
+class EnvImportItem(AstNode):
+    """环境变量导入项: NAME [as NEW_NAME]。"""
 
     name: str  # 环境变量名
-    alias: str | None  # 别名（可选）
+    alias: str | None = None  # 别名（可选）
 
     def canonical(self) -> str:
         if self.alias is None:
-            return f'!env import {self.name}'
-        return f'!env import {self.name} as {self.alias}'
+            return self.name
+        return f'{self.name} as {self.alias}'
+
+
+@dataclass
+class EnvImportStmt(AstNode):
+    """环境变量导入: !env import NAME1 [as NEW1], NAME2 [as NEW2], ..."""
+
+    items: list[EnvImportItem]  # 导入项列表（项之间必须用逗号分隔）
+
+    def children(self) -> Iterable[AstNode]:
+        return self.items
+
+    def canonical(self) -> str:
+        items = ', '.join(i.canonical() for i in self.items)
+        return f'!env import {items}'
 
 
 @dataclass
@@ -178,7 +192,7 @@ class FileImportStmt(AstNode):
     """配置文件导入: !file "path" as <format> import .path.to.key as alias, ..."""
 
     file_path: str  # 文件路径
-    format: str | None  # 文件格式: "yaml", "json", "toml" 或 None（自动检测后缀）
+    format: str | None  # 文件格式: "yaml", "json", "toml", "raw" 或 None（自动检测后缀）
     imports: list[FileImportItem]
 
     def children(self) -> Iterable[AstNode]:

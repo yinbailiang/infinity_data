@@ -137,13 +137,13 @@ def test_parse_constraints_angle_list() -> None:
     assert names == ['int', 'str']
 
 
-def test_parse_constraints_nullable_wraps_one() -> None:
+def test_parse_constraints_nullable_wraps_any() -> None:
     col = DiagnosticCollector()
     s = _stream('int?', col)
     cons = Parser._parse_constraints(s, col)
     call = cons.constraints[0]
     assert isinstance(call, ConstraintCall)
-    assert call.name == 'one'
+    assert call.name == 'any'
     assert isinstance(call.arguments[1], ConstraintIdent) and call.arguments[1].name == '?'
 
 

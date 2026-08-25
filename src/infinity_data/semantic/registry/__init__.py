@@ -33,6 +33,7 @@ from infinity_data.semantic.registry.general import (
     _check_ip6,
     _check_negative,
     _check_nonnegative,
+    _check_position,
     _check_positive,
     _check_range,
     _check_regex,
@@ -139,6 +140,13 @@ class ConstraintRegistry:
         self.register('range', _check_range, min_args=1, max_args=2, description='数值范围 range(ge[, le])，可省略一端')
         self.register('size', _check_size, min_args=1, max_args=2, description='集合大小或字符串长度 size(ge[, le])')
         self.register('each', _check_each, min_args=1, max_args=1, description='每个元素均满足 each(constraint)')
+        self.register(
+            'position',
+            _check_position,
+            min_args=2,
+            max_args=2,
+            description='指定下标元素约束 position(index, constraint)',
+        )
         self.register('in', _check_in, min_args=1, description='值在给定选项中 in(choice, ...)')
         self.register('ip', _check_ip, description='IPv4 或 IPv6 地址')
         self.register('ip4', _check_ip4, description='IPv4 地址')

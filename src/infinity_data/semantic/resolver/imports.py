@@ -36,6 +36,10 @@ _FORMAT_MAP: dict[str, str] = {
     '.yaml': 'yaml',
     '.yml': 'yaml',
     '.toml': 'toml',
+    '.txt': 'raw',
+    '.text': 'raw',
+    '.md': 'raw',
+    '.log': 'raw',
 }
 
 
@@ -93,14 +97,15 @@ class ImportResolver:
         namespace: dict[str, StdValue],
         collector: DiagnosticCollector,
     ) -> None:
-        """!env import NAME [as NEW_NAME]
+        """!env import NAME1 [as NEW1], NAME2 [as NEW2], ...
 
         未授权环境变量**总是失败**（无论 strict）：Sandbox.getenv 直接抛
         :class:`SandboxError`，不会退化为空字符串注入。
         """
-        name = stmt.alias or stmt.name
-        raw = self._sandbox.getenv(stmt.name, source=stmt.source)
-        self._bind(namespace, name, python_to_std(raw), collector, stmt.source)
+        for item in stmt.items:
+            name = item.alias or item.name
+            raw = self._sandbox.getenv(item.name, source=item.source)
+            self._bind(namespace, name, python_to_std(raw), collector, item.source)
 
     def _resolve_file(
         self,
@@ -162,6 +167,9 @@ class ImportResolver:
     ) -> Any | None:
         """按格式解析数据内容（文本 loads）。"""
         try:
+            if fmt == 'raw':
+                # raw：直接导入字符串（不做任何解析，保留文件原文）
+                return text
             if fmt == 'json':
                 return json.loads(text)
             if fmt in ('yaml', 'yml'):

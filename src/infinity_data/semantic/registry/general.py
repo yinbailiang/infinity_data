@@ -41,6 +41,7 @@ __all__ = [
     '_check_range',
     '_check_size',
     '_check_each',
+    '_check_position',
     '_check_in',
     '_check_ip',
     '_check_ip4',
@@ -135,6 +136,33 @@ def _check_each(
     if diags:
         return ConstraintResult(ok=False, diagnostics=diags)
     return ok_result()
+
+
+def _check_position(
+    val: StdValue | None,
+    source: SourceRange | None,
+    path: str,
+    args: list[Any],
+    executor: Executor,
+) -> ConstraintResult:
+    """position(index, constraint)：list 指定下标（0-based）元素满足约束。
+
+    - 值不是 list → 不满足
+    - 下标参数非整数（含 bool）→ 不满足（参数错误）
+    - 下标越界（< 0 或 >= size，元素不存在）→ 不满足
+    - 否则递归执行 constraint 于该元素
+    """
+    if not isinstance(val, StdArray):
+        return fail_result('constraint.position_only', {'actual': describe(val)}, source, path)
+    idx = args[0]
+    if isinstance(idx, bool) or not isinstance(idx, int):
+        return fail_result('constraint.position_index', {'value': idx}, source, path)
+    spec = _as_spec(args[1])
+    if spec is None:
+        return fail_result('constraint.position_need', {}, source, path)
+    if idx < 0 or idx >= len(val.elements):
+        return fail_result('constraint.position_out', {'index': idx, 'size': len(val.elements)}, source, path)
+    return executor(spec, val.elements[idx], source, f'{path}[{idx}]')
 
 
 def _check_in(

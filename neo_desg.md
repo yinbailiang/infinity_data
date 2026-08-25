@@ -60,8 +60,14 @@
 - `object?`, `int?`, `str?`, `bool?`, ... 便携可空类型语法糖
 
 内置一般约束:
-- `range(ge, le)` 数值范围，ge/le 可省略一端
-- `size(ge, le)` 集合大小或字符串长度
+- `range(ge[, le])` 数值范围。**省略规则**：单参数 `range(ge)`（或尾逗号 `range(ge,)`）
+  = **仅下限**（值 ≥ ge，上界不限）；双参数 `range(ge, le)` = **闭区间**
+  （ge ≤ 值 ≤ le）。**下界不可省略**：`range(, le)` 空参数位是语法错误
+  （`parse.unrecognized_constraint`）；至少 1 个参数（`range()` 非法）。
+  参数须为数值（int / float）
+- `size(ge[, le])` 集合大小或字符串长度。省略规则与 `range` 一致：`size(ge)` / `size(ge,)`
+  = **仅下限**（大小 ≥ ge）；`size(ge, le)` = **闭区间**；下界不可省略（`size(, le)` 语法错误）；
+  至少 1 个参数（`size()` 非法）
 - `each(constraint)` list 每个元素均满足约束则满足，dict 每个键的值均满足则满足
 - `in(choice, ...)` 值必须在给定选项中
 - `ip`, `ip4`, `ip6` IP 地址格式
@@ -79,6 +85,16 @@
 字典约束:
 - `has(key)` dict 包含指定键则满足
 - `field(name, constraint)` 对某个field进行约束，如果field不存在或者约束失败，则不满足
+
+数组约束:
+- `position(index, constraint)` 对 list 指定下标（0-based）位置的元素进行约束；
+  下标越界（元素不存在，含负数）或者约束失败，则不满足。index 必须是非负整数
+  （0 / 1 / 2 / ...），与 `field` 互补——`field` 定位 dict 字段、`position` 定位 list 元素：
+  ```infd
+  first_is_int: <list, position(0, int)> = [1, "x"]        # ✅ 元素 0 是 int
+  second_in_set: <list, position(1, in("a", "b"))> = ["x", "a"]  # ✅ 元素 1 ∈ {a, b}
+  head_ok: <list, position(0, Server)> = [Server(), {}]     # ✅ 与模板即约束组合
+  ```
 
 > **与三态可空的交互**：`noexist` 字段（键不出现）对 `has` / `field` 均视为**不存在**——
 > `has(noexist字段)` 不满足、`field(noexist字段, c)` 视为字段缺失（不满足）。
@@ -102,7 +118,9 @@
 特殊规则:
 - **单约束可省略尖括号**: `field: int = 10` 等价于 `field: <int> = 10`
 - **默认all**: <a, b, c> 等价 all(a, b, c)
-- **可空约束**：`任意类型约束type_c`+`?` 等价 one(type_c, ?)
+- **可空约束**：`任意类型约束type_c`+`?` 等价 any(type_c, ?)——满足 `type_c` **或** 满足
+  `?`（null / noexist）即可；`?` 与常规约束的满足集合不相交，故与 `one` 语义等价，
+  用 `any` 更贴近「可空 = 类型或空」的直觉
 
 #### 1.2.2 结构级约束（dict 级约束）
 
@@ -245,6 +263,9 @@ tags可为空，内容不做约束
 > 编译器报错并视为 `null`（保留位置）。
 > **与约束的交互**：字典约束 `has` / `field` 将 `noexist` 字段视为**不存在**
 > （`has(noexist字段)` 不满足、`field(noexist字段, c)` 视为字段缺失）——见 §1.2.1 字典约束。
+> **与 `$` 引用 / `as` 转换的交互**：空字面量（`null` / `noexist`）经 `$name as type`
+> 转换**保持传播**（`null → null`、`noexist → noexist`），不因显式 `as` 丢失三态
+> 语义——见 §1.8 转换规则。
 
 ### 1.7 标识符与关键字
 
@@ -271,17 +292,27 @@ tags可为空，内容不做约束
 
 命名空间填充:
 - `!env import NAME` → 绑定 `NAME`；`!env import NAME as NEW` → 绑定别名 `NEW`
+- `!env import NAME1 as NEW1, NAME2, ...` → 一次导入多个（逗号分隔，`as` 别名可选）
 - `!file ... import ... as name` → 绑定别名 `name`
+- `!var <值> import ... as name` → 绑定别名 `name`
 
 规则:
 - 同一别名重复绑定（env 与 env / env 与 file）→ 错误，保留先到者
 - 引用未定义的 `$name` → 警告（`dollar.undefined`），该字段取 `null`（不中断编译）
 
 转换规则（`as`）:
+- **作用于任何导入空间的字符串数据**（`!env` / `!file` 含 `raw` / `!var`），与来源无关：
+  命名空间统一存 StdValue，`$name as type` 只要求值是字符串（或其他标量），
+  非字符串结构化值（list / dict）不受 `as` 影响（原样返回）
+- **空字面量保持传播**：`null` / `noexist` 经 `as` 转换**原样保持**（`null → null`、
+  `noexist → noexist`），不做转换、不产生警告、不回退——三态可空语义不因显式
+  `as` 而丢失（`noexist` 字段在输出中依旧消失）
 - `as bool`: `"true"` / `"1"` → `true`，`"false"` / `"0"` → `false`（不分大小写）
 - `as int`: 正负整数，不支持小数
 - `as float`: 正负、科学计数、点起始
-- `as str`: 原样字符串
+- `as str`: 字符串化——任意字面量按**语言字面量风格**转字符串，可 round-trip 还原：
+  `int` / `float` → 十进制（`42`、`1.5`）；`bool` → `true` / `false`；
+  `float` 特殊值 → `nan` / `+inf` / `-inf`；字符串原样
 
 ## 2. 模板
 
@@ -736,15 +767,20 @@ vs 顶层字段:
 基础语法:
 - `!env import NAME`
 - `!env import NAME as NEW_NAME`
+- `!env import NAME as NEW_NAME, name2, name3 as OTHER` （一次导入多个，逗号分隔）
 
 使用:
 - `user_name = $NAME` 默认为字符串
-- `user_id = $USER_ID as int` 支持转换，bool | int | float
+- `user_id = $USER_ID as int` 支持转换，bool | int | float | str
 
 转换规则:
 - `as bool`: `("true", "1") | ("false", "0") -> true | false` 不分大小写
 - `as int`: `"NUMBER" -> NUMBER` 支持正负，不支持小数
 - `as float`: `"NUMBER ->" NUMBER` 支持正负，科学计数，点起始
+- **转换对所有导入空间通用**：`$name as type` 作用于**任何**导入空间的字符串数据
+  （`!env` / `!file` 含 `raw` / `!var`），与来源无关——见 §1.8
+- **空字面量保持传播**：`null` / `noexist` 经 `as` 转换**原样保持**（不转换、不警告、
+  不回退）——见 §1.8
 
 ### 3.2 模板导入
 
@@ -776,21 +812,32 @@ Path规则:
 
 基础语法:
 - `!file "Path to config file" as yaml import .a.b.c as c`
+- `!file "Path to config file" as yaml import . as a, .c as c`
 
 Path规则同模板导入
 
 导入规则:
-- `as`: 可写可不写，不写默认看文件后缀，支持yaml，json，toml
+- `as`: 可写可不写，不写默认看文件后缀，支持yaml，json，toml，raw(直接导入字符串)
+- **`raw`（直接导入字符串）**: 不做任何解析，文件**原文**整体作为字符串值导入
+  （`import . as name` 绑定整个文件内容）；路径投影作用于字符串时无意义，
+  `.` 以外的 path 段 → `import.path_failed` 警告。默认后缀映射
+  `.txt` / `.text` / `.md` / `.log` → `raw`：
+  ```infd
+  !file "README.md" import . as readme     # 等价于 as raw
+  !file "seed.txt" as raw import . as seed # 显式声明
+
+  content = $readme    # 字符串，保留原文（含换行等）
+  ```
 - `import`: 必须 `.path.to."target/?".data as name` 支持数组下标，比如
 ```json
 {
-    "a":{
-        "b":[
-            {
-                "c":1
-            }
-        ]
-    }
+  "a":{
+    "b":[
+      {
+        "c":1
+      }
+    ]
+  }
 }
 ```
 想要其中的c

@@ -38,7 +38,7 @@ _INVALID_CONSTRAINT = '@invalid'
 def expand_annotation(annotation: Constraints) -> Constraints:
     """展开约束语法糖：多约束 ``<a, b, c>`` → ``all(a, b, c)``。
 
-    （``type?`` → ``one(type, ?)`` 已在 parser 阶段展开。）
+    （``type?`` → ``any(type, ?)`` 已在 parser 阶段展开。）
     """
     if len(annotation.constraints) > 1:
         return Constraints(

@@ -17,6 +17,7 @@ from infinity_data.parser.models import (
     DictValue,
     Document,
     DollarValue,
+    EnvImportItem,
     EnvImportStmt,
     ErrorConstraint,
     ErrorStatement,
@@ -272,18 +273,29 @@ class Parser:
 
     @staticmethod
     def _parse_env_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: EnvImportToken) -> EnvImportStmt:
-        """!env import NAME [as NEW_NAME]"""
+        """!env import NAME1 [as NEW1], NAME2 [as NEW2], ..."""
         Parser._expect_keyword(stream, collector, 'import')
-        name_tok = stream.expect(IdentifierToken)
 
-        alias = None
-        if Parser._peek_keyword(stream, 'as'):
-            stream.advance()
-            alias = stream.expect(IdentifierToken).name
+        # 导入项列表（项之间必须用逗号分隔）
+        items: list[EnvImportItem] = []
+        items.append(Parser._parse_env_import_item(stream, collector))
 
-        # 导入语句必须换行/EOF 结尾：!env 无导入项列表，若不加检查，同一行的逗号会被
-        # 顶层 skip_separators 吞掉（`!env import A as a, x = 1` 被误认为合法），与
-        # !from / !file 的「尾部必须换行」行为不一致。
+        while True:
+            tok = stream.peek()
+            if isinstance(tok, CommaToken):
+                stream.advance()
+                items.append(Parser._parse_env_import_item(stream, collector))
+            elif isinstance(tok, IdentifierToken):
+                # 同一行内空格分隔（无逗号/换行）→ 报缺失逗号，容错继续（漏逗号）
+                collector.add(diag('parse.import_missing_comma', {}, tok.raw.source))
+                items.append(Parser._parse_env_import_item(stream, collector))
+            else:
+                # 换行/EOF 等 → 导入列表结束（换行后是新的顶层语句，不是导入项）
+                break
+
+        # 导入语句必须换行/EOF 结尾：若不检查，同一行的逗号会被顶层 skip_separators
+        # 吞掉（`!env import A as a, x = 1` 被误认为合法），与 !from / !file 的
+        # 「尾部必须换行」行为不一致。
         tok = stream.peek()
         # 显式排除 NoNextType 以收窄类型：stream.eof() 是方法调用，无法据此收窄 tok，
         # 否则 tok 仍为 Token | NoNextType，访问 tok.raw 会触发类型错误。
@@ -300,6 +312,22 @@ class Parser:
         # 否则语句 source 会把下一行行首吞入（与 Field 不一致）
         return EnvImportStmt(
             source=stream.span_from(kw_tok),
+            items=items,
+        )
+
+    @staticmethod
+    def _parse_env_import_item(stream: TokenStream, collector: DiagnosticCollector) -> EnvImportItem:
+        """解析单个导入项: NAME [as NEW_NAME]。"""
+        first = stream.peek()
+        name_tok = stream.expect(IdentifierToken)
+
+        alias = None
+        if Parser._peek_keyword(stream, 'as'):
+            stream.advance()
+            alias = stream.expect(IdentifierToken).name
+
+        return EnvImportItem(
+            source=stream.span_from(first),
             name=name_tok.name,
             alias=alias,
         )
@@ -890,7 +918,7 @@ class Parser:
 
         支持:
         - int, str, bool, float, list, dict, ?, object
-        - type? → one(type, ?)
+        - type? → any(type, ?)
         - <constraint, constraint, ...> → all(constraint, ...)
         - <any(...)>, <one(...)>, <not(...)>, <all(...)>
         """
@@ -929,7 +957,7 @@ class Parser:
 
                 if isinstance(stream.peek(), QuestionToken):
                     stream.advance()
-                    # 直接展开: type? → one(type, ?)
+                    # 直接展开: type? → any(type, ?)
                     return Constraints(
                         source=stream.span_from(first),
                         constraints=[Parser._nullable(ident)],
@@ -938,7 +966,7 @@ class Parser:
                 # 单约束函数调用可省略尖括号: field: regex("re") = ...
                 if isinstance(stream.peek(), LparenToken):
                     call = Parser._parse_constraint_call(stream, collector, first)
-                    # 调用后也可空: regex("re")? → one(regex("re"), ?)
+                    # 调用后也可空: regex("re")? → any(regex("re"), ?)
                     if isinstance(stream.peek(), QuestionToken):
                         stream.advance()
                         call = Parser._nullable(call)
@@ -971,10 +999,10 @@ class Parser:
 
     @staticmethod
     def _nullable(c: Constraint) -> ConstraintCall:
-        """可空包装：constraint? → one(constraint, ?)。"""
+        """可空包装：constraint? → any(constraint, ?)。"""
         return ConstraintCall(
             source=c.source,
-            name='one',
+            name='any',
             arguments=[c, ConstraintIdent(source=c.source, name='?')],
         )
 
@@ -1025,7 +1053,7 @@ class Parser:
                     message=f'无法解析的约束: {bad_tok.raw.type.name}',
                 )
 
-        # 可空后缀: constraint? → one(constraint, ?)
+        # 可空后缀: constraint? → any(constraint, ?)
         if isinstance(stream.peek(), QuestionToken):
             stream.advance()
             return Parser._nullable(base)

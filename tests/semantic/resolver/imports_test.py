@@ -24,6 +24,34 @@ def test_resolve_env_into_namespace() -> None:
     assert not list(collector)
 
 
+def test_resolve_env_multi_import() -> None:
+    """!env 一次导入多个变量（逗号分隔，as 别名可选）。"""
+    file = MemFile(
+        name='t.infd',
+        root_path=Path('.'),
+        content='!env import USER as u, HOME, PORT as p\n',
+    )
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(env={'USER': 'alice', 'HOME': '/home/alice', 'PORT': '8080'}), base_dir=Path('.'))
+    collector = DiagnosticCollector()
+    ns = ImportResolver(sandbox=sb).resolve(doc, collector)
+    assert ns['u'] == python_to_std('alice')
+    assert ns['HOME'] == python_to_std('/home/alice')
+    assert ns['p'] == python_to_std('8080')
+    assert not list(collector)
+
+
+def test_resolve_env_multi_import_duplicate_binds_first() -> None:
+    """多导入中同一别名重复 → namespace.duplicate 错误，保留先到者。"""
+    file = MemFile(name='t.infd', root_path=Path('.'), content='!env import USER as u, HOME as u\n')
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(env={'USER': 'alice', 'HOME': '/home/alice'}), base_dir=Path('.'))
+    collector = DiagnosticCollector()
+    ns = ImportResolver(sandbox=sb).resolve(doc, collector)
+    assert ns['u'] == python_to_std('alice')
+    assert 'namespace.duplicate' in _codes(collector)
+
+
 def test_resolve_env_duplicate_binds_first() -> None:
     file = MemFile(name='t.infd', root_path=Path('.'), content='!env import USER\n!env import USER\n')
     doc, _ = parse_source(file)
@@ -43,3 +71,39 @@ def test_resolve_template_path(tmp_path: Path) -> None:
     f = r.resolve_template_path('templates/x.inft', base_dir=tmp_path, source=None, collector=collector)
     assert f is not None
     assert '~X' in f.read()
+
+
+def test_resolve_file_raw_explicit(tmp_path: Path) -> None:
+    """raw：显式 as raw → 文件原文整体绑定为字符串（不解析）。"""
+    (tmp_path / 'seed.txt').write_text('a\nb\n', encoding='utf-8')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "seed.txt" as raw import . as seed\n')
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(allow_files=['./seed.txt']), base_dir=tmp_path)
+    collector = DiagnosticCollector()
+    ns = ImportResolver(sandbox=sb).resolve(doc, collector)
+    assert ns['seed'] == python_to_std('a\nb\n')
+    assert not list(collector)
+
+
+def test_resolve_file_raw_suffix_detection(tmp_path: Path) -> None:
+    """raw：无 as 时按后缀检测（.md → raw）。"""
+    (tmp_path / 'README.md').write_text('# hi\n', encoding='utf-8')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "README.md" import . as readme\n')
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(allow_files=['./README.md']), base_dir=tmp_path)
+    collector = DiagnosticCollector()
+    ns = ImportResolver(sandbox=sb).resolve(doc, collector)
+    assert ns['readme'] == python_to_std('# hi\n')
+    assert not list(collector)
+
+
+def test_resolve_file_raw_path_on_string_warns(tmp_path: Path) -> None:
+    """raw：对字符串应用非空 path → import.path_failed 警告（不中断）。"""
+    (tmp_path / 'seed.txt').write_text('data', encoding='utf-8')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "seed.txt" as raw import .x as x\n')
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(allow_files=['./seed.txt']), base_dir=tmp_path)
+    collector = DiagnosticCollector()
+    ns = ImportResolver(sandbox=sb).resolve(doc, collector)
+    assert 'x' not in ns
+    assert [d.code for d in collector] == ['import.path_failed']

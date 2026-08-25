@@ -522,6 +522,11 @@ class AstBuilder:
             return raw
         if isinstance(raw, (StdArray, StdObject)):
             return raw  # 结构化值 cast 不适用
+        # 空字面量：as 转换**保持传播**（null → null、noexist → noexist），
+        # 不做任何转换、不产生警告——三态可空语义不因显式 as 而丢失
+        # （此时 raw 已收窄为 StdLiteral）
+        if raw.kind in ('null', 'noexist'):
+            return raw
         raw = raw.value  # StdLiteral：提取 Python 值走转换
 
         match type_cast:
@@ -588,6 +593,17 @@ class AstBuilder:
                     )
                     return StdLiteral(kind='float', value=decimal.Decimal(0))
             case 'str':
+                # as str = 字符串化：任意字面量按**语言字面量风格**转为字符串，
+                # 保证可 round-trip 还原回原值（bool → true/false、float 特殊值
+                # → nan/+inf/-inf），不泄漏 Python 内部表示；null/noexist 已在上方
+                # 保持传播，不进入本分支
+                if isinstance(raw, bool):
+                    return StdLiteral(kind='str', value='true' if raw else 'false')
+                if isinstance(raw, decimal.Decimal):
+                    if raw.is_nan():
+                        return StdLiteral(kind='str', value='nan')
+                    if raw.is_infinite():
+                        return StdLiteral(kind='str', value='+inf' if raw > 0 else '-inf')
                 return StdLiteral(kind='str', value=str(raw))
             case _:
                 return StdLiteral(kind='str', value=str(raw))

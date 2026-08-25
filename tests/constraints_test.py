@@ -177,6 +177,48 @@ def test_field_noexist_is_missing() -> None:
 
 
 # ═══════════════════════════════════════════════════════════
+# 数组约束
+# ═══════════════════════════════════════════════════════════
+
+
+def test_position() -> None:
+    """position(index, constraint)：指定下标元素满足约束。"""
+    compile_ok('x: <list, position(0, int)> = [1, 2]\n')
+    assert compile_source('x: <list, position(0, int)> = ["a", 2]\n').has_errors
+    assert compile_source('x: <list, position(1, int)> = [1, "b"]\n').has_errors
+
+
+def test_position_nested_call() -> None:
+    """position 内嵌调用约束（与 each 同理）。"""
+    compile_ok('x: <list, position(0, in("a", "b"))> = ["a", "c"]\n')
+    assert compile_source('x: <list, position(0, in("a", "b"))> = ["c", "a"]\n').has_errors
+
+
+def test_position_out_of_range() -> None:
+    """下标越界（含负数）→ 元素不存在 → 不满足。"""
+    assert compile_source('x: <list, position(5, int)> = [1, 2]\n').has_errors
+    assert compile_source('x: <list, position(-1, int)> = [1, 2]\n').has_errors
+
+
+def test_position_only_list() -> None:
+    """position 只适用于 list。"""
+    assert compile_source('x: position(0, int) = 5\n').has_errors
+    assert compile_source('x: position(0, int) = { a = 1 }\n').has_errors
+
+
+def test_position_index_must_be_int() -> None:
+    """下标参数必须是整数（bool/str/float 均拒绝）。"""
+    assert compile_source('x: <list, position("a", int)> = [1, 2]\n').has_errors
+    assert compile_source('x: <list, position(0.5, int)> = [1, 2]\n').has_errors
+
+
+def test_position_with_template() -> None:
+    """position 嵌套模板即约束（结构校验）。"""
+    compile_ok('~S {\n    a: int = 1\n}\nx: <list, position(0, S)> = [{ a = 2 }, { a = "x" }]\n')
+    assert compile_source('~S {\n    a: int = 1\n}\nx: <list, position(0, S)> = [{ a = "x" }]\n').has_errors
+
+
+# ═══════════════════════════════════════════════════════════
 # 逻辑约束
 # ═══════════════════════════════════════════════════════════
 
@@ -260,7 +302,7 @@ def test_nan_as_range_argument_is_rejected() -> None:
 
 
 # ═══════════════════════════════════════════════════════
-# 可空约束（? 后缀）：裸 type? 与 <type?> 均须展开为 one(type, ?)
+# 可空约束（? 后缀）：裸 type? 与 <type?> 均须展开为 any(type, ?)
 # ═══════════════════════════════════════════════════════
 
 
@@ -279,7 +321,7 @@ def test_nullable_in_brackets_template() -> None:
 
 
 def test_nullable_after_constraint_call() -> None:
-    """裸约束调用 + ?：regex("a+")? → one(regex("a+"), ?)。"""
+    """裸约束调用 + ?：regex("a+")? → any(regex("a+"), ?)。"""
     assert not compile_source('x: regex("a+")? = null\n').has_errors
     assert not compile_source('x: regex("a+")? = "aaa"\n').has_errors
 
