@@ -24,8 +24,10 @@ from infinity_data.semantic.std import (
     StdArray,
     StdField,
     StdLiteral,
+    StdNode,
     StdObject,
     StdValue,
+    is_std_node,
     is_std_value,
     python_to_std,
 )
@@ -40,8 +42,10 @@ __all__ = [
     'StdDocument',
     'StdField',
     'StdLiteral',
+    'StdNode',
     'StdObject',
     'StdValue',
+    'is_std_node',
     'is_std_value',
     'python_to_std',
 ]

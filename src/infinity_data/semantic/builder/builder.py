@@ -418,7 +418,7 @@ class AstBuilder:
         """数组元素 noexist → 报错并按 null（保留位置）。"""
         if isinstance(value, StdLiteral) and value.kind == 'noexist':
             self._err('value.noexist_in_array', {}, source, path)
-            return StdLiteral(kind='null', value=None)
+            return StdLiteral(kind='null', value=None, source=source)
         return value
 
     def _bind_to_std(self, value: Value | StdValue, path: str, scope: Scope) -> StdValue:
@@ -464,7 +464,11 @@ class AstBuilder:
                     # dict 结构级约束（作用于该字面量整体）：解析后挂节点，不执行
                     specs, diags = resolve_constraint_list(cs, scope)
                     self._collector.extend(diags)
-                    return StdObject(fields=self._finalize_object(std_fields, path), constraints=specs)
+                    return StdObject(
+                        fields=self._finalize_object(std_fields, path),
+                        constraints=specs,
+                        source=raw.source,
+                    )
                 case ArrayValue(elements=els):
                     std_elements: list[StdValue] = []
                     for i, e in enumerate(els):
@@ -479,7 +483,7 @@ class AstBuilder:
                         if rv is None:
                             continue
                         std_elements.append(self._array_noexist(rv, e.source, f'{path}[{i}]'))
-                    return StdArray(elements=std_elements)
+                    return StdArray(elements=std_elements, source=raw.source)
                 case TemplateCallValue(
                     template_name=tn,
                     positional_args=pa,
@@ -506,20 +510,20 @@ class AstBuilder:
         self,
         tok: StringToken | IntegerToken | FloatToken | BoolToken | NullToken | NoexistToken,
     ) -> StdLiteral:
-        """将字面量 Token 转为 StdLiteral。"""
+        """将字面量 Token 转为 StdLiteral（携带 token 在源文档中的位置）。"""
         match tok:
             case StringToken(value=v):
-                return StdLiteral(kind='str', value=v)
+                return StdLiteral(kind='str', value=v, source=tok.raw.source)
             case IntegerToken(value=v):
-                return StdLiteral(kind='int', value=v)
+                return StdLiteral(kind='int', value=v, source=tok.raw.source)
             case FloatToken(value=v):
-                return StdLiteral(kind='float', value=v)  # Decimal，含 NaN/±Inf
+                return StdLiteral(kind='float', value=v, source=tok.raw.source)  # Decimal，含 NaN/±Inf
             case BoolToken(value=v):
-                return StdLiteral(kind='bool', value=v)
+                return StdLiteral(kind='bool', value=v, source=tok.raw.source)
             case NullToken():
-                return StdLiteral(kind='null', value=None)
+                return StdLiteral(kind='null', value=None, source=tok.raw.source)
             case NoexistToken():
-                return StdLiteral(kind='noexist', value=None)
+                return StdLiteral(kind='noexist', value=None, source=tok.raw.source)
         raise TypeError(f'未知字面量 token 类型: {type(tok)}')
 
     def _resolve_dollar(
@@ -538,7 +542,7 @@ class AstBuilder:
         namespace = scope.namespaces if scope is not None else {}
         if name not in namespace:
             self._warn('dollar.undefined', {'name': name}, source, path)
-            return StdLiteral(kind='null', value=None)
+            return StdLiteral(kind='null', value=None, source=source)
 
         raw = namespace[name]
         # namespace 统一存 StdValue（!env/!file/!var 均由 python_to_std / 求值产出）
@@ -587,10 +591,10 @@ class AstBuilder:
                         )
                     )
                     val = False
-                return StdLiteral(kind='bool', value=val)
+                return StdLiteral(kind='bool', value=val, source=source)
             case 'int':
                 try:
-                    return StdLiteral(kind='int', value=int(cast(Any, raw)))
+                    return StdLiteral(kind='int', value=int(cast(Any, raw)), source=source)
                 except (ValueError, TypeError):
                     self._collector.add(
                         Diagnostic(
@@ -601,10 +605,10 @@ class AstBuilder:
                             path,
                         )
                     )
-                    return StdLiteral(kind='int', value=0)
+                    return StdLiteral(kind='int', value=0, source=source)
             case 'float':
                 try:
-                    return StdLiteral(kind='float', value=decimal.Decimal(str(raw)))
+                    return StdLiteral(kind='float', value=decimal.Decimal(str(raw)), source=source)
                 except (ValueError, TypeError, decimal.InvalidOperation):
                     self._collector.add(
                         Diagnostic(
@@ -615,22 +619,22 @@ class AstBuilder:
                             path,
                         )
                     )
-                    return StdLiteral(kind='float', value=decimal.Decimal(0))
+                    return StdLiteral(kind='float', value=decimal.Decimal(0), source=source)
             case 'str':
                 # as str = 字符串化：任意字面量按**语言字面量风格**转为字符串，
                 # 保证可 round-trip 还原回原值（bool → true/false、float 特殊值
                 # → nan/+inf/-inf），不泄漏 Python 内部表示；null/noexist 已在上方
                 # 保持传播，不进入本分支
                 if isinstance(raw, bool):
-                    return StdLiteral(kind='str', value='true' if raw else 'false')
+                    return StdLiteral(kind='str', value='true' if raw else 'false', source=source)
                 if isinstance(raw, decimal.Decimal):
                     if raw.is_nan():
-                        return StdLiteral(kind='str', value='nan')
+                        return StdLiteral(kind='str', value='nan', source=source)
                     if raw.is_infinite():
-                        return StdLiteral(kind='str', value='+inf' if raw > 0 else '-inf')
-                return StdLiteral(kind='str', value=str(raw))
+                        return StdLiteral(kind='str', value='+inf' if raw > 0 else '-inf', source=source)
+                return StdLiteral(kind='str', value=str(raw), source=source)
             case _:
-                return StdLiteral(kind='str', value=str(raw))
+                return StdLiteral(kind='str', value=str(raw), source=source)
 
     # ═══════════════════════════════════════════════════════
     # 模板展开
@@ -749,7 +753,7 @@ class AstBuilder:
         for combo in combos:
             pa, na, upa, upk = self._build_expand_args(pos_args, named, unpack_args, unpack_kwargs, axes, combo)
             results.append(self._instantiate_once(template_name, pa, na, upa, upk, path, source, scope))
-        return StdArray(elements=results)
+        return StdArray(elements=results, source=source)
 
     def _resolve_axis(
         self,
@@ -971,14 +975,19 @@ class AstBuilder:
             if tf.name in param_values:
                 pv = param_values[tf.name]
                 v = self._bind_to_std(pv, child, scope)
+                # 字段位置 = 调用点参数表达式（值无来源时回退至此，而非模板定义）；
+                # 展开轴元素等彻底无来源时最后回退模板定义（避免丢失位置）
+                field_src = getattr(pv, 'source', None) or v.source or tf.source
             elif tf.default_value is not None:
                 v = self._resolve_value(tf.default_value, child, inner_scope)
+                # 字段位置 = 默认值表达式（模板定义内）
+                field_src = v.source if v is not None else tf.source
             else:
                 continue  # 必填且未提供 → 已在上面报错
 
             specs, diags = resolve_constraints(tf.constraints, inner_scope)
             self._collector.extend(diags)
-            std_fields.append(StdField(name=tf.name, value=v, source=tf.source, constraints=specs))
+            std_fields.append(StdField(name=tf.name, value=v, source=field_src, constraints=specs))
 
         # allow_extra=true：额外字段作为扩展字段进入内容（按调用点 scope 解析）
         for name, (arg_val, arg_src) in extra_args.items():
@@ -989,4 +998,9 @@ class AstBuilder:
         # 模板级约束（: 起始，约束整个 dict）：解析后挂到实例节点
         tpl_specs, tpl_diags = resolve_constraint_list(template.constraints, inner_scope)
         self._collector.extend(tpl_diags)
-        return StdObject(fields=self._finalize_object(std_fields, path), template=key, constraints=tpl_specs)
+        return StdObject(
+            fields=self._finalize_object(std_fields, path),
+            template=key,
+            constraints=tpl_specs,
+            source=source,
+        )

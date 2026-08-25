@@ -123,12 +123,15 @@ def _check_each(
     diags: list[Diagnostic] = []
     if isinstance(val, StdArray):
         for i, elem in enumerate(val.elements):
-            r = executor(spec, elem, source, f'{path}[{i}]')
+            # 诊断指向被检查的元素本身（无来源时回退容器位置）
+            r = executor(spec, elem, elem.source or source, f'{path}[{i}]')
             if not r.ok:
                 diags.extend(r.diagnostics)
     elif isinstance(val, StdObject):
         for f in val.fields:
-            r = executor(spec, f.value, source, f'{path}.{f.name}')
+            # 诊断指向被检查的字段值本身（无来源时回退字段位置）
+            f_src = f.value.source if f.value is not None else f.source
+            r = executor(spec, f.value, f_src or source, f'{path}.{f.name}')
             if not r.ok:
                 diags.extend(r.diagnostics)
     else:
@@ -162,7 +165,9 @@ def _check_position(
         return fail_result('constraint.position_need', {}, source, path)
     if idx < 0 or idx >= len(val.elements):
         return fail_result('constraint.position_out', {'index': idx, 'size': len(val.elements)}, source, path)
-    return executor(spec, val.elements[idx], source, f'{path}[{idx}]')
+    # 诊断指向被检查的元素本身（无来源时回退容器位置）
+    elem = val.elements[idx]
+    return executor(spec, elem, elem.source or source, f'{path}[{idx}]')
 
 
 def _check_in(

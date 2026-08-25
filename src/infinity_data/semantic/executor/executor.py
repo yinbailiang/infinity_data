@@ -67,7 +67,8 @@ class ConstraintExecutor:
                 self._validate_field(f, collector, path)
             # 结构级约束（dict 级 / 模板级 / 顶层）：全部执行（不短路）
             for spec in node.constraints:
-                result = self._exec(spec, node, spec.source, path)
+                # 诊断指向被检查的对象本身（无来源时回退约束表达式位置）
+                result = self._exec(spec, node, node.source or spec.source, path)
                 if not result.ok:
                     collector.extend(result.diagnostics)
         elif isinstance(node, StdArray):
@@ -79,8 +80,10 @@ class ConstraintExecutor:
         child = f'{path}.{field.name}' if path else field.name
         if field.value is not None:
             self.validate(field.value, collector, child)
+        # 被检查对象 = 字段值：诊断指向值本身（无来源时回退字段位置）
+        value_src = field.value.source if field.value is not None else None
         for spec in field.constraints:
-            result = self._exec(spec, field.value, spec.source or field.source, child)
+            result = self._exec(spec, field.value, value_src or field.source, child)
             if not result.ok:
                 collector.extend(result.diagnostics)
                 break  # 约束链短路（与构建期语义一致）
@@ -105,7 +108,9 @@ class ConstraintExecutor:
         key = self._templates_by_name.get(constraint.name)
         if key is not None:
             return self._check_template(key, value, source, path)
-        return self._registry.apply(constraint, value, constraint.source or source, path, self._exec)
+        # 诊断位置 = 被检查对象的位置（调用方已按值/字段/对象解析），
+        # 不再取约束表达式自身（spec.source）——错误指向值而非约束声明
+        return self._registry.apply(constraint, value, source, path, self._exec)
 
     def _check_template(
         self,
@@ -157,7 +162,9 @@ class ConstraintExecutor:
                 specs, rdiags = resolve_constraints(tf.constraints, scope)
                 diags.extend(rdiags)
                 for spec in specs:
-                    result = self._exec(spec, f.value, tf.source, child)
+                    # 诊断指向手写 dict 中被检查的字段值（而非模板定义里的约束）；
+                    # 值/字段均无来源（如外部导入数据）时回退外层被检查对象位置
+                    result = self._exec(spec, f.value, f.value.source or f.source or source, child)
                     if not result.ok:
                         diags.extend(result.diagnostics)
                         break
@@ -242,7 +249,8 @@ class ConstraintExecutor:
                 specs, rdiags = resolve_constraints(tf.constraints, scope)
                 diags.extend(rdiags)
                 for spec in specs:
-                    result = self._exec(spec, f.value, tf.source, tf.name)
+                    # 诊断指向顶层对象中被检查的字段值（而非模板定义里的约束）
+                    result = self._exec(spec, f.value, f.value.source or f.source, tf.name)
                     if not result.ok:
                         diags.extend(result.diagnostics)
 
@@ -250,7 +258,8 @@ class ConstraintExecutor:
         specs, rdiags = resolve_constraint_list(tpl.constraints, scope)
         diags.extend(rdiags)
         for spec in specs:
-            result = self._exec(spec, root, None, '')
+            # 顶层对象无来源时回退约束表达式位置（避免丢位置）
+            result = self._exec(spec, root, root.source or spec.source, '')
             if not result.ok:
                 diags.extend(result.diagnostics)
 

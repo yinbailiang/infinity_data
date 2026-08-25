@@ -468,3 +468,92 @@ def test_template_constraint_applies_level_constraints() -> None:
 hand: Server = { port = 443, tls = false }
 """)
     assert result.has_errors
+
+
+# ═══════════════════════════════════════════════════════════
+# 约束失败诊断定位（指向被检查对象，而非约束表达式自身）
+# ═══════════════════════════════════════════════════════════
+
+
+def test_field_constraint_diagnostic_points_to_value() -> None:
+    """字段注解约束失败：诊断位置指向被检查的值，而非约束表达式。"""
+    result = compile_source('x: int = 1.5\n')
+    d = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert d.source is not None
+    # 第 1 行 `x: int = 1.5`：值 `1.5` 占第 10-13 列（约束 `int` 在第 4-7 列）
+    assert (d.source.start.line, d.source.start.col) == (1, 10)
+    assert (d.source.end.line, d.source.end.col) == (1, 13)
+
+
+def test_template_constraint_diagnostic_points_to_call_site() -> None:
+    """模板即约束字段失败：诊断位置指向调用处的值，而非模板定义里的约束。"""
+    result = compile_source("""
+~Server {
+    host: str = "0.0.0.0"
+}
+x: Server = { host = 123 }
+""")
+    d = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert d.source is not None
+    assert d.source.start.line == 5  # 调用处（模板定义在第 2-4 行）
+    assert d.source.start.col == 22  # 值 `123`
+
+
+def test_template_missing_field_points_to_checked_dict() -> None:
+    """模板必填字段缺失：诊断位置指向被检查的手写 dict，而非约束。"""
+    result = compile_source("""
+~Database {
+    name: str
+    host: str = "localhost"
+}
+db: Database = { host = "h" }
+""")
+    d = next(d for d in result.diagnostics if d.code == 'template.missing_field')
+    assert d.source is not None
+    assert d.source.start.line == 6  # 调用处
+    assert d.source.start.col == 16  # `{ host = "h" }`
+
+
+def test_each_diagnostic_points_to_element() -> None:
+    """each 嵌套约束失败：诊断位置指向具体元素，而非整个 list。"""
+    result = compile_source('x: <list, each(int)> = [1, 2, "s"]\n')
+    d = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert d.path == 'x[2]'
+    assert d.source is not None
+    assert (d.source.start.line, d.source.start.col) == (1, 31)  # 元素 `"s"`
+
+
+def test_position_diagnostic_points_to_element() -> None:
+    """position 嵌套约束失败：诊断位置指向指定下标的元素。"""
+    result = compile_source('x: <list, position(1, int)> = [1, "s"]\n')
+    d = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert d.path == 'x[1]'
+    assert d.source is not None
+    assert (d.source.start.line, d.source.start.col) == (1, 35)  # 元素 `"s"`
+
+
+def test_structural_dict_constraint_points_to_dict() -> None:
+    """dict 结构级约束失败：诊断位置指向被检查的 dict 本身。"""
+    result = compile_source('x = { a = 1, b = 2, : <size(1, 1)> }\n')
+    d = next(d for d in result.diagnostics if d.code == 'constraint.size_out')
+    assert d.source is not None
+    assert (d.source.start.line, d.source.start.col) == (1, 5)  # dict 起点 `{`
+
+
+def test_template_expansion_diagnostic_points_to_call_site_arg() -> None:
+    """模板展开 + 外部 $var 参数：诊断位置指向调用点参数表达式，而非模板定义。"""
+    result = compile_source(
+        """
+!env import HOST
+~Server {
+    host: str = "0.0.0.0"
+}
+s = Server(host=$HOST as int)
+""",
+        env={'HOST': '123'},
+    )
+    d = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert d.path == 's.host'
+    assert d.source is not None
+    assert d.source.start.line == 6  # 调用处（模板定义在第 3-5 行）
+    assert d.source.start.col == 17  # 参数 `$HOST as int`

@@ -28,8 +28,10 @@ __all__ = [
     'StdArray',
     'StdField',
     'StdLiteral',
+    'StdNode',
     'StdObject',
     'StdValue',
+    'is_std_node',
     'is_std_value',
     'python_to_std',
 ]
@@ -39,22 +41,40 @@ LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
 
 
 # ═══════════════════════════════════════════════════════════
+# 节点基类（统一携带来源位置）
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass
+class StdNode:
+    """标准 AST 节点基类：整棵 std 树（值 / 字段 / 约束）统一携带来源位置。
+
+    - ``source``：节点在源文档中的位置（约束失败诊断指向被检查的对象本身）；
+      ``!file`` / ``!env`` / ``!var`` 导入等合成值无来源时为 None
+    - ``source`` 为 **keyword-only** 且 ``compare=False``：不改变子类既有
+      位置/关键字构造签名（``StdLiteral('int', 3)`` 照常可用），dataclass
+      相等比较忽略位置
+    """
+
+    source: SourceRange | None = field(default=None, compare=False, kw_only=True)
+
+
+# ═══════════════════════════════════════════════════════════
 # 已解析约束
 # ═══════════════════════════════════════════════════════════
 
 
 @dataclass
-class ResolvedConstraint:
+class ResolvedConstraint(StdNode):
     """已解析的约束（挂在 StdAst 节点上，由执行器消费）。
 
     - ``name``：约束真名（模板名已经 scope 翻译）
     - ``args``：参数（字面量 → Python 值；嵌套约束 → :class:`ResolvedConstraint`）
-    - ``source``：约束表达式来源（诊断寻址）
+    - ``source``：约束表达式来源（继承自 :class:`StdNode`，诊断寻址）
     """
 
     name: str
     args: list[Any] = field(default_factory=list[Any])
-    source: SourceRange | None = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -63,7 +83,7 @@ class ResolvedConstraint:
 
 
 @dataclass
-class StdLiteral:
+class StdLiteral(StdNode):
     """标准字面量值。
 
     kind 与 Python 值的对应：
@@ -73,6 +93,7 @@ class StdLiteral:
     - ``"bool"``   → bool
     - ``"null"``   → None
     - ``"noexist"``→ None（键不出现在结果中）
+    - ``source``：字面量在源文档中的位置（继承自 :class:`StdNode`）
     """
 
     kind: LiteralKind
@@ -88,6 +109,14 @@ def is_std_value(v: object) -> TypeGuard[StdValue]:
     标注 :class:`TypeGuard` 以支持调用方类型收窄（如 `if is_std_value(x)` 后 x 为 StdValue）。
     """
     return isinstance(v, STD_VALUE_TYPES)
+
+
+def is_std_node(v: object) -> TypeGuard[StdNode]:
+    """是否为 std 树节点（值 / 字段 / 约束，统一携带 ``source``）。
+
+    用于需要「节点都带位置」的泛化处理（如诊断定位的逐级回退）。
+    """
+    return isinstance(v, StdNode)
 
 
 def python_to_std(value: Any) -> StdValue:
@@ -118,15 +147,15 @@ def python_to_std(value: Any) -> StdValue:
 
 
 @dataclass
-class StdField:
+class StdField(StdNode):
     """标准字段：名称 + 值 + 来源信息 + 注解约束。
 
-    ``constraints``：字段注解约束（``key: <c> = v``），已解析未执行。
+    ``constraints``：字段注解约束（``key: <c> = v``），已解析未执行；
+    ``source`` 继承自 :class:`StdNode`（字段在源文档中的位置）。
     """
 
     name: str
     value: StdValue | None
-    source: SourceRange | None = None
     constraints: list[ResolvedConstraint] = field(default_factory=list[ResolvedConstraint])
 
     @property
@@ -141,14 +170,14 @@ class StdField:
 
 
 @dataclass
-class StdArray:
-    """标准数组值。"""
+class StdArray(StdNode):
+    """标准数组值（``source`` 继承自 :class:`StdNode`）。"""
 
     elements: list[StdValue] = field(default_factory=list[StdValue])
 
 
 @dataclass
-class StdObject:
+class StdObject(StdNode):
     """标准对象值。
 
     - ``fields``：字段列表
@@ -156,6 +185,7 @@ class StdObject:
       或经「模板即约束」校验的手写 dict 会携带；None = 无关联模板（纯字面量）
     - ``constraints``：结构级约束（``: <...>`` 作用于整个 dict，含模板级约束），
       已解析未执行
+    - ``source``：对象在源文档中的位置（继承自 :class:`StdNode`）
     """
 
     fields: list[StdField] = field(default_factory=list[StdField])

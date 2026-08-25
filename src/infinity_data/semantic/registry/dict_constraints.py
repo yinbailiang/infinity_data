@@ -62,4 +62,6 @@ def _check_field(
     # noexist = 键不出现 → 视为字段缺失（与 has 同理）
     if f is None or f.is_noexist:
         return fail_result('constraint.field_missing', {'field': name}, source, path)
-    return executor(spec, f.value, source, f'{path}.{name}')
+    # 诊断指向被检查的字段值本身（无来源时回退字段位置）
+    f_src = f.value.source if f.value is not None else f.source
+    return executor(spec, f.value, f_src or source, f'{path}.{name}')

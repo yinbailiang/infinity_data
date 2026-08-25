@@ -10,7 +10,7 @@ import pytest
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser import Constraints, TemplateConfig, TemplateDef, TemplateField
+from infinity_data.parser import ConstraintIdent, Constraints, TemplateConfig, TemplateDef, TemplateField
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.builder import ResolvedConstraint, StdField, StdLiteral, StdObject
 from infinity_data.semantic.executor import ConstraintExecutor
@@ -42,6 +42,57 @@ def test_validate_field_constraint_failure() -> None:
     collector = DiagnosticCollector()
     _executor().validate(StdObject(fields=[field]), collector)
     assert [d.code for d in collector] == ['constraint.type_mismatch']
+
+
+def test_diagnostic_source_is_checked_value_not_constraint() -> None:
+    """约束失败诊断指向被检查的值（value.source），而非约束表达式自身（spec.source）。"""
+    value_src = SourceRange.empty()
+    constraint_src = SourceRange.empty()
+    field = StdField(
+        name='x',
+        value=StdLiteral(kind='int', value=3, source=value_src),
+        constraints=[ResolvedConstraint(name='str', source=constraint_src)],
+    )
+    collector = DiagnosticCollector()
+    _executor().validate(StdObject(fields=[field]), collector)
+    d = next(d for d in collector)
+    assert d.code == 'constraint.type_mismatch'
+    assert d.source is value_src
+    assert d.source is not constraint_src
+
+
+def test_template_constraint_falls_back_to_outer_source() -> None:
+    """被检查 dict 整棵无来源（如外部导入数据）时，诊断回退到引用它的外层字段位置。"""
+    tpl = TemplateDef(
+        name='Srv',
+        fields=[
+            TemplateField(
+                name='host',
+                constraints=Constraints(constraints=[ConstraintIdent(name='str', source=_SRC)], source=_SRC),
+                default_value=None,
+                source=_SRC,
+            ),
+        ],
+        constraints=[],
+        config=TemplateConfig(),
+        source=_SRC,
+    )
+    key = TemplateKey(identity='abc', name='Srv')
+    executor = _executor({key: tpl})
+    outer = SourceRange.empty()
+    # 被检查 dict 与内部字段/值均无来源（模拟 !file/!env 导入数据）
+    bad = StdObject(fields=[StdField(name='host', value=StdLiteral(kind='int', value=123))])
+    field = StdField(
+        name='hand',
+        value=bad,
+        constraints=[ResolvedConstraint(name=str(key))],
+        source=outer,
+    )
+    collector = DiagnosticCollector()
+    executor.validate(StdObject(fields=[field]), collector)
+    codes = [d.code for d in collector]
+    assert codes == ['constraint.type_mismatch']
+    assert all(d.source is outer for d in collector)
 
 
 def test_validate_only_checks_does_not_coerce() -> None:

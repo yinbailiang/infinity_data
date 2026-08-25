@@ -112,8 +112,21 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   - 非零宽 → `file:line:col-line:col`（区间）
 - 诊断与沙盒异常的位置统一取自 `SourceRange`
   （`Diagnostic.source` / `SandboxError.source`）。
-- 约束失败诊断的位置取自约束表达式自身（`spec.source`），
-  回退规则：`spec.source or 外层 source`。
+- 约束失败诊断的位置**取自被检查的对象**（值本身），而非约束表达式自身：
+  - std 树节点统一继承基类 `StdNode`（`source` 字段，keyword-only 且不参与
+    相等比较），值（`StdLiteral` / `StdArray` / `StdObject`）/ 字段
+    （`StdField`）/ 约束（`ResolvedConstraint`）逐节点携带源文档位置
+  - 字段注解约束 → 字段值 `value.source`（无来源回退字段 `field.source`）
+  - 结构级约束（dict）→ 对象 `node.source`（无来源回退约束 `spec.source`）
+  - 模板即约束 / schema 校验 → 调用处被检查的字段值 / 手写 dict；
+    手写 dict 整棵无来源（外部导入数据）时回退**引用它的外层字段**
+  - 嵌套约束（`each` / `position` / `field`）→ 被检查的元素 / 字段值
+  - 模板展开实例的字段位置 = 调用点参数表达式（外部 `$var` 参数回退至此，
+    而非模板定义）
+  - **回退链路逐级外扩**：值 → 字段 → 外层被检查对象 → 约束表达式 → `None`。
+    `!file` / `!env` / `!var` 导入等合成值整棵子树无来源时，最终落到
+    「引用该数据的那条字段 / 外层对象」的位置；全程无来源则 `source=None`
+    （渲染为 `<unknown>`）——外部数据本就不存在于源文档，无可指向的位置
 
 ---
 
