@@ -12,7 +12,7 @@ from __future__ import annotations
 import decimal
 import json
 from collections.abc import Iterable, Iterator
-from pathlib import PosixPath
+from pathlib import PurePosixPath
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.tokenizer.diagnostics import diag
@@ -251,10 +251,10 @@ class FinalTokenizer:
         return MultilineStringToken(raw=raw, value=content, tags=tags)
 
     def _convert_path(self, raw: RawToken) -> PathToken:
-        """``p"..."`` → :class:`PosixPath`（语言内 POSIX 形式）。
+        """``p"..."`` → :class:`PurePosixPath`（语言内 POSIX 形式）。
 
         JSON 转义无效 → 复用字符串诊断并回退去引号原文；
-        空串 / NUL 等无法构成路径 → ``tokenize.invalid_path`` 诊断并回退 ``PosixPath('.')``。
+        空串 / NUL 等无法构成路径 → ``tokenize.invalid_path`` 诊断并回退 ``PurePosixPath('.')``。
         """
         inner = raw.raw[1:]  # 去掉 p 前缀，保留 "..."
         try:
@@ -265,10 +265,10 @@ class FinalTokenizer:
         try:
             if not value:
                 raise ValueError('empty path')
-            path = PosixPath(value)
+            path = PurePosixPath(value)
         except ValueError:
             self._errors.add(diag('tokenize.invalid_path', {'raw': raw.raw}, raw.source))
-            path = PosixPath('.')
+            path = PurePosixPath('.')
         return PathToken(raw=raw, value=path)
 
     def _convert_integer(self, raw: RawToken) -> IntegerToken:

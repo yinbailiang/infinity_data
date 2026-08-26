@@ -1,11 +1,11 @@
 """semantic/std.py：python_to_std ↔ std_to_python 忠实互转（语义最小丢失）。
 
 与 emit 的有损投影（path → 字符串）区分：本层是**忠实双向**——
-path 保持 :class:`PosixPath`、float 保持 :class:`decimal.Decimal`，可 round-trip。
+path 保持 :class:`PurePosixPath`、float 保持 :class:`decimal.Decimal`，可 round-trip。
 """
 
 from decimal import Decimal
-from pathlib import PosixPath, PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, TypeAliasType, cast
 
 from infinity_data.emit import restore_python
@@ -29,15 +29,15 @@ def test_std_python_value_is_recursive_type_alias() -> None:
     # 类型层 smoke：忠实 round-trip 的结果符合规范形式
     v: StdPythonValue = std_to_python(python_to_std(restore_python({'a': 1, 'b': [True, 'x']})))
     assert v == {'a': 1, 'b': [True, 'x']}
-    p: StdPythonValue = std_to_python(python_to_std(PosixPath('/etc/x')))
-    assert p == PosixPath('/etc/x')
+    p: StdPythonValue = std_to_python(python_to_std(PurePosixPath('/etc/x')))
+    assert p == PurePosixPath('/etc/x')
 
 
 def test_roundtrip_path_keeps_posix_path() -> None:
-    """path 双向忠实：python_to_std(PosixPath) → path → 逆回 PosixPath（非字符串）。"""
-    v = python_to_std(PosixPath('/etc/x'))
+    """path 双向忠实：python_to_std(PurePosixPath) → path → 逆回 PurePosixPath（非字符串）。"""
+    v = python_to_std(PurePosixPath('/etc/x'))
     assert isinstance(v, StdLiteral) and v.kind == 'path'
-    assert std_to_python(v) == PosixPath('/etc/x')
+    assert std_to_python(v) == PurePosixPath('/etc/x')
 
 
 def test_python_to_std_accepts_any_pure_path() -> None:
@@ -45,7 +45,7 @@ def test_python_to_std_accepts_any_pure_path() -> None:
     a = python_to_std(cast(Any, PurePosixPath('/a/b')))
     assert isinstance(a, StdLiteral) and a.kind == 'path'
     b = python_to_std(cast(Any, PureWindowsPath('C:/x')))
-    assert isinstance(b, StdLiteral) and b.value == PosixPath('C:/x')
+    assert isinstance(b, StdLiteral) and b.value == PurePosixPath('C:/x')
 
 
 def test_three_state_roundtrip() -> None:
@@ -69,7 +69,7 @@ def test_nested_roundtrip() -> None:
         fields=[
             StdField(
                 name='s',
-                value=StdObject(fields=[StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/x')))]),
+                value=StdObject(fields=[StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/x')))]),
             ),
             StdField(
                 name='l',
@@ -77,7 +77,7 @@ def test_nested_roundtrip() -> None:
             ),
         ]
     )
-    assert std_to_python(obj) == {'s': {'p': PosixPath('/x')}, 'l': [1, 'a']}
+    assert std_to_python(obj) == {'s': {'p': PurePosixPath('/x')}, 'l': [1, 'a']}
 
 
 # ═══════════════════════════════════════════════════════════

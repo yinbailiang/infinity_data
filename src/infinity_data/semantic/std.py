@@ -12,7 +12,7 @@
 **分层原则（与 emit 层是不同语义）**：
 
 - 本层（``python ↔ std``，:func:`python_to_std` / :func:`std_to_python`）是
-  **忠实互转**，确保**语义最小丢失**——path → :class:`PosixPath`、float →
+  **忠实互转**，确保**语义最小丢失**——path → :class:`PurePosixPath`、float →
   :class:`decimal.Decimal`、noexist → :data:`NOEXIST` 哨兵，三态无损 round-trip。
 - emit 层（:mod:`infinity_data.emit`）则**从 Python 出发**投影到其他数据格式
   （JSON / YAML / TOML），无需担心完整性——有损投影：path → 字符串、
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import decimal
 from dataclasses import dataclass, field
-from pathlib import PosixPath, PurePath
+from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeGuard, cast
 
 from infinity_data.infra.location import SourceRange
@@ -53,7 +53,7 @@ __all__ = [
 ]
 
 LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist', 'path']
-"""字面量 kind 枚举（含 ``path``：语言内 POSIX 路径，值用 :class:`PosixPath` 承载）。"""
+"""字面量 kind 枚举（含 ``path``：语言内 POSIX 路径，值用 :class:`PurePosixPath` 承载）。"""
 
 
 class Noexist:
@@ -90,14 +90,22 @@ NOEXIST = Noexist()
 
 
 type StdPythonValue = (
-    None | bool | int | decimal.Decimal | PosixPath | str | Noexist | list[StdPythonValue] | dict[str, StdPythonValue]
+    None
+    | bool
+    | int
+    | decimal.Decimal
+    | PurePosixPath
+    | str
+    | Noexist
+    | list[StdPythonValue]
+    | dict[str, StdPythonValue]
 )
 """Python 域忠实表示（§1.6 三态 + 各 kind 的专有类型）。
 
 :func:`std_to_python` 的返回类型与 :func:`python_to_std` 的**成对输入签名**：
 
 - ``float`` kind → :class:`decimal.Decimal`（无限精度，非 Python ``float``）
-- ``path`` kind → :class:`PosixPath`（语言内 POSIX 形式）
+- ``path`` kind → :class:`PurePosixPath`（语言内 POSIX 形式）
 - ``null`` → ``None``；``noexist`` → :data:`NOEXIST` 哨兵（**默认保留**，无损）
 - 数组 / dict 递归（dict 键恒为 ``str``，§1.4）
 
@@ -163,7 +171,7 @@ class StdLiteral(StdNode):
     """
 
     kind: LiteralKind
-    value: str | int | decimal.Decimal | bool | PosixPath | None
+    value: str | int | decimal.Decimal | bool | PurePosixPath | None
 
 
 type StdValue = StdLiteral | StdArray | StdObject
@@ -216,7 +224,7 @@ def python_to_std(value: StdPythonValue) -> StdValue:
         return StdLiteral(kind='float', value=decimal.Decimal(str(value)))
     if isinstance(value, PurePath):
         # 任意 pathlib 路径 → path 值（统一归一为语言内 POSIX 形式，§1.5）
-        return StdLiteral(kind='path', value=PosixPath(value.as_posix()))
+        return StdLiteral(kind='path', value=PurePosixPath(value.as_posix()))
     if isinstance(value, str):
         return StdLiteral(kind='str', value=value)
     if isinstance(value, list):
@@ -232,7 +240,7 @@ def std_to_python(val: StdValue, *, keep_null: bool = True, keep_noexist: bool =
     """StdValue → Python 值（:func:`python_to_std` 的**忠实逆**，默认无损）。
 
     与 emit 的有损投影不同，本函数保真：
-    - ``path`` → :class:`PosixPath`（保持路径语义，可 round-trip 回 std）
+    - ``path`` → :class:`PurePosixPath`（保持路径语义，可 round-trip 回 std）
     - ``float`` → :class:`decimal.Decimal`（无限精度，round-trip 无损）
     - 三态可空：``noexist`` **默认保留**为 :data:`NOEXIST` 哨兵（转换层无损，§1.6）；
       ``keep_noexist=False`` 时丢弃（键不出现，输出投影语义）；``null`` 保留键

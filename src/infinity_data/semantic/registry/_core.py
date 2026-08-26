@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from pathlib import PosixPath, PurePath
+from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
@@ -209,8 +209,8 @@ def as_std_value(v: Any) -> StdValue:
         return StdLiteral(kind='int', value=v)
     if isinstance(v, Decimal):
         return StdLiteral(kind='float', value=v)
-    if isinstance(v, PosixPath):
-        return StdLiteral(kind='path', value=v)
+    if isinstance(v, PurePath):
+        return StdLiteral(kind='path', value=PurePosixPath(v.as_posix()))
     if isinstance(v, str):
         return StdLiteral(kind='str', value=v)
     if isinstance(v, (list, tuple)):

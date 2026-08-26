@@ -2,7 +2,7 @@
 
 import json
 from decimal import Decimal
-from pathlib import PosixPath
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -30,7 +30,7 @@ def _obj(*fields: StdField) -> StdObject:
 
 def test_to_json_default_projection() -> None:
     obj = _obj(
-        StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/etc/x'))),
+        StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/etc/x'))),
         StdField(name='f', value=StdLiteral(kind='float', value=Decimal('1.5'))),
         StdField(name='i', value=StdLiteral(kind='int', value=2)),
         StdField(name='n', value=StdLiteral(kind='null', value=None)),
@@ -68,7 +68,7 @@ def test_to_json_full_float() -> None:
 
 def test_to_json_full_path() -> None:
     """full_path：路径值以自描述标记编码（默认投影为普通 POSIX 字符串）。"""
-    obj = _obj(StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/etc/x'))))
+    obj = _obj(StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/etc/x'))))
     data = json.loads(to_json(obj, config=EmitConfig(full_path=True)))
     assert data == {'p': {'__type__': 'path', 'path': '/etc/x'}}
 
@@ -76,7 +76,7 @@ def test_to_json_full_path() -> None:
 def test_to_json_all_full_markers() -> None:
     """full_float + full_path + keep_noexist：全部自描述标记。"""
     obj = _obj(
-        StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/etc/x'))),
+        StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/etc/x'))),
         StdField(name='f', value=StdLiteral(kind='float', value=Decimal('1.5'))),
         StdField(name='no', value=StdLiteral(kind='noexist', value=None)),
     )
@@ -98,8 +98,8 @@ def test_to_json_keep_noexist() -> None:
 
 
 def test_to_json_from_python_value() -> None:
-    """Python 值输入（如 result.value）：PosixPath/Decimal/NOEXIST 哨兵均被投影。"""
-    value = {'cert': PosixPath('/etc/x'), 'f': Decimal('1.5'), 'no': NOEXIST}
+    """Python 值输入（如 result.value）：PurePosixPath/Decimal/NOEXIST 哨兵均被投影。"""
+    value = {'cert': PurePosixPath('/etc/x'), 'f': Decimal('1.5'), 'no': NOEXIST}
     data = json.loads(to_json(value, config=EmitConfig(full_float=True, keep_noexist=True)))
     assert data == {
         'cert': '/etc/x',
@@ -124,7 +124,7 @@ def test_to_json_options_indent_and_sort() -> None:
 
 def test_to_yaml() -> None:
     obj = _obj(
-        StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/a'))),
+        StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/a'))),
         StdField(name='i', value=StdLiteral(kind='int', value=1)),
     )
     text = to_yaml(obj)
@@ -157,7 +157,7 @@ def test_restore_python_markers() -> None:
     restored = restore_python(raw)
     assert restored == {
         'd': Decimal('1.5'),
-        'p': PosixPath('/etc/x'),
+        'p': PurePosixPath('/etc/x'),
         'no': NOEXIST,
         'i': 1,
         'b': True,
@@ -186,7 +186,7 @@ def test_restore_python_nested() -> None:
     assert isinstance(restored, dict)
     items = restored['a']
     assert isinstance(items, list)
-    assert items[0] == PosixPath('/a')
+    assert items[0] == PurePosixPath('/a')
     # Decimal NaN 在 IEEE 754 下 != 自身，用 is_nan() 判定
     assert isinstance(items[1], Decimal) and items[1].is_nan()
     assert restored['b'] == {'k': None}
@@ -196,7 +196,7 @@ def test_roundtrip_std_through_json_markers() -> None:
     """std → to_json(全标记) → json.loads → restore_python → python_to_std 无损闭环。"""
     obj = StdObject(
         fields=[
-            StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/etc/x'))),
+            StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/etc/x'))),
             StdField(name='f', value=StdLiteral(kind='float', value=Decimal('1.5'))),
             StdField(name='no', value=StdLiteral(kind='noexist', value=None)),
             StdField(name='i', value=StdLiteral(kind='int', value=1)),
@@ -207,7 +207,7 @@ def test_roundtrip_std_through_json_markers() -> None:
     raw = json.loads(to_json(obj, config=cfg))
     restored = restore_python(raw)
     assert restored == {
-        'p': PosixPath('/etc/x'),
+        'p': PurePosixPath('/etc/x'),
         'f': Decimal('1.5'),
         'no': NOEXIST,
         'i': 1,
@@ -222,8 +222,8 @@ def test_roundtrip_std_through_json_markers() -> None:
 
 
 def test_dump_to_json_default_preserves_semantics() -> None:
-    """dump_to_json 默认开全标记：Decimal / PosixPath / noexist 均自描述编码。"""
-    value = {'p': PosixPath('/etc/x'), 'f': Decimal('1.5'), 'no': NOEXIST, 'i': 1}
+    """dump_to_json 默认开全标记：Decimal / PurePosixPath / noexist 均自描述编码。"""
+    value = {'p': PurePosixPath('/etc/x'), 'f': Decimal('1.5'), 'no': NOEXIST, 'i': 1}
     data = json.loads(dump_to_json(value))
     assert data == {
         'p': {'__type__': 'path', 'path': '/etc/x'},
@@ -235,7 +235,7 @@ def test_dump_to_json_default_preserves_semantics() -> None:
 
 def test_dump_to_json_config_override() -> None:
     """传入 config 可覆盖默认：EmitConfig() → 无标记、普通投影。"""
-    value = {'p': PosixPath('/a'), 'f': Decimal('1.5')}
+    value = {'p': PurePosixPath('/a'), 'f': Decimal('1.5')}
     assert json.loads(dump_to_json(value, config=EmitConfig())) == {'p': '/a', 'f': 1.5}
 
 
@@ -243,14 +243,14 @@ def test_load_from_json_restores_semantics() -> None:
     """load_from_json 默认还原：标记 → 专有类型，普通 float → Decimal。"""
     text = json.dumps({'p': {'__type__': 'path', 'path': '/x'}, 'f': 2.5})
     restored = load_from_json(text)
-    assert restored == {'p': PosixPath('/x'), 'f': Decimal('2.5')}
+    assert restored == {'p': PurePosixPath('/x'), 'f': Decimal('2.5')}
 
 
 def test_dump_load_roundtrip_std_is_lossless() -> None:
     """std → dump_to_json → load_from_json → python_to_std 无损闭环（默认即全语义）。"""
     obj = StdObject(
         fields=[
-            StdField(name='p', value=StdLiteral(kind='path', value=PosixPath('/etc/x'))),
+            StdField(name='p', value=StdLiteral(kind='path', value=PurePosixPath('/etc/x'))),
             StdField(name='f', value=StdLiteral(kind='float', value=Decimal('1.5'))),
             StdField(name='no', value=StdLiteral(kind='noexist', value=None)),
             StdField(name='i', value=StdLiteral(kind='int', value=1)),

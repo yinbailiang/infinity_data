@@ -15,7 +15,7 @@ class EmitConfig:
     - ``full_float``：``float`` 值（:class:`decimal.Decimal`）以自描述标记
       ``{"__type__": "decimal", "num": "<十进制字符串>"}`` 编码（无损）；False 时
       有限值转普通 JSON 数字，NaN / ±Infinity 无法用 JSON 数字表达 → 仍以标记编码
-    - ``full_path``：路径值（:class:`PosixPath`）以自描述标记
+    - ``full_path``：路径值（:class:`PurePosixPath`）以自描述标记
       ``{"__type__": "path", "path": "<POSIX 字符串>"}`` 编码（可辨识「这是路径」）；
       False 时投影为普通 POSIX 字符串
     - ``keep_noexist``：``noexist`` 字段保留为 ``{"__type__": "noexist"}`` 标记

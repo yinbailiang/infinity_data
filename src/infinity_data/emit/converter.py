@@ -4,7 +4,7 @@
 
 - **内部表示**（忠实双向，语义最小丢失）：:func:`~infinity_data.semantic.std.python_to_std`
   与 :func:`~infinity_data.semantic.std.std_to_python`——path 保持
-  :class:`PosixPath`、float 保持 :class:`decimal.Decimal`、noexist 经
+  :class:`PurePosixPath`、float 保持 :class:`decimal.Decimal`、noexist 经
   :data:`~infinity_data.semantic.std.NOEXIST` 哨兵保留三态。
   流水线内部（如 :class:`~infinity_data.pipeline.CompilationResult.value`）一律走该层。
 - **本层（emit）**：做**有损投影**供输出格式消费，无需担心完整性——
@@ -21,7 +21,7 @@ from __future__ import annotations
 import importlib
 import json
 from decimal import Decimal, InvalidOperation
-from pathlib import PosixPath, PurePath
+from pathlib import PurePath, PurePosixPath
 from typing import Any, cast
 
 from infinity_data.emit.config import EmitConfig
@@ -74,7 +74,7 @@ def _restore_marker(value: dict[Any, Any]) -> Any | None:
         return None
     if typ == 'path':
         if set(value) == {'__type__', 'path'} and isinstance(value.get('path'), str):
-            return PosixPath(value['path'])
+            return PurePosixPath(value['path'])
         return None
     if typ == 'noexist':
         if set(value) == {'__type__'}:
@@ -87,7 +87,7 @@ def restore_python(value: Any) -> StdPythonValue:
     """从加载的原始 dict（含可选 emit 自描述标记）**尝试**还原为 StdPythonValue。
 
     - ``{"__type__": "decimal", "num": "..."}`` → :class:`decimal.Decimal`
-    - ``{"__type__": "path", "path": "..."}`` → :class:`PosixPath`
+    - ``{"__type__": "path", "path": "..."}`` → :class:`PurePosixPath`
     - ``{"__type__": "noexist"}`` → :data:`NOEXIST`
     - 普通 ``float`` → :class:`decimal.Decimal`（忠实形式，与
       :func:`~infinity_data.semantic.std.python_to_std` 规范一致）
@@ -216,7 +216,7 @@ def dump_to_json(value: Any, *, config: EmitConfig | None = None) -> str:
     """std / Python 值 → JSON 文本（便捷入口，**默认保留一切语义**）。
 
     默认等价 ``EmitConfig(full_float=True, full_path=True, keep_noexist=True)``——
-    Decimal / PosixPath / noexist 以 ``{"__type__": ...}`` 标记编码；
+    Decimal / PurePosixPath / noexist 以 ``{"__type__": ...}`` 标记编码；
     传入 ``config`` 可覆盖（关闭标记、改缩进等，见 :class:`EmitConfig`）。
 
     与 :func:`load_from_json` 配对可实现「std → JSON → StdPythonValue」无损闭环。
@@ -229,7 +229,7 @@ def load_from_json(text: str) -> StdPythonValue:
     """JSON 文本 → StdPythonValue（便捷入口，**默认尝试还原全部语义**）。
 
     解析后经 :func:`restore_python`：``{"__type__": ...}`` 标记还原为
-    Decimal / PosixPath / NOEXIST，普通 float 归一到 Decimal；
+    Decimal / PurePosixPath / NOEXIST，普通 float 归一到 Decimal；
     识别不了的形状原样保留（尽力而为）。
     """
     return restore_python(json.loads(text))
@@ -241,7 +241,7 @@ def load_from_json(text: str) -> StdPythonValue:
 def project_output(value: Any) -> Any:
     """Python 值 → 输出友好投影（递归，有损，无配置）。
 
-    - :class:`PurePath`（含 :class:`PosixPath`）→ POSIX 字符串
+    - :class:`PurePath`（含 :class:`PurePosixPath`）→ POSIX 字符串
     - dict / list 递归投影；其余（int / Decimal / bool / str / None 等）原样保留
 
     完整选项（Decimal 编码 / noexist 标记）请用 :func:`to_json` 等带

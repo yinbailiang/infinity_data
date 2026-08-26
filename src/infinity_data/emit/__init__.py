@@ -2,7 +2,7 @@
 
 与 semantic 层边界：
 - **内部表示（忠实双向）** → :mod:`infinity_data.semantic.std` 的
-  ``python_to_std`` / ``std_to_python``（path → PosixPath、float → Decimal、
+  ``python_to_std`` / ``std_to_python``（path → PurePosixPath、float → Decimal、
   noexist → :data:`~infinity_data.semantic.std.NOEXIST` 哨兵）
 - **本层（emit，有损投影）** → :func:`to_json` / :func:`to_yaml` / :func:`to_toml`，
   按 :class:`EmitConfig` 控制 Decimal 编码与 noexist 标记；:func:`project_output`

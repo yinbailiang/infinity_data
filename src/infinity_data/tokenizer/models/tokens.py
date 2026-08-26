@@ -1,7 +1,7 @@
 import decimal
 import json
 from dataclasses import dataclass, field
-from pathlib import PosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 from .raw_tokens import RawToken
@@ -190,9 +190,9 @@ class SinglelineStringToken(StringToken):
 
 @dataclass
 class PathToken(Token):
-    """``p"..."`` 路径字面量（§1.5）：语言内 POSIX 形式，值模型用 :class:`PosixPath` 承载。"""
+    """``p"..."`` 路径字面量（§1.5）：语言内 POSIX 形式，值模型用 :class:`PurePosixPath` 承载。"""
 
-    value: PosixPath = field(default_factory=lambda: PosixPath('.'))
+    value: PurePosixPath = field(default_factory=lambda: PurePosixPath('.'))
 
     def canonical(self) -> str:
         return 'p' + json.dumps(self.value.as_posix(), ensure_ascii=False)

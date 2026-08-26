@@ -62,7 +62,7 @@ class CompilationResult:
     - ``document``：:class:`StdDocument`（纯数据：root / templates / scope；诊断见 ``diagnostics``）
     - ``root`` / ``value``：由 ``document`` 派生（惰性）——value 经
       :func:`~infinity_data.semantic.std.std_to_python` **忠实**转换
-      （path → :class:`PosixPath`、float → :class:`decimal.Decimal`，语义最小丢失）；
+      （path → :class:`PurePosixPath`、float → :class:`decimal.Decimal`，语义最小丢失）；
       有损输出投影（path → 字符串等）属 emit 层职责，不在本层发生
     """
 
@@ -71,7 +71,7 @@ class CompilationResult:
 
     @cached_property
     def value(self) -> dict[str, Any]:
-        """忠实 std → Python（path 保持 PosixPath；惰性计算）。
+        """忠实 std → Python（path 保持 PurePosixPath；惰性计算）。
 
         ``noexist`` 显式丢弃（``keep_noexist=False``）：转换层本身默认无损（§1.6
         三态经 NOEXIST 哨兵保留），而这里是**输出投影**，兑现「noexist 键不出现」。

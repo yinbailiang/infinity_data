@@ -18,7 +18,7 @@ from __future__ import annotations
 import decimal
 from collections.abc import Iterator, Sequence
 from itertools import product
-from pathlib import PosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
@@ -624,12 +624,12 @@ class AstBuilder:
                     )
                     return StdLiteral(kind='float', value=decimal.Decimal(0), source=source)
             case 'path':
-                # as path：已是路径原样返回；字符串 → 包装为 PosixPath（非法 → 警告 + 保留原字符串）
-                if isinstance(raw, PosixPath):
-                    return StdLiteral(kind='path', value=raw, source=source)
+                # as path：已是路径原样返回；字符串 → 包装为 PurePosixPath（非法 → 警告 + 保留原字符串）
+                if isinstance(raw, PurePath):
+                    return StdLiteral(kind='path', value=PurePosixPath(raw.as_posix()), source=source)
                 if isinstance(raw, str):
                     try:
-                        return StdLiteral(kind='path', value=PosixPath(raw), source=source)
+                        return StdLiteral(kind='path', value=PurePosixPath(raw), source=source)
                     except ValueError:
                         pass
                 self._collector.add(

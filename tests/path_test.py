@@ -1,7 +1,7 @@
 """path 原生类型测试：p"..." 字面量、导入强制路径、path 约束族（含沙盒授权）。
 
 覆盖三层：
-- 词法：``p"..."`` → PATH token / :class:`PathToken`（:class:`PosixPath` 承载）
+- 词法：``p"..."`` → PATH token / :class:`PathToken`（:class:`PurePosixPath` 承载）
 - 语法：``!file`` / ``!from`` 路径必须用 ``p"..."``（普通字符串 → ``parse.import_path_required``）
 - 语义：``path`` 纯语法约束 + ``exist`` / ``dir`` / ``file`` / ``link`` 文件系统约束
   （经沙盒 allow_files 授权；越出沙盒 → ``constraint.path_denied`` 警告 + 失败）
@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path, PosixPath
+from pathlib import Path, PurePosixPath
 
 from infinity_data import SandboxConfig, Severity, compile_source, load
 from infinity_data.infra.diagnostics import DiagnosticCollector
@@ -54,13 +54,13 @@ def test_path_literal_value_is_posix_path() -> None:
     assert not col.has_errors
     tok = fin[0]
     assert isinstance(tok, PathToken)
-    assert tok.value == PosixPath('/etc/certs/a.pem')
+    assert tok.value == PurePosixPath('/etc/certs/a.pem')
 
 
 def test_path_literal_escapes() -> None:
     fin, col = _final(r'p"a\/b"')
     assert not col.has_errors
-    assert isinstance(fin[0], PathToken) and fin[0].value == PosixPath('a/b')
+    assert isinstance(fin[0], PathToken) and fin[0].value == PurePosixPath('a/b')
 
 
 def test_plain_p_identifier_when_not_followed_by_quote() -> None:
@@ -136,10 +136,10 @@ def test_from_import_plain_string_is_error_recovered(infd_file: Callable[[str, s
 
 
 def test_path_literal_value_keeps_posix_path() -> None:
-    """.value 是忠实 std→python：path 值保持 PosixPath（有损投影在 emit 层）。"""
+    """.value 是忠实 std→python：path 值保持 PurePosixPath（有损投影在 emit 层）。"""
     result = compile_source('cert = p"/etc/certs/a.pem"\n')
     assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'cert': PosixPath('/etc/certs/a.pem')}
+    assert result.value == {'cert': PurePosixPath('/etc/certs/a.pem')}
 
 
 def test_path_constraint_accepts_path_literal() -> None:
@@ -161,14 +161,14 @@ def test_path_constraint_rejects_non_path() -> None:
 def test_path_nullable_sugar() -> None:
     result = compile_source('a: <path?> = null\nb: <path?> = p"/x"\n')
     assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'a': None, 'b': PosixPath('/x')}
+    assert result.value == {'a': None, 'b': PurePosixPath('/x')}
 
 
 def test_path_each_in_list() -> None:
     """each(path)：元素须为 path 类型；str 元素被拒绝。"""
     ok = compile_source('paths: <list, each(path)> = [p"/a", p"/b"]\n')
     assert not ok.has_errors, [d.message for d in ok.diagnostics]
-    assert ok.value == {'paths': [PosixPath('/a'), PosixPath('/b')]}
+    assert ok.value == {'paths': [PurePosixPath('/a'), PurePosixPath('/b')]}
     bad = compile_source('bad: <list, each(path)> = [p"/a", "/b"]\n')
     assert any(d.code == 'constraint.type_mismatch' for d in bad.diagnostics)
 
@@ -256,7 +256,7 @@ c = Cfg(out = p"/tmp/x")
 """
     )
     assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'c': {'cert': PosixPath('/etc/default.pem'), 'out': PosixPath('/tmp/x')}}
+    assert result.value == {'c': {'cert': PurePosixPath('/etc/default.pem'), 'out': PurePosixPath('/tmp/x')}}
 
 
 def test_dollar_as_path_cast() -> None:
@@ -268,7 +268,7 @@ cert: path = $raw as path
 """
     )
     assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'cert': PosixPath('/etc/certs/a.pem')}
+    assert result.value == {'cert': PurePosixPath('/etc/certs/a.pem')}
 
 
 def test_path_value_in_dict_and_var() -> None:
@@ -279,7 +279,7 @@ cfg = { root = $lib, extra = p"/tmp" }
 """
     )
     assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'cfg': {'root': PosixPath('/var/lib'), 'extra': PosixPath('/tmp')}}
+    assert result.value == {'cfg': {'root': PurePosixPath('/var/lib'), 'extra': PurePosixPath('/tmp')}}
 
 
 def test_path_value_as_str_cast() -> None:
