@@ -208,6 +208,36 @@ register_diagnostic_define(
         '{path_prefix}路径 {path!r} 不是符号链接',
         en='{path_prefix}path {path!r} is not a symbolic link',
     ),
+    diagnostic_define(
+        'constraint.same_target_arg',
+        '{path_prefix}same_target 参数必须是 path 字面量，实际 {expected}',
+        en='{path_prefix}same_target argument must be a path literal, got {expected}',
+    ),
+    diagnostic_define(
+        'constraint.same_target_mismatch',
+        '{path_prefix}路径 {value!r} 与期望 {expected!r} 词法解析后不同 target',
+        en='{path_prefix}path {value!r} resolves to a different target than {expected!r}',
+    ),
+    diagnostic_define(
+        'constraint.same_name_arg',
+        '{path_prefix}same_name 参数必须是字符串，实际 {expected}',
+        en='{path_prefix}same_name argument must be a string, got {expected}',
+    ),
+    diagnostic_define(
+        'constraint.same_name_mismatch',
+        '{path_prefix}路径 basename {name!r} 不等于期望 {expected!r}',
+        en='{path_prefix}path basename {name!r} does not equal {expected!r}',
+    ),
+    diagnostic_define(
+        'constraint.extension_arg',
+        '{path_prefix}extension 参数必须是扩展名字符串（如 "json"），实际 {expected}',
+        en='{path_prefix}extension argument must be an extension string (e.g. "json"), got {expected}',
+    ),
+    diagnostic_define(
+        'constraint.extension_mismatch',
+        '{path_prefix}路径扩展名 {suffix} 不在期望 {expected!r} 中',
+        en='{path_prefix}path extension {suffix} not in {expected!r}',
+    ),
     diagnostic_define('constraint.regex_no_match', '{path_prefix}值 {value!r} 不匹配正则 {pattern!r}'),
     diagnostic_define('constraint.regex_invalid', '{path_prefix}无效的正则表达式 {pattern!r}: {error}'),
     diagnostic_define('constraint.positive_fail', '{path_prefix}值 {value} 不是正数'),

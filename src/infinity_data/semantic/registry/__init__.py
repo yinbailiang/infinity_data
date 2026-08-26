@@ -54,6 +54,7 @@ from infinity_data.semantic.registry.types import (
     _check_dict,
     _check_dir,
     _check_exist,
+    _check_extension,
     _check_file,
     _check_float,
     _check_int,
@@ -62,6 +63,8 @@ from infinity_data.semantic.registry.types import (
     _check_nullable,
     _check_object,
     _check_path,
+    _check_same_name,
+    _check_same_target,
     _check_str,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -148,6 +151,27 @@ class ConstraintRegistry:
         self.register('dir', _check_dir, description='路径是目录')
         self.register('file', _check_file, description='路径是普通文件')
         self.register('link', _check_link, description='路径是符号链接')
+        # 路径语法约束（纯语法，无文件系统访问）
+        self.register(
+            'same_target',
+            _check_same_target,
+            min_args=1,
+            max_args=1,
+            description='词法解析（折叠 ./..）后与另一路径同 target',
+        )
+        self.register(
+            'same_name',
+            _check_same_name,
+            min_args=1,
+            max_args=1,
+            description='路径 basename 等于指定字符串 same_name("x")',
+        )
+        self.register(
+            'extension',
+            _check_extension,
+            min_args=1,
+            description='路径扩展名匹配任一 extension("json", ...)',
+        )
 
         # ── 一般约束 ──────────────────────────────
         self.register('range', _check_range, min_args=1, max_args=2, description='数值范围 range(ge[, le])，可省略一端')

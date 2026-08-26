@@ -147,10 +147,10 @@ def test_path_constraint_accepts_path_literal() -> None:
     assert not result.has_errors, [d.message for d in result.diagnostics]
 
 
-def test_path_constraint_accepts_str() -> None:
-    """path 约束接受 str（导入数据天然是字符串）。"""
+def test_path_constraint_rejects_str() -> None:
+    """str 与 path 是独立类型：字符串不满足 path（须经 as path 显式转换）。"""
     result = compile_source('cert: path = "/etc/certs/a.pem"\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
 
 
 def test_path_constraint_rejects_non_path() -> None:
@@ -165,42 +165,84 @@ def test_path_nullable_sugar() -> None:
 
 
 def test_path_each_in_list() -> None:
-    """each(path) 接受 path 与 str；值忠实保持各自 kind（str 不提升为 path）。"""
-    result = compile_source('paths: <list, each(path)> = [p"/a", "/b"]\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'paths': [PosixPath('/a'), '/b']}
-
-
-def test_str_constraint_accepts_path_value() -> None:
-    """path 是 str 的特化：str 约束接受 path 值。"""
-    result = compile_source('x: str = p"/a"\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
-    assert result.value == {'x': PosixPath('/a')}
-
-
-def test_size_constraint_on_path_value() -> None:
-    """size 约束对 path 值按 POSIX 字符串长度计算。"""
-    ok = compile_source('x: <path, size(2)> = p"/ab"\n')
+    """each(path)：元素须为 path 类型；str 元素被拒绝。"""
+    ok = compile_source('paths: <list, each(path)> = [p"/a", p"/b"]\n')
     assert not ok.has_errors, [d.message for d in ok.diagnostics]
-    bad = compile_source('y: <path, size(5)> = p"/ab"\n')
-    assert any(d.code == 'constraint.size_out' for d in bad.diagnostics)
+    assert ok.value == {'paths': [PosixPath('/a'), PosixPath('/b')]}
+    bad = compile_source('bad: <list, each(path)> = [p"/a", "/b"]\n')
+    assert any(d.code == 'constraint.type_mismatch' for d in bad.diagnostics)
 
 
-def test_eq_path_cross_kind() -> None:
-    """eq(p"/x") 对 path 值与等价 str 值均成立（path↔str 交叉相等）。"""
+def test_str_constraint_rejects_path_value() -> None:
+    """str 与 path 独立：str 约束拒绝 path 值。"""
+    result = compile_source('x: str = p"/a"\n')
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
+
+
+def test_size_constraint_rejects_path_value() -> None:
+    """size 是字符串/集合约束：path 是独立类型，不适用。"""
+    result = compile_source('x: <path, size(2)> = p"/ab"\n')
+    assert any(d.code == 'constraint.size_only' for d in result.diagnostics)
+
+
+def test_eq_path_no_cross_kind() -> None:
+    """eq(p"/x") 只对 path 值成立；等价 str 值不相等（path 与 str 独立）。"""
     a = compile_source('a: <eq(p"/x")> = p"/x"\n')
     assert not a.has_errors, [d.message for d in a.diagnostics]
     b = compile_source('b: <eq(p"/x")> = "/x"\n')
-    assert not b.has_errors, [d.message for d in b.diagnostics]
+    assert any(d.code == 'constraint.eq_mismatch' for d in b.diagnostics)
     c = compile_source('c: <eq(p"/x")> = "/y"\n')
     assert any(d.code == 'constraint.eq_mismatch' for d in c.diagnostics)
 
 
 def test_in_choices_with_paths() -> None:
-    ok = compile_source('x: <in(p"/a", p"/b")> = "/a"\n')
+    """in(p"/a", p"/b") 只匹配 path 值；str 不参与（无交叉相等）。"""
+    ok = compile_source('x: <in(p"/a", p"/b")> = p"/a"\n')
     assert not ok.has_errors, [d.message for d in ok.diagnostics]
-    bad = compile_source('y: <in(p"/a", p"/b")> = "/z"\n')
+    bad = compile_source('y: <in(p"/a", p"/b")> = "/a"\n')
     assert any(d.code == 'constraint.in_not_in' for d in bad.diagnostics)
+
+
+def test_same_target_constraint() -> None:
+    """same_target：词法折叠 ./.. 后同 target（纯语法、可复现）。"""
+    ok = compile_source('a: <path, same_target(p"/etc/x")> = p"/etc/../etc/x"\n')
+    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    bad = compile_source('b: <path, same_target(p"/etc/x")> = p"/var/x"\n')
+    assert any(d.code == 'constraint.same_target_mismatch' for d in bad.diagnostics)
+
+
+def test_same_target_rejects_str() -> None:
+    """same_target 是路径域约束：str 值 → type_mismatch（path 独立类型）。"""
+    result = compile_source('x: <same_target(p"/a")> = "/a"\n')
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
+
+
+def test_same_name_constraint() -> None:
+    """same_name(str)：路径 basename 等于指定字符串。"""
+    ok = compile_source('a: <path, same_name("pipeline.py")> = p"/etc/pipeline.py"\n')
+    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    bad = compile_source('b: <path, same_name("pipeline.py")> = p"/etc/main.py"\n')
+    assert any(d.code == 'constraint.same_name_mismatch' for d in bad.diagnostics)
+
+
+def test_extension_constraint() -> None:
+    """extension(ext, ...)：路径扩展名匹配任一（不带前导点）。"""
+    ok = compile_source('a: <path, extension("json")> = p"/etc/config.json"\n')
+    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    multi = compile_source('b: <path, extension("json", "yaml")> = p"/etc/config.yaml"\n')
+    assert not multi.has_errors, [d.message for d in multi.diagnostics]
+    bad = compile_source('c: <path, extension("json")> = p"/etc/config.toml"\n')
+    assert any(d.code == 'constraint.extension_mismatch' for d in bad.diagnostics)
+    noext = compile_source('d: <path, extension("json")> = p"/etc/readme"\n')
+    assert any(d.code == 'constraint.extension_mismatch' for d in noext.diagnostics)
+
+
+def test_regex_on_path() -> None:
+    """regex 推广到 path：对 POSIX 字符串全匹配（fullmatch，[.] 避免转义）。"""
+    ok = compile_source('a: <path, regex(".*[.]pem")> = p"/etc/certs/a.pem"\n')
+    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    bad = compile_source('b: <path, regex(".*[.]pem")> = p"/etc/certs/a.key"\n')
+    assert any(d.code == 'constraint.regex_no_match' for d in bad.diagnostics)
 
 
 def test_path_in_template_default_and_field() -> None:
@@ -297,12 +339,12 @@ def test_fs_constraint_denied_is_warning_and_fail(tmp_path: Path, infd_file: Cal
     assert not result.has_errors  # 警告不构成编译错误
 
 
-def test_fs_constraint_on_str_value(tmp_path: Path, infd_file: Callable[[str, str], Path]) -> None:
-    """文件系统约束接受 str 值（导入数据场景）。"""
-    _write(tmp_path / 'data.json', '{}')
-    path = infd_file('app.infd', '!file p"data.json" import . as d\nf: <path, exist> = $d\n')
+def test_fs_constraint_rejects_str_value(tmp_path: Path, infd_file: Callable[[str, str], Path]) -> None:
+    """文件系统约束只接受 path 类型：str 值 → type_mismatch（导入字符串须 as path）。"""
+    _write(tmp_path / 'data.json', '{"p": "/etc/x"}')
+    path = infd_file('app.infd', '!file p"data.json" import .p as p\nf: <path, exist> = $p\n')
     result = load(path, sandbox=SandboxConfig(allow_files=['./data.json']))
-    # $d 是 dict（整个文件），exist 对非路径值 → type_mismatch
+    # $p 是 str（JSON 字符串），path/exist 均拒绝 → type_mismatch
     assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
 
 

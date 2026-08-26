@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from pathlib import PosixPath, PurePath
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
@@ -128,14 +129,17 @@ def as_number(val: StdValue | None) -> Decimal | None:
 
 
 def as_str(val: StdValue | None) -> str | None:
-    """字面量 → 字符串（str / path kind 才有效；path 取 POSIX 形式）。"""
-    if isinstance(val, StdLiteral) and val.kind in ('str', 'path'):
+    """字面量 → 字符串（仅 str kind；path 是独立类型，不视为字符串）。"""
+    if isinstance(val, StdLiteral) and val.kind == 'str':
         v = val.value
-        if val.kind == 'path':
-            from pathlib import PurePath
-
-            return v.as_posix() if isinstance(v, PurePath) else str(v)
         return v if isinstance(v, str) else None
+    return None
+
+
+def path_str(val: StdValue | None) -> str | None:
+    """字面量 → 语言内 POSIX 字符串（仅 path kind；str 与 path 独立，str 不算路径）。"""
+    if isinstance(val, StdLiteral) and val.kind == 'path' and isinstance(val.value, PurePath):
+        return val.value.as_posix()
     return None
 
 
@@ -179,11 +183,6 @@ def std_equal(a: StdValue | None, b: StdValue | None) -> bool:
             nb = as_number(b)
             if na is not None and nb is not None:
                 return safe_equal(na, nb)
-        # path ↔ str 交叉相等：路径值与其 POSIX 字符串形式等价（§1.5）
-        if {a.kind, b.kind} == {'path', 'str'}:
-            sa = as_str(a)
-            sb = as_str(b)
-            return sa is not None and sb is not None and safe_equal(sa, sb)
         return False
     if isinstance(a, StdArray) and isinstance(b, StdArray):
         if len(a.elements) != len(b.elements):
@@ -210,6 +209,8 @@ def as_std_value(v: Any) -> StdValue:
         return StdLiteral(kind='int', value=v)
     if isinstance(v, Decimal):
         return StdLiteral(kind='float', value=v)
+    if isinstance(v, PosixPath):
+        return StdLiteral(kind='path', value=v)
     if isinstance(v, str):
         return StdLiteral(kind='str', value=v)
     if isinstance(v, (list, tuple)):

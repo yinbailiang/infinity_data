@@ -33,6 +33,9 @@ from infinity_data.semantic.registry._core import (
     as_str as _as_str,
 )
 from infinity_data.semantic.registry._core import (
+    path_str as _path_str,
+)
+from infinity_data.semantic.registry._core import (
     std_equal as _std_equal,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -91,10 +94,11 @@ def _check_size(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """size 约束的实现"""
     size_val: int | None = None
-    if isinstance(val, StdLiteral) and val.kind in ('str', 'path'):
-        s = _as_str(val)
-        size_val = len(s) if s is not None else None
+    if isinstance(val, StdLiteral) and val.kind == 'str':
+        v = val.value
+        size_val = len(v) if isinstance(v, str) else None
     elif isinstance(val, StdArray):
         size_val = len(val.elements)
     elif isinstance(val, StdObject):
@@ -117,6 +121,7 @@ def _check_each(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """each 约束的实现"""
     spec = _as_spec(args[0])
     if spec is None:
         return fail_result('constraint.each_need', {}, source, path)
@@ -177,6 +182,7 @@ def _check_in(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """in 约束的实现"""
     choices: list[Any] = cast(list[Any], args[0]) if len(args) == 1 and isinstance(args[0], list) else args
     if any(_std_equal(val, _as_std_value(c)) for c in choices):
         return ok_result()
@@ -190,6 +196,7 @@ def _check_ip(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """ip 约束的实现"""
     s = _as_str(val)
     if s is None:
         return fail_result('constraint.string_only', {'constraint': 'ip'}, source, path)
@@ -207,6 +214,7 @@ def _check_ip4(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """ip4 约束的实现"""
     s = _as_str(val)
     if s is None:
         return fail_result('constraint.string_only', {'constraint': 'ip4'}, source, path)
@@ -224,6 +232,7 @@ def _check_ip6(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """ip6 约束的实现"""
     s = _as_str(val)
     if s is None:
         return fail_result('constraint.string_only', {'constraint': 'ip6'}, source, path)
@@ -241,7 +250,12 @@ def _check_regex(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """regex 约束的实现"""
+    # 推广：regex 对 path 值按 POSIX 字符串匹配（路径模式，§1.2.1）；
+    # str 与 path 独立，但 regex 是「字符串形式匹配」，两者皆可
     s = _as_str(val)
+    if s is None:
+        s = _path_str(val)
     if s is None:
         return fail_result('constraint.string_only', {'constraint': 'regex'}, source, path)
     pattern = str(args[0])
@@ -260,6 +274,7 @@ def _check_email(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """email 约束的实现"""
     s = _as_str(val)
     if s is None:
         return fail_result('constraint.string_only', {'constraint': 'email'}, source, path)
@@ -291,6 +306,7 @@ def _check_uuid(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
+    """uuid 约束的实现"""
     s = _as_str(val)
     if s is None:
         return fail_result('constraint.string_only', {'constraint': 'uuid'}, source, path)

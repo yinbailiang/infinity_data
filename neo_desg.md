@@ -72,14 +72,20 @@
 - `each(constraint)` list 每个元素均满足约束则满足，dict 每个键的值均满足则满足
 - `in(choice, ...)` 值必须在给定选项中
 - `ip`, `ip4`, `ip6` IP 地址格式
-- `regex("re")` 正则匹配
+- `regex("re")` 正则全匹配（也适用于 path：按 POSIX 字符串全匹配，如
+  `regex(".*[.]pem")` 匹配 `.pem` 结尾的路径）
 - `email` 邮箱格式
 - `url` URL 格式
 - `uuid` UUID 格式
 - `hostname` 主机名格式
 - `positive` 正数 (> 0)
-- `path` 路径格式（语言内 POSIX 形式）——值须是**合法路径**（非空、无 NUL、可解析）；
-  接受 `str` 与 path 字面量（`p"..."` / `as path` 产生）
+- `path` 路径（语言内 POSIX 形式，§1.4 独立基础类型）——值必须是 **path 类型**
+  （`p"..."` 字面量 / `$x as path` 转换产生）；**字符串不满足 path**——str 与 path
+  相互独立、无隐式互转，str 值须经 `as path` 显式转换（§1.8）才能作为路径使用
+- `same_target(path)` 词法解析（折叠 `.` / `..`，纯字符串操作）后与参数 path
+  **指向同一目标**——不触碰文件系统、不解引用符号链接：纯语法、可复现
+- `same_name(str)` 路径的 basename（最后一段）等于指定字符串
+- `extension("json", ...)` 路径扩展名匹配任一（参数不带前导点；无扩展名不匹配）
 - `negative` 负数 (< 0)
 - `nonnegative` 非负数 (>= 0)
 - `eq(value)` 等于指定值
@@ -229,7 +235,9 @@ tls = false
 - `int` 有符号整数，无限精度
 - `float` 无限精度10进制浮点
 - `str` utf-8编码字符串，无尾0
-- `path` 路径（语言内 POSIX 形式；值模型用专有类型表示，`p"..."` / `as path` 产生）
+- `path` 路径（语言内 POSIX 形式；值模型用专有类型表示，`p"..."` / `as path` 产生）。
+  **独立基础类型，与 `str` 无隐式互转**：字符串不是路径（`path` 约束拒绝 str，§1.2.1），
+  str 值须经 `as path` 显式转换（§1.8）才能作为路径使用
 - `list` 数组类型，内部元素可以是任何类型
 - `dict` 字典类型，键名为utf-8无尾0字符串，值是 object
 
@@ -273,8 +281,9 @@ tags可为空，内容不做约束
 - `p"..."` 路径字面量：`p` 前缀 + 双引号单行字符串（json 风格转义，同单行字符串）
 - `p` 与 `"` 之间不能有空白；`p` 后非 `"` → 按普通标识符处理
 - 产生 **path 类型**的值（语言内 POSIX 形式）：`p"/etc/certs/a.pem"`、`p"./tpls/base.inft"`
-- 空串 / NUL 等无法构成路径 → 词法错误（`tokenize.invalid_path`）；其余语法层面的
-  合法性（非空、可解析等）交由 `path` 约束（§1.2.1）
+- **path 与 str 是独立类型**（§1.4）：`p"..."` 的产物不是字符串——`str` / `size` /
+  `regex` 等字符串约束对它不适用；空串 / NUL 等无法构成路径 → 词法错误
+  （`tokenize.invalid_path`）
 
 ### 1.6 三态可空
 
@@ -361,6 +370,8 @@ tags可为空，内容不做约束
 - `as bool`: `"true"` / `"1"` → `true`，`"false"` / `"0"` → `false`（不分大小写）
 - `as int`: 正负整数，不支持小数
 - `as float`: 正负、科学计数、点起始
+- **str ↔ path 的唯一桥梁是显式 `as` 转换**（§1.4 两者独立、无隐式互转）：
+  字符串要当路径用必须 `as path`，路径要当字符串用必须 `as str`
 - `as path`: 字符串 → path（合法则包装为路径值；非法 → 警告 + 保留原字符串）；
   已是 path 的值原样返回
 - `as str`: 字符串化——任意字面量按**语言字面量风格**转字符串，可 round-trip 还原：

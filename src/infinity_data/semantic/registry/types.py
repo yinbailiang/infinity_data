@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Callable
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 from infinity_data.infra.diagnostics import Severity
-from infinity_data.infra.path import is_valid_posix_path
 from infinity_data.semantic.builder.models import StdArray, StdLiteral, StdObject, StdValue
 from infinity_data.semantic.registry._core import (
     ConstraintResult,
@@ -15,6 +15,9 @@ from infinity_data.semantic.registry._core import (
     describe,
     fail_result,
     ok_result,
+)
+from infinity_data.semantic.registry._core import (
+    path_str as _path_str,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
@@ -32,6 +35,9 @@ __all__ = [
     '_check_dir',
     '_check_file',
     '_check_link',
+    '_check_same_target',
+    '_check_same_name',
+    '_check_extension',
 ]
 
 
@@ -98,8 +104,8 @@ def _check_str(
 ) -> ConstraintResult:
     if val is None:
         return fail_result('constraint.expect_value', {'expected': 'str'}, source, path)
-    # path 是 str 的特化（§1.5）：字符串约束接受 path 值
-    if isinstance(val, StdLiteral) and val.kind in ('str', 'path'):
+    # path 与 str 是独立基础类型（§1.4）：字符串约束只认 str
+    if isinstance(val, StdLiteral) and val.kind == 'str':
         return ok_result()
     return fail_result('constraint.type_mismatch', {'expected': 'str', 'actual': describe(val)}, source, path)
 
@@ -148,20 +154,10 @@ def _check_dict(
 
 # ── path 约束族 ────────────────────────────────────────
 #
-# - ``path``：纯语法校验（非空、无 NUL、可解析），无文件系统访问
+# - ``path``：值必须是 path 类型（str 与 path 独立，§1.4）
 # - ``exist`` / ``dir`` / ``file`` / ``link``：**构建期文件系统校验**（与导入同属
 #   当前机器状态），经 :class:`Executor` 暴露的沙盒授权探测（deny_all → 拒绝）
-
-
-def _path_str(val: StdValue | None) -> str | None:
-    """从 str / path 字面量提取语言内 POSIX 字符串。"""
-    if not isinstance(val, StdLiteral):
-        return None
-    if val.kind == 'str' and isinstance(val.value, str):
-        return val.value
-    if val.kind == 'path' and isinstance(val.value, PurePath):
-        return val.value.as_posix()
-    return None
+# - ``same_target`` / ``same_name`` / ``extension``：**纯语法**路径约束（无 FS 访问）
 
 
 def _check_path(
@@ -171,13 +167,14 @@ def _check_path(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
-    """path：值须是合法 POSIX 路径（str / path 均可，纯语法校验）。"""
-    s = _path_str(val)
-    if s is None:
-        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
-    if not is_valid_posix_path(s):
-        return fail_result('constraint.invalid_path', {'value': s}, source, path)
-    return ok_result()
+    """path：值必须是 path 类型（``p"..."`` / ``as path`` 产生）。
+
+    str 与 path 是**相互独立的基础类型**——字符串不满足 path（下游无二义）；
+    str 值须经 ``as path`` 显式转换（§1.8）才能作为路径使用。
+    """
+    if isinstance(val, StdLiteral) and val.kind == 'path':
+        return ok_result()
+    return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
 
 
 def _check_exist(
@@ -251,4 +248,74 @@ def _fs_check(
         )
     if not pred(native):
         return fail_result(f'constraint.path_not_{constraint}', {'path': s}, source, path)
+    return ok_result()
+
+
+# ── 路径语法约束（纯语法，无文件系统访问） ────────────
+
+
+def _check_same_target(
+    val: StdValue | None,
+    source: SourceRange | None,
+    path: str,
+    args: list[Any],
+    executor: Executor,
+) -> ConstraintResult:
+    """same_target(path)：当前 path 与参数 path **词法解析后**指向同一目标。
+
+    用 :func:`posixpath.normpath` 折叠 ``.`` / ``..`` 后字符串相等——
+    纯字符串操作、不触碰文件系统、不解引用符号链接：纯语法、可复现（§1.2.1）。
+    """
+    s = _path_str(val)
+    if s is None:
+        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+    other = args[0]
+    if not isinstance(other, PurePath):
+        return fail_result('constraint.same_target_arg', {'expected': 'path 字面量'}, source, path)
+    a = posixpath.normpath(s)
+    b = posixpath.normpath(other.as_posix())
+    if a != b:
+        return fail_result('constraint.same_target_mismatch', {'value': s, 'expected': other.as_posix()}, source, path)
+    return ok_result()
+
+
+def _check_same_name(
+    val: StdValue | None,
+    source: SourceRange | None,
+    path: str,
+    args: list[Any],
+    executor: Executor,
+) -> ConstraintResult:
+    """same_name(str)：路径的 basename（最后一段）等于指定字符串。"""
+    s = _path_str(val)
+    if s is None:
+        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+    expected = args[0]
+    if not isinstance(expected, str):
+        return fail_result('constraint.same_name_arg', {'expected': '字符串'}, source, path)
+    name = PurePosixPath(s).name
+    if name != expected:
+        return fail_result('constraint.same_name_mismatch', {'name': name, 'expected': expected}, source, path)
+    return ok_result()
+
+
+def _check_extension(
+    val: StdValue | None,
+    source: SourceRange | None,
+    path: str,
+    args: list[Any],
+    executor: Executor,
+) -> ConstraintResult:
+    """extension(ext, ...)：路径扩展名匹配任一给定扩展名（不带前导点，如 ``"json"``）。"""
+    s = _path_str(val)
+    if s is None:
+        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+    exts = [a if a.startswith('.') else '.' + a for a in args if isinstance(a, str)]
+    if not exts:
+        return fail_result('constraint.extension_arg', {'expected': '扩展名字符串'}, source, path)
+    suffix = PurePosixPath(s).suffix  # '.json' 或 ''（无扩展名）
+    if suffix not in exts:
+        return fail_result(
+            'constraint.extension_mismatch', {'suffix': suffix or '(无)', 'expected': args}, source, path
+        )
     return ok_result()
