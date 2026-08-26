@@ -64,6 +64,11 @@ register_diagnostic_define(
         en='[{location}] import statement must end with a newline (cannot be followed by more tokens on the same line)',
     ),
     diagnostic_define(
+        'parse.import_path_required',
+        '[{location}] 导入路径必须用 p"..." 路径字面量（§1.5 / §3.2），已按字符串容错取用',
+        en='[{location}] import path must use a p"..." path literal (§1.5 / §3.2); recovered as string',
+    ),
+    diagnostic_define(
         'parse.value_field',
         '[{location}] 值位置出现字段定义 {name}（外层数组/对象未闭合）',
         en='[{location}] field definition {name} in value position (enclosing array/object unclosed)',

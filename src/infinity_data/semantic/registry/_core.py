@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.semantic.builder.models import (
@@ -21,6 +21,9 @@ from infinity_data.semantic.builder.models import (
     StdValue,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
+
+if TYPE_CHECKING:
+    from infinity_data.sandbox import Sandbox
 
 # ═══════════════════════════════════════════════════════════
 # 基础类型
@@ -36,7 +39,11 @@ class ConstraintResult:
 
 
 class Executor(Protocol):
-    """嵌套约束执行回调（由 ConstraintExecutor 提供）。"""
+    """嵌套约束执行回调（由 ConstraintExecutor 提供）。
+
+    ``sandbox``：文件系统依赖约束（``exist`` / ``dir`` / ``file`` / ``link``）经此
+    授权探测（零信任 deny_all 下拒绝 → ``constraint.path_denied``）。
+    """
 
     def __call__(
         self,
@@ -45,6 +52,9 @@ class Executor(Protocol):
         source: SourceRange | None,
         path: str,
     ) -> ConstraintResult: ...
+
+    @property
+    def sandbox(self) -> Sandbox: ...
 
 
 ConstraintFn = Callable[
@@ -74,12 +84,18 @@ def fail_result(
     params: Mapping[str, Any],
     source: SourceRange | None,
     path: str,
+    *,
+    severity: Severity = Severity.ERROR,
 ) -> ConstraintResult:
-    """构造结构化失败结果（code + params，message 由注册表渲染）。"""
+    """构造结构化失败结果（code + params，message 由注册表渲染）。
+
+    ``severity``：默认 ERROR；沙盒越界等「软失败」可传 WARNING（仍 ``ok=False``，
+    约束不满足，但诊断级别为警告）。
+    """
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(severity=Severity.ERROR, code=code, params=dict(params), source=source, path=path),
+            Diagnostic(severity=severity, code=code, params=dict(params), source=source, path=path),
         ],
     )
 
@@ -112,9 +128,13 @@ def as_number(val: StdValue | None) -> Decimal | None:
 
 
 def as_str(val: StdValue | None) -> str | None:
-    """字面量 → 字符串（str kind 才有效）。"""
-    if isinstance(val, StdLiteral) and val.kind == 'str':
+    """字面量 → 字符串（str / path kind 才有效；path 取 POSIX 形式）。"""
+    if isinstance(val, StdLiteral) and val.kind in ('str', 'path'):
         v = val.value
+        if val.kind == 'path':
+            from pathlib import PurePath
+
+            return v.as_posix() if isinstance(v, PurePath) else str(v)
         return v if isinstance(v, str) else None
     return None
 
@@ -159,6 +179,11 @@ def std_equal(a: StdValue | None, b: StdValue | None) -> bool:
             nb = as_number(b)
             if na is not None and nb is not None:
                 return safe_equal(na, nb)
+        # path ↔ str 交叉相等：路径值与其 POSIX 字符串形式等价（§1.5）
+        if {a.kind, b.kind} == {'path', 'str'}:
+            sa = as_str(a)
+            sb = as_str(b)
+            return sa is not None and sb is not None and safe_equal(sa, sb)
         return False
     if isinstance(a, StdArray) and isinstance(b, StdArray):
         if len(a.elements) != len(b.elements):

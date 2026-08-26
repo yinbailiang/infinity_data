@@ -36,6 +36,17 @@ def _check_not(
     return fail_result('constraint.not_fail', {}, source, path)
 
 
+def _summary_severity(diags: list[Diagnostic]) -> Severity:
+    """汇总诊断严重度：子失败全为 WARNING（无硬错误）时降为 WARNING。
+
+    使「越出沙盒 → 警告 + 失败」（constraint.path_denied 为 WARNING）在
+    ``all`` / ``any`` / ``one`` 组合下保持软失败（不产生硬编译错误）。
+    """
+    if all(d.severity is not Severity.ERROR for d in diags):
+        return Severity.WARNING
+    return Severity.ERROR
+
+
 def _check_any(
     val: StdValue | None,
     source: SourceRange | None,
@@ -55,7 +66,7 @@ def _check_any(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(Severity.ERROR, 'constraint.any_fail', {}, source, path),
+            Diagnostic(_summary_severity(diags), 'constraint.any_fail', {}, source, path),
             *diags,
         ],
     )
@@ -85,7 +96,7 @@ def _check_one(
         return ConstraintResult(
             ok=False,
             diagnostics=[
-                Diagnostic(Severity.ERROR, 'constraint.one_none', {}, source, path),
+                Diagnostic(_summary_severity(diags), 'constraint.one_none', {}, source, path),
                 *diags,
             ],
         )
@@ -112,7 +123,7 @@ def _check_all(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(Severity.ERROR, 'constraint.all_fail', {}, source, path),
+            Diagnostic(_summary_severity(diags), 'constraint.all_fail', {}, source, path),
             *diags,
         ],
     )

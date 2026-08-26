@@ -18,6 +18,7 @@ from __future__ import annotations
 import decimal
 from collections.abc import Iterator, Sequence
 from itertools import product
+from pathlib import PosixPath
 from typing import Any, cast
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
@@ -64,6 +65,7 @@ from infinity_data.tokenizer.models.tokens import (
     IntegerToken,
     NoexistToken,
     NullToken,
+    PathToken,
     StringToken,
 )
 
@@ -507,12 +509,14 @@ class AstBuilder:
 
     def _convert_literal(
         self,
-        tok: StringToken | IntegerToken | FloatToken | BoolToken | NullToken | NoexistToken,
+        tok: StringToken | IntegerToken | FloatToken | BoolToken | NullToken | NoexistToken | PathToken,
     ) -> StdLiteral:
         """将字面量 Token 转为 StdLiteral（携带 token 在源文档中的位置）。"""
         match tok:
             case StringToken(value=v):
                 return StdLiteral(kind='str', value=v, source=tok.raw.source)
+            case PathToken(value=v):
+                return StdLiteral(kind='path', value=v, source=tok.raw.source)
             case IntegerToken(value=v):
                 return StdLiteral(kind='int', value=v, source=tok.raw.source)
             case FloatToken(value=v):
@@ -619,6 +623,25 @@ class AstBuilder:
                         )
                     )
                     return StdLiteral(kind='float', value=decimal.Decimal(0), source=source)
+            case 'path':
+                # as path：已是路径原样返回；字符串 → 包装为 PosixPath（非法 → 警告 + 保留原字符串）
+                if isinstance(raw, PosixPath):
+                    return StdLiteral(kind='path', value=raw, source=source)
+                if isinstance(raw, str):
+                    try:
+                        return StdLiteral(kind='path', value=PosixPath(raw), source=source)
+                    except ValueError:
+                        pass
+                self._collector.add(
+                    Diagnostic(
+                        Severity.WARNING,
+                        'dollar.convert_failed',
+                        {'name': name, 'raw': raw, 'type': 'path'},
+                        source,
+                        path,
+                    )
+                )
+                return StdLiteral(kind='str', value=str(raw), source=source)
             case 'str':
                 # as str = 字符串化：任意字面量按**语言字面量风格**转为字符串，
                 # 保证可 round-trip 还原回原值（bool → true/false、float 特殊值

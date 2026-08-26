@@ -656,7 +656,7 @@ def test_file_import(infd_file: Callable[[str, str], Path]) -> None:
     path = infd_file(
         'test_file_import.infd',
         """\
-!file "test_config.json" as json import .server.host as srv_host, .server.port as srv_port, .server.features as srv_features
+!file p"test_config.json" as json import .server.host as srv_host, .server.port as srv_port, .server.features as srv_features
 
 config {
     host = $srv_host

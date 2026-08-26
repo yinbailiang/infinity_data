@@ -48,7 +48,7 @@ def test_safe_load_rejects_env_import(tmp_path: Path) -> None:
 
 def test_load_default_is_deny_all(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"data.json" import .key as k\nvalue = $k\n')
     result = load(f)
     assert result.has_errors
     assert [d.code for d in result.diagnostics] == ['sandbox.access_denied']
@@ -169,8 +169,8 @@ def test_dollar_cast_any_import_string(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '!file "num.txt" as raw import . as n\n'
-        '!file "data.json" as json import .port as port, .ratio as ratio, .flag as flag\n'
+        '!file p"num.txt" as raw import . as n\n'
+        '!file p"data.json" as json import .port as port, .ratio as ratio, .flag as flag\n'
         '!var "42" import . as v\n'
         'a = $n as int\n'
         'b = $port as int\n'
@@ -319,7 +319,7 @@ def test_file_import_unauthorized_denied(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"key": 42}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"data.json" import .key as k\nvalue = $k\n')
     denied = load(f, sandbox=SandboxConfig(allow_files=['./other/*.json']))
     assert denied.has_errors
     assert [d.code for d in denied.diagnostics] == ['sandbox.access_denied']
@@ -333,7 +333,7 @@ def test_file_import_whole_file(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"host": "example.com", "port": 443}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" as json import . as all\nv = $all\n')
+    _write(f, '!file p"data.json" as json import . as all\nv = $all\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'v': {'host': 'example.com', 'port': 443}}
@@ -344,7 +344,7 @@ def test_file_import_first_segment_as_key(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"as": {"v": 1}, "as2": 2}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" as json import ."as" as v\nx = $v\n')
+    _write(f, '!file p"data.json" as json import ."as" as v\nx = $v\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'x': {'v': 1}}
@@ -355,7 +355,7 @@ def test_invalid_json_path_reported(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"a": [7]}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" as json import .a[0 as v\nx = $v\n')
+    _write(f, '!file p"data.json" as json import .a[0 as v\nx = $v\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert result.has_errors
     assert any(d.code == 'parse.invalid_json_path' for d in result.diagnostics)
@@ -366,7 +366,7 @@ def test_file_import_raw_explicit(tmp_path: Path) -> None:
     data = tmp_path / 'note.txt'
     _write(data, 'line one\nline two\n  \n')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "note.txt" as raw import . as note\ncontent = $note\n')
+    _write(f, '!file p"note.txt" as raw import . as note\ncontent = $note\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./note.txt']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'content': 'line one\nline two\n  \n'}
@@ -377,7 +377,7 @@ def test_file_import_raw_suffix_detection(tmp_path: Path) -> None:
     data = tmp_path / 'README.md'
     _write(data, '# Title\n\nbody text\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "README.md" import . as readme\ncontent = $readme\n')
+    _write(f, '!file p"README.md" import . as readme\ncontent = $readme\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./README.md']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'content': '# Title\n\nbody text\n'}
@@ -388,7 +388,7 @@ def test_file_import_raw_path_on_string_warns(tmp_path: Path) -> None:
     data = tmp_path / 'seed.txt'
     _write(data, 'seed-data')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "seed.txt" as raw import .nope as x\nv = $x\n')
+    _write(f, '!file p"seed.txt" as raw import .nope as x\nv = $x\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./seed.txt']))
     assert not result.has_errors
     assert [d.code for d in result.diagnostics] == ['import.path_failed', 'dollar.undefined']
@@ -401,7 +401,7 @@ def test_file_import_raw_multi_bind(tmp_path: Path) -> None:
     data = tmp_path / 'seed.txt'
     _write(data, 'AB\nCD\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "seed.txt" as raw import . as a, . as b\na1 = $a\nb1 = $b\n')
+    _write(f, '!file p"seed.txt" as raw import . as a, . as b\na1 = $a\nb1 = $b\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./seed.txt']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'a1': 'AB\nCD\n', 'b1': 'AB\nCD\n'}
@@ -417,7 +417,7 @@ def test_glob_double_star_matches_nested(tmp_path: Path) -> None:
     data = tmp_path / 'configs' / 'dev' / 'data.json'
     _write(data, '{"key": 42}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"configs/dev/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['**/*.json']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'value': 42}
@@ -428,7 +428,7 @@ def test_glob_double_star_matches_root_level(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"key": 7}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['**/*.json']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'value': 7}
@@ -439,7 +439,7 @@ def test_glob_dir_double_star_matches_nested(tmp_path: Path) -> None:
     data = tmp_path / 'configs' / 'dev' / 'data.json'
     _write(data, '{"key": 1}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"configs/dev/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['configs/**']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'value': 1}
@@ -450,7 +450,7 @@ def test_glob_single_star_does_not_cross_separator(tmp_path: Path) -> None:
     data = tmp_path / 'configs' / 'dev' / 'data.json'
     _write(data, '{"key": 1}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "configs/dev/data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"configs/dev/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
     assert result.has_errors
     assert [d.code for d in result.diagnostics] == ['sandbox.access_denied']
@@ -462,7 +462,7 @@ def test_glob_single_star_matches_one_level(tmp_path: Path) -> None:
     data = tmp_path / 'configs' / 'data.json'
     _write(data, '{"key": 5}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "configs/data.json" import .key as k\nvalue = $k\n')
+    _write(f, '!file p"configs/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'value': 5}
@@ -485,7 +485,7 @@ def test_template_import_from_inft(tmp_path: Path) -> None:
     tpl = tmp_path / 'templates' / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/extra.inft" import Extra\nval = Extra(name="y")\n')
+    _write(f, '!from p"templates/extra.inft" import Extra\nval = Extra(name="y")\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'val': {'name': 'y'}}
@@ -496,7 +496,7 @@ def test_imported_template_shadowing_builtin_is_error(tmp_path: Path) -> None:
     tpl = tmp_path / 'bad.inft'
     _write(tpl, '~str {\n    v: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "bad.inft" import str\ns: str = "ok"\n')
+    _write(f, '!from p"bad.inft" import str\ns: str = "ok"\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
     assert any(d.code == 'template.shadows_builtin' for d in result.diagnostics)
@@ -511,7 +511,7 @@ def test_duplicate_import_visible_name_is_error(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '!from "a.inft" import Server\n!from "b.inft" import Server\ns = Server()\n',
+        '!from p"a.inft" import Server\n!from p"b.inft" import Server\ns = Server()\n',
     )
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
@@ -536,7 +536,7 @@ def test_duplicate_alias_env_and_file_is_error(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"key": "from-file"}')
     f = tmp_path / 'app.infd'
-    _write(f, '!env import USER\n!file "data.json" import .key as USER\nv = $USER\n')
+    _write(f, '!env import USER\n!file p"data.json" import .key as USER\nv = $USER\n')
     result = load(
         f,
         sandbox=SandboxConfig(env={'USER': 'alice'}, allow_files=['./data.json']),
@@ -554,7 +554,7 @@ def test_template_import_with_alias(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '!from "templates/extra.inft" import Extra as Ex\na = Ex(name="y")\n',
+        '!from p"templates/extra.inft" import Extra as Ex\na = Ex(name="y")\n',
     )
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
@@ -562,7 +562,7 @@ def test_template_import_with_alias(tmp_path: Path) -> None:
 
     # 原名不可见（按需导入语义）
     f2 = tmp_path / 'app2.infd'
-    _write(f2, '!from "templates/extra.inft" import Extra as Ex\nb = Extra(name="z")\n')
+    _write(f2, '!from p"templates/extra.inft" import Extra as Ex\nb = Extra(name="z")\n')
     result2 = load(f2, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert result2.has_errors
     assert any(d.code == 'template.undefined' for d in result2.diagnostics)
@@ -572,7 +572,7 @@ def test_template_import_multiple_with_mixed_alias(tmp_path: Path) -> None:
     tpl = tmp_path / 'extra.inft'
     _write(tpl, '~A {\n    x: int = 1\n}\n~B {\n    y: str = "b"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "extra.inft" import A as A1, B\nv = A1()\nw = B()\n')
+    _write(f, '!from p"extra.inft" import A as A1, B\nv = A1()\nw = B()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'v': {'x': 1}, 'w': {'y': 'b'}}
@@ -584,7 +584,7 @@ def test_template_import_alias_conflict_with_local(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '~MyServer {\n    port: int = 80\n}\n!from "extra.inft" import Server as MyServer\n',
+        '~MyServer {\n    port: int = 80\n}\n!from p"extra.inft" import Server as MyServer\n',
     )
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
@@ -595,7 +595,7 @@ def test_template_import_alias_missing_source(tmp_path: Path) -> None:
     tpl = tmp_path / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "extra.inft" import DoesNotExist as X\n')
+    _write(f, '!from p"extra.inft" import DoesNotExist as X\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
     assert any(d.code == 'template.import_not_found' for d in result.diagnostics)
@@ -606,10 +606,10 @@ def test_template_import_nested(tmp_path: Path) -> None:
     base = tmp_path / 'templates' / 'base.inft'
     _write(base, '~Base {\n    id: int = 0\n}\n')
     mid = tmp_path / 'templates' / 'mid.inft'
-    _write(mid, '!from "base.inft" import Base\n~Mid {\n    base: Base = Base()\n}\n')
+    _write(mid, '!from p"base.inft" import Base\n~Mid {\n    base: Base = Base()\n}\n')
     f = tmp_path / 'app.infd'
     # Base 对主文件不可见，参数值按调用点可见性解析 → 用 dict 字面量（模板即约束校验）
-    _write(f, '!from "templates/mid.inft" import Mid\nm = Mid(base={ id = 7 })\n')
+    _write(f, '!from p"templates/mid.inft" import Mid\nm = Mid(base={ id = 7 })\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'m': {'base': {'id': 7}}}
@@ -619,7 +619,7 @@ def test_inft_data_import_var_in_place(tmp_path: Path) -> None:
     """.inft 允许 !var，模板 $ 就地解析（定义文件命名空间；主文件无需同名绑定）。"""
     _write(tmp_path / 'templates' / 'svc.inft', '!var 8080 import . as port\n~S {\n    port: int = $port\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'s': {'port': 8080}}
@@ -632,7 +632,7 @@ def test_inft_data_import_env_in_place(tmp_path: Path) -> None:
         '!env import PORT as port\n~S {\n    port: int = $port as int\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft'], env={'PORT': '8080'}))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'s': {'port': 8080}}
@@ -643,10 +643,10 @@ def test_inft_data_import_file_in_place(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "data.json" as json import .port as port\n~S {\n    port: int = $port\n}\n',
+        '!file p"data.json" as json import .port as port\n~S {\n    port: int = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'s': {'port': 8080}}
@@ -656,7 +656,7 @@ def test_inft_dollar_isolated_across_files(tmp_path: Path) -> None:
     """跨文件隔离：.inft 模板不能隐式用主文件的 $（就地解析）→ dollar.undefined 取 null。"""
     _write(tmp_path / 'templates' / 'svc.inft', '~S {\n    port: <int?> = $port\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\n!var 8080 import . as port\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\n!var 8080 import . as port\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert any(d.code == 'dollar.undefined' for d in result.diagnostics)
@@ -668,7 +668,7 @@ def test_inft_same_alias_isolated_between_files(tmp_path: Path) -> None:
     _write(tmp_path / 'a.inft', '!var 1 import . as x\n~A {\n    v: int = $x\n}\n')
     _write(tmp_path / 'b.inft', '!var 2 import . as x\n~B {\n    v: int = $x\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "a.inft" import A\n!from "b.inft" import B\na = A()\nb = B()\n')
+    _write(f, '!from p"a.inft" import A\n!from p"b.inft" import B\na = A()\nb = B()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'a': {'v': 1}, 'b': {'v': 2}}
@@ -680,7 +680,7 @@ def test_inft_var_forward_reference_in_place(tmp_path: Path) -> None:
         tmp_path / 'templates' / 'svc.inft', '!var $b import . as a\n!var 1 import . as b\n~S {\n    v: int = $a\n}\n'
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'s': {'v': 1}}
@@ -690,7 +690,7 @@ def test_inft_still_forbids_field(tmp_path: Path) -> None:
     """.inft 仍禁止数据字段/结构级约束（仅导入语句放行）。"""
     _write(tmp_path / 'templates' / 'svc.inft', '~S {\n    port: int = 80\n}\nx = 1\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert any(d.code == 'inft.not_allowed' for d in result.diagnostics)
 
@@ -705,10 +705,10 @@ def test_inft_file_denied_warns_and_undefined(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "data.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+        '!file p"data.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft'], strict=False))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     codes = [d.code for d in result.diagnostics]
@@ -722,10 +722,10 @@ def test_inft_file_denied_strict_fails(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "data.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+        '!file p"data.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert result.has_errors
     assert any(d.code == 'sandbox.access_denied' for d in result.diagnostics)
@@ -736,10 +736,10 @@ def test_inft_file_missing_warns(tmp_path: Path) -> None:
     """.inft 的 !file 文件不存在 → import.file_missing 警告，$ 未绑定。"""
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "nope.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+        '!file p"nope.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert any(d.code == 'import.file_missing' for d in result.diagnostics)
@@ -751,10 +751,10 @@ def test_inft_file_parse_failed_recovers(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'bad.json', '{not json}')
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "bad.json" as json import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+        '!file p"bad.json" as json import .port as port\n~S {\n    port: <int?> = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert any(d.code == 'import.parse_failed' for d in result.diagnostics)
     assert any(d.code == 'dollar.undefined' for d in result.diagnostics)
@@ -766,10 +766,10 @@ def test_inft_file_path_failed_warns(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'data.json', '{"port": 8080}')
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "data.json" as json import .missing as port\n~S {\n    port: <int?> = $port\n}\n',
+        '!file p"data.json" as json import .missing as port\n~S {\n    port: <int?> = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert any(d.code == 'import.path_failed' for d in result.diagnostics)
@@ -781,10 +781,10 @@ def test_inft_file_unsupported_format_warns(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'data.xyz', 'x = 1')
     _write(
         tmp_path / 'templates' / 'svc.inft',
-        '!file "data.xyz" as xyz import . as port\n~S {\n    port: <int?> = $port\n}\n',
+        '!file p"data.xyz" as xyz import . as port\n~S {\n    port: <int?> = $port\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert any(d.code == 'import.unsupported_format' for d in result.diagnostics)
@@ -797,7 +797,7 @@ def test_inft_var_cycle_in_place(tmp_path: Path) -> None:
         '!var $b import . as a\n!var $a import . as b\n~S {\n    v: <int?> = $a\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert any(d.code == 'var.cycle' for d in result.diagnostics)
     assert result.value == {'s': {'v': None}}
@@ -810,7 +810,7 @@ def test_inft_var_path_failed_in_place(tmp_path: Path) -> None:
         '!var { a = 1 } import .b as x\n~S {\n    v: <int?> = $x\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert any(d.code == 'var.path_failed' for d in result.diagnostics)
     assert result.value == {'s': {'v': None}}
@@ -823,7 +823,7 @@ def test_inft_namespace_duplicate_keeps_first(tmp_path: Path) -> None:
         '!var 1 import . as x\n!var 2 import . as x\n~S {\n    v: int = $x\n}\n',
     )
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert any(d.code == 'namespace.duplicate' for d in result.diagnostics)
     assert result.value == {'s': {'v': 1}}
@@ -833,7 +833,7 @@ def test_inft_env_unauthorized_fails(tmp_path: Path) -> None:
     """.inft 的 !env 未授权 → sandbox.env_unauthorized ERROR（沙盒违规 → 空文档，不静默）。"""
     _write(tmp_path / 'templates' / 'svc.inft', '!env import SECRET as s\n~S {\n    v: str = $s\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/svc.inft" import S\ns = S()\n')
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
     assert result.has_errors
     assert [d.code for d in result.diagnostics] == ['sandbox.env_unauthorized']
@@ -850,7 +850,7 @@ def test_file_import_toml(tmp_path: Path) -> None:
     data = tmp_path / 'data.toml'
     _write(data, 'port = 8080\nname = "api"\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.toml" as toml import .port as port, .name as name\np = $port\nn = $name\n')
+    _write(f, '!file p"data.toml" as toml import .port as port, .name as name\np = $port\nn = $name\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.toml']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'p': 8080, 'n': 'api'}
@@ -861,7 +861,7 @@ def test_file_import_yaml(tmp_path: Path) -> None:
     data = tmp_path / 'data.yaml'
     _write(data, 'port: 8080\nname: api\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.yaml" as yaml import .port as port, .name as name\np = $port\nn = $name\n')
+    _write(f, '!file p"data.yaml" as yaml import .port as port, .name as name\np = $port\nn = $name\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.yaml']))
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'p': 8080, 'n': 'api'}
@@ -872,7 +872,7 @@ def test_template_import_denied_non_strict_warns(tmp_path: Path) -> None:
     tpl = tmp_path / 'templates' / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/extra.inft" import Extra\nval = Extra()\n')
+    _write(f, '!from p"templates/extra.inft" import Extra\nval = Extra()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./allowed/*.inft'], strict=False))
     assert any(d.code == 'import.template_denied' for d in result.diagnostics)
 
@@ -881,7 +881,7 @@ def test_template_import_unauthorized_denied(tmp_path: Path) -> None:
     tpl = tmp_path / 'templates' / 'extra.inft'
     _write(tpl, '~Extra {\n    name: str = "x"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "templates/extra.inft" import Extra\nval = Extra()\n')
+    _write(f, '!from p"templates/extra.inft" import Extra\nval = Extra()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./allowed/*.inft']))
     assert result.has_errors
     assert [d.code for d in result.diagnostics] == ['sandbox.access_denied']
@@ -892,7 +892,7 @@ def test_template_import_conflict_with_local(tmp_path: Path) -> None:
     tpl = tmp_path / 'extra.inft'
     _write(tpl, '~Server {\n    host: str = "0.0.0.0"\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '~Server {\n    port: int = 80\n}\n!from "extra.inft" import Server\n')
+    _write(f, '~Server {\n    port: int = 80\n}\n!from p"extra.inft" import Server\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert result.has_errors
     assert any(d.code == 'template.import_conflict_local' for d in result.diagnostics)
@@ -900,11 +900,11 @@ def test_template_import_conflict_with_local(tmp_path: Path) -> None:
 
 def test_template_import_cyclic_is_safe(tmp_path: Path) -> None:
     a = tmp_path / 'a.inft'
-    _write(a, '!from "b.inft" import B\n~A {\n    b: B = B()\n}\n')
+    _write(a, '!from p"b.inft" import B\n~A {\n    b: B = B()\n}\n')
     b = tmp_path / 'b.inft'
-    _write(b, '!from "a.inft" import A\n~B {\n    a: A? = null\n}\n')
+    _write(b, '!from p"a.inft" import A\n~B {\n    a: A? = null\n}\n')
     f = tmp_path / 'app.infd'
-    _write(f, '!from "a.inft" import A\nx = A()\n')
+    _write(f, '!from p"a.inft" import A\nx = A()\n')
     result = load(f, sandbox=SandboxConfig.development())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'x': {'b': {'a': None}}}
@@ -918,8 +918,8 @@ def test_same_content_different_files_are_distinct(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(
         f,
-        '!from "a/shared.inft" import Shared as A\n'
-        '!from "b/shared.inft" import Shared as B\n'
+        '!from p"a/shared.inft" import Shared as A\n'
+        '!from p"b/shared.inft" import Shared as B\n'
         'x = A(id=1)\n'
         'y = B(id=2)\n',
     )
@@ -1044,7 +1044,7 @@ def test_full_access_sandbox(tmp_path: Path) -> None:
     data = tmp_path / 'data.json'
     _write(data, '{"key": 1}')
     f = tmp_path / 'app.infd'
-    _write(f, '!file "data.json" import .key as k\nv = $k\n')
+    _write(f, '!file p"data.json" import .key as k\nv = $k\n')
     result = load(f, sandbox=SandboxConfig.full_access())
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert result.value == {'v': 1}

@@ -92,9 +92,9 @@ def _check_size(
     executor: Executor,
 ) -> ConstraintResult:
     size_val: int | None = None
-    if isinstance(val, StdLiteral) and val.kind == 'str':
-        v = val.value
-        size_val = len(v) if isinstance(v, str) else None
+    if isinstance(val, StdLiteral) and val.kind in ('str', 'path'):
+        s = _as_str(val)
+        size_val = len(s) if s is not None else None
     elif isinstance(val, StdArray):
         size_val = len(val.elements)
     elif isinstance(val, StdObject):

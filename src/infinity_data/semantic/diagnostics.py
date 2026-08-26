@@ -178,6 +178,36 @@ register_diagnostic_define(
     diagnostic_define('constraint.in_not_in', '{path_prefix}值 {value} 不在允许的值 {choices!r} 中'),
     diagnostic_define('constraint.string_only', '{path_prefix}{constraint} 约束只适用于字符串'),
     diagnostic_define('constraint.invalid_value', '{path_prefix}无效的{what} {value!r}'),
+    diagnostic_define(
+        'constraint.invalid_path',
+        '{path_prefix}无效的路径 {value!r}（path 约束：非空、无 NUL、可解析）',
+        en='{path_prefix}invalid path {value!r} (path: non-empty, no NUL, parseable)',
+    ),
+    diagnostic_define(
+        'constraint.path_denied',
+        '{path_prefix}{constraint} 约束目标 {path!r} 超出沙盒授权（allow_files 白名单外），已拒绝',
+        en='{path_prefix}{constraint} target {path!r} is outside sandbox authorization (allow_files); denied',
+    ),
+    diagnostic_define(
+        'constraint.path_not_exist',
+        '{path_prefix}路径 {path!r} 不存在',
+        en='{path_prefix}path {path!r} does not exist',
+    ),
+    diagnostic_define(
+        'constraint.path_not_dir',
+        '{path_prefix}路径 {path!r} 不是目录',
+        en='{path_prefix}path {path!r} is not a directory',
+    ),
+    diagnostic_define(
+        'constraint.path_not_file',
+        '{path_prefix}路径 {path!r} 不是普通文件',
+        en='{path_prefix}path {path!r} is not a regular file',
+    ),
+    diagnostic_define(
+        'constraint.path_not_link',
+        '{path_prefix}路径 {path!r} 不是符号链接',
+        en='{path_prefix}path {path!r} is not a symbolic link',
+    ),
     diagnostic_define('constraint.regex_no_match', '{path_prefix}值 {value!r} 不匹配正则 {pattern!r}'),
     diagnostic_define('constraint.regex_invalid', '{path_prefix}无效的正则表达式 {pattern!r}: {error}'),
     diagnostic_define('constraint.positive_fail', '{path_prefix}值 {value} 不是正数'),

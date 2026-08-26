@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.parser import TemplateDef
-from infinity_data.sandbox import Schema, SchemaError
+from infinity_data.sandbox import Sandbox, SandboxConfig, Schema, SchemaError
 from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
     StdArray,
@@ -50,11 +52,30 @@ class ConstraintExecutor:
         registry: ConstraintRegistry,
         templates: dict[TemplateKey, TemplateDef],
         template_scopes: dict[TemplateKey, Scope],
+        sandbox: Sandbox | None = None,
     ) -> None:
         self._registry = registry
         self._templates = templates
         self._template_scopes = template_scopes
         self._templates_by_name: dict[str, TemplateKey] = {str(k): k for k in templates}
+        # 零信任默认：文件系统依赖约束（exist/dir/file/link）经沙盒授权探测
+        self._sandbox = sandbox or Sandbox(config=SandboxConfig.deny_all(), base_dir=Path.cwd())
+
+    @property
+    def sandbox(self) -> Sandbox:
+        """沙盒中介：文件系统约束的授权探测通道（allow_files 白名单控制）。"""
+        return self._sandbox
+
+    def __call__(
+        self,
+        constraint: ResolvedConstraint,
+        value: StdValue | None,
+        source: SourceRange | None,
+        path: str,
+    ) -> ConstraintResult:
+        """嵌套约束执行回调（:class:`Executor` 协议）：委托给 :meth:`_exec`，
+        使约束函数能经 ``executor.sandbox`` 访问沙盒。"""
+        return self._exec(constraint, value, source, path)
 
     # ═══════════════════════════════════════════════════════
     # 遍历入口
@@ -110,7 +131,7 @@ class ConstraintExecutor:
             return self._check_template(key, value, source, path)
         # 诊断位置 = 被检查对象的位置（调用方已按值/字段/对象解析），
         # 不再取约束表达式自身（spec.source）——错误指向值而非约束声明
-        return self._registry.apply(constraint, value, source, path, self._exec)
+        return self._registry.apply(constraint, value, source, path, self)
 
     def _check_template(
         self,

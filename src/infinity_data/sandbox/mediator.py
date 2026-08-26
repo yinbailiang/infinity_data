@@ -193,6 +193,20 @@ class Sandbox:
         """!from 目标：路径解析 + allow_templates 授权 → File。"""
         return self._open(from_path, self._config.allow_templates, '模板导入', base_dir, source)
 
+    def probe_path(self, from_path: str, *, base_dir: Path | None = None) -> Path | None:
+        """构建期路径探测：路径解析 + allow_files 授权 → 原生 Path；未授权 → None。
+
+        供文件系统约束（``exist`` / ``dir`` / ``file`` / ``link``）使用——与导入同属
+        当前机器文件系统状态；相对路径以 ``base_dir``（默认编译入口目录）解析。
+        """
+        base = base_dir if base_dir is not None else self._base_dir
+        path = posix_to_native(from_path)  # 语言内 POSIX → 当前平台原生（/c/... → C:\...）
+        if not path.is_absolute():
+            path = base / path
+        if not match_globs(path, self._config.allow_files, self._base_dir):
+            return None
+        return path
+
     def _open(
         self,
         from_path: str,

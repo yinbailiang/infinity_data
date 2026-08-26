@@ -38,7 +38,7 @@
   多次 → 错误（`dict.duplicate_key`），容错保留先到者、继续编译。模板参数覆盖默认值
   （§2.2）**不构成**重复键——它是参数绑定而非同 dict 双字段。模板调用命名参数重复
   → `template.dup_argument`（见 §2.2）
-- **逗号换行等价（双向）**：除导入语法（`!from "a" import X, Y` 必须用逗号和尾最后换行）外，
+- **逗号换行等价（双向）**：除导入语法（`!from p"a" import X, Y` 必须用逗号和尾最后换行）外，
   任何需要逗号/换行的地方都可用另一方替代——顶层同样接受逗号分隔，
   任何不包含!特殊语句的文件（含模板定义、字段、结构级约束）可压缩成一行：
   `a = 1, b = [1, 2], ~T { x: int = 1 }, c = T(x = 2),`
@@ -78,6 +78,8 @@
 - `uuid` UUID 格式
 - `hostname` 主机名格式
 - `positive` 正数 (> 0)
+- `path` 路径格式（语言内 POSIX 形式）——值须是**合法路径**（非空、无 NUL、可解析）；
+  接受 `str` 与 path 字面量（`p"..."` / `as path` 产生）
 - `negative` 负数 (< 0)
 - `nonnegative` 非负数 (>= 0)
 - `eq(value)` 等于指定值
@@ -115,6 +117,19 @@
 - `one(constraint_a, constraint_b, ...)` 内部约束只有一个被满足则满足
 - `all(constraint_a, constraint_b, ...)` 内部约束全部满足则满足
 - `when(condition, requirement)`         当condition满足时，要求requirement满足
+
+文件系统约束（构建期校验，与导入同属**当前机器**文件系统状态）:
+- `exist` 路径存在（lstat 成功，file/dir/link 任一）
+- `dir` 路径是目录
+- `file` 路径是普通文件
+- `link` 路径是符号链接
+
+> 与 `!file` / `!from` 一样，构建期访问本机文件系统（无跨机器迁移性承诺）；
+> 授权复用沙盒的 **allow_files** 白名单。越出沙盒 → `constraint.path_denied`：
+> **警告 + 失败**（约束不满足但诊断为 WARNING，不构成硬编译错误；组合约束
+> `all` / `any` / `one` 的汇总诊断随子失败降级，保持软失败）。
+> 组合表达：`field: <path, exist>` —— 先保证合法路径，再检查存在性
+> （`dir`/`file` 跟随符号链接（stat），`link` 判定链接本身（lstat））。
 
 特殊规则:
 - **单约束可省略尖括号**: `field: int = 10` 等价于 `field: <int> = 10`
@@ -214,6 +229,7 @@ tls = false
 - `int` 有符号整数，无限精度
 - `float` 无限精度10进制浮点
 - `str` utf-8编码字符串，无尾0
+- `path` 路径（语言内 POSIX 形式；值模型用专有类型表示，`p"..."` / `as path` 产生）
 - `list` 数组类型，内部元素可以是任何类型
 - `dict` 字典类型，键名为utf-8无尾0字符串，值是 object
 
@@ -253,11 +269,18 @@ tags可为空，内容不做约束
 > 匹配结束不是看到一个完整连续序列然后决定，而是字符流+计数器，一计数器达标就结束
 > 需要注意的是，和MD不同，>=1 个反引号即能开始多行字符串
 
+路径字面量:
+- `p"..."` 路径字面量：`p` 前缀 + 双引号单行字符串（json 风格转义，同单行字符串）
+- `p` 与 `"` 之间不能有空白；`p` 后非 `"` → 按普通标识符处理
+- 产生 **path 类型**的值（语言内 POSIX 形式）：`p"/etc/certs/a.pem"`、`p"./tpls/base.inft"`
+- 空串 / NUL 等无法构成路径 → 词法错误（`tokenize.invalid_path`）；其余语法层面的
+  合法性（非空、可解析等）交由 `path` 约束（§1.2.1）
+
 ### 1.6 三态可空
 
 可空类型的三种情形:
-- `noexist` 不存在，键不会出现在解析结果中
-- `null` 存在但为 null，键会出现，但值为 null
+- `noexist` 表达配置键本身不存在
+- `null` 键存在但值为 null，键会出现，但值为 null
 - `对应的value` 存在，键存在，且值为 value
 
 > 三态仅对 **dict 字段**有意义；`noexist` 出现在**数组元素**中无意义，
@@ -267,6 +290,14 @@ tags可为空，内容不做约束
 > **与 `$` 引用 / `as` 转换的交互**：空字面量（`null` / `noexist`）经 `$name as type`
 > 转换**保持传播**（`null → null`、`noexist → noexist`），不因显式 `as` 丢失三态
 > 语义——见 §1.8 转换规则。
+> **Python 域表示（实现层）**：`noexist` 是表达「**键不存在**」这一态的选项，
+> 与 `null`（键存在但为 null）严格区分。忠实互转层
+> （`python_to_std` / `std_to_python`）用 `NOEXIST` 哨兵承载该态——
+> `{'a': NOEXIST}` → 字段 a 为 noexist（键不出现）；`{'a': None}` → 字段 a 为
+> null（键出现、值为 null）。转换层**默认无损保留**该态；输出投影
+> （`CompilationResult.value`）按本节承诺丢弃（键不出现）。
+> **参考用途（emit 层）**：`EmitConfig.keep_noexist` 开启时，`to_json` / `to_yaml`
+> / `to_toml` 将 noexist 输出为 `{"__type__": "noexist"}` 自描述标记。
 
 ### 1.7 标识符与关键字
 
@@ -313,7 +344,7 @@ tags可为空，内容不做约束
 导入真名（import identity）:
 - 每个 `$` 绑定（`!env` / `!file` / `!var` 项）有**确定性真名**（来源哈希，**不含运行时值**）：
   - `!env import NAME` → `SHA256("env" || NAME)`
-  - `!file "path" as fmt import <path> as x` → `SHA256(fmt || jsonpath || 文件内容哈希)`
+  - `!file p"path" as fmt import <path> as x` → `SHA256(fmt || jsonpath || 文件内容哈希)`
   - `!var <expr> import <path> as x` → `SHA256(canon(expr) || path)`
 - **可复现**：相同来源 → 相同真名，与机器/环境无关（env 的**值**不进哈希，否则身份随环境漂移）
 - 诊断显示本地名（`$x`）；真名 hash 作映射键与产物签名
@@ -330,9 +361,11 @@ tags可为空，内容不做约束
 - `as bool`: `"true"` / `"1"` → `true`，`"false"` / `"0"` → `false`（不分大小写）
 - `as int`: 正负整数，不支持小数
 - `as float`: 正负、科学计数、点起始
+- `as path`: 字符串 → path（合法则包装为路径值；非法 → 警告 + 保留原字符串）；
+  已是 path 的值原样返回
 - `as str`: 字符串化——任意字面量按**语言字面量风格**转字符串，可 round-trip 还原：
   `int` / `float` → 十进制（`42`、`1.5`）；`bool` → `true` / `false`；
-  `float` 特殊值 → `nan` / `+inf` / `-inf`；字符串原样
+  `float` 特殊值 → `nan` / `+inf` / `-inf`；path → POSIX 字符串（`/c/foo`）；字符串原样
 
 ## 2. 模板
 
@@ -641,7 +674,7 @@ validated: <list, each(Node)> = Node(host = $hosts...)   # 展开 + each 双保�
 
 **轴与解包可叠加**（外部数据生成的关键组合）:
 ```infd
-!file "services.json" as json import . as services
+!file p"services.json" as json import . as services
 # $services = [{name = "auth", port = 8080}, {name = "billing"}]
 
 services = Service(**$services...)     # list[dict] 逐元素解包为命名参数再实例化
@@ -774,9 +807,9 @@ batch = App(name = "x", **$tuning...)            # 展开（zip）再 解包
 | 语句 | source | 沙盒 |
 |---|---|---|
 | `!env import NAME as alias` | 环境变量 | 受控（§3.1） |
-| `!file "path" import path as alias` | 外部文件 | 受控（§3.3） |
+| `!file p"path" import path as alias` | 外部文件 | 受控（§3.3） |
 | `!var 值表达式 import path as alias` | 内存 / 字面量 | **无**（纯本地） |
-| `!from "path" import T as T` | 外部模板 | 受控（§3.2，模板空间） |
+| `!from p"path" import T as T` | 外部模板 | 受控（§3.2，模板空间） |
 
 vs 顶层字段:
 - 顶层字段 `foo = 1` → **进输出**（你要产出它）
@@ -817,10 +850,11 @@ vs 顶层字段:
 ### 3.2 模板导入
 
 基础语法:
-- `!from "Path to .inft file" import Template1, Template2`
-- `!from "Path to .inft file" import Template1 as T1`
+- `!from p"Path to .inft file" import Template1, Template2`
+- `!from p"Path to .inft file" import Template1 as T1`
 
 Path规则:
+- **导入路径必须用 `p"..."` 路径字面量**（§1.5）；普通字符串 → `parse.import_path_required` 错误（容错恢复）
 - 路径分割符: unix 风格 `/`（语言内**只允许** POSIX 风格，不接受 `\`）
 - 相对路径: 相对路径起始点为导入所在文件的位置
 - 支持绝对路径
@@ -847,10 +881,10 @@ Path规则:
 > 配置导入不直接注入，需要使用 `$` 起始来在导入空间中找查目标
 
 基础语法:
-- `!file "Path to config file" as yaml import .a.b.c as c`
-- `!file "Path to config file" as yaml import . as a, .c as c`
+- `!file p"Path to config file" as yaml import .a.b.c as c`
+- `!file p"Path to config file" as yaml import . as a, .c as c`
 
-Path规则同模板导入
+Path规则同模板导入（**必须用 `p"..."` 路径字面量**）
 
 导入规则:
 - `as`: 可写可不写，不写默认看文件后缀，支持yaml，json，toml，raw(直接导入字符串)
@@ -859,8 +893,8 @@ Path规则同模板导入
   `.` 以外的 path 段 → `import.path_failed` 警告。默认后缀映射
   `.txt` / `.text` / `.md` / `.log` → `raw`：
   ```infd
-  !file "README.md" import . as readme     # 等价于 as raw
-  !file "seed.txt" as raw import . as seed # 显式声明
+  !file p"README.md" import . as readme     # 等价于 as raw
+  !file p"seed.txt" as raw import . as seed # 显式声明
 
   content = $readme    # 字符串，保留原文（含换行等）
   ```
@@ -878,18 +912,18 @@ Path规则同模板导入
 ```
 想要其中的c
 ```infd
-!file "example.json" as json import .a.b[0]."c" as c
+!file p"example.json" as json import .a.b[0]."c" as c
 ```
 起始的`.`表示从文件根开始寻址
 
 使用:
 ```infd
-!file "example.json" as json import .a.b[0]."c" as c, .a.b as b
+!file p"example.json" as json import .a.b[0]."c" as c, .a.b as b
 
 example_c = $c
 example_list: <list, each(dict)> = $b
 
-!file "example.json" as json import . as example
+!file p"example.json" as json import . as example
 
 all_data = $example
 ```

@@ -14,7 +14,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-__all__ = ['posix_to_native', 'native_to_posix']
+__all__ = ['posix_to_native', 'native_to_posix', 'is_valid_posix_path']
+
+
+def is_valid_posix_path(s: str) -> bool:
+    """语言内 POSIX 路径合法性（纯语法校验，无文件系统访问）。
+
+    - 非空
+    - 无 NUL 字符（:class:`PurePosixPath` 拒绝）
+    - 可被 :class:`PurePosixPath` 解析
+    """
+    if not s or '\x00' in s:
+        return False
+    try:
+        PurePosixPath(s)
+        return True
+    except ValueError:
+        return False
 
 
 def posix_to_native(path: str, *, platform: str | None = None) -> Path:

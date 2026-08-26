@@ -52,11 +52,16 @@ from infinity_data.semantic.registry.logic import (
 from infinity_data.semantic.registry.types import (
     _check_bool,
     _check_dict,
+    _check_dir,
+    _check_exist,
+    _check_file,
     _check_float,
     _check_int,
+    _check_link,
     _check_list,
     _check_nullable,
     _check_object,
+    _check_path,
     _check_str,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -135,6 +140,14 @@ class ConstraintRegistry:
         self.register('bool', _check_bool, description='布尔值')
         self.register('list', _check_list, description='数组')
         self.register('dict', _check_dict, description='字典')
+
+        # ── 路径约束 ──────────────────────────────
+        self.register('path', _check_path, description='合法 POSIX 路径（纯语法校验）')
+        # 文件系统约束：构建期本机校验（沙盒授权，deny_all → constraint.path_denied）
+        self.register('exist', _check_exist, description='路径存在（file/dir/link 任一）')
+        self.register('dir', _check_dir, description='路径是目录')
+        self.register('file', _check_file, description='路径是普通文件')
+        self.register('link', _check_link, description='路径是符号链接')
 
         # ── 一般约束 ──────────────────────────────
         self.register('range', _check_range, min_args=1, max_args=2, description='数值范围 range(ge[, le])，可省略一端')

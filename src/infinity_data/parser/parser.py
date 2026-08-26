@@ -67,6 +67,7 @@ from infinity_data.tokenizer.models.tokens import (
     NewlineToken,
     NoexistToken,
     NullToken,
+    PathToken,
     QuestionToken,
     RangleToken,
     RbraceToken,
@@ -334,11 +335,33 @@ class Parser:
         )
 
     @staticmethod
+    def _expect_import_path(stream: TokenStream, collector: DiagnosticCollector) -> PathToken | SinglelineStringToken:
+        """!file / !from 的路径参数：必须用 ``p"..."`` 路径字面量（§1.5 / §3.2）。
+
+        普通字符串（旧语法）→ ``parse.import_path_required`` 错误，仍容错取用其值继续编译；
+        其他 token → 走 :meth:`expect` 的错误恢复（合成 PathToken）。
+        """
+        tok = stream.peek()
+        if isinstance(tok, PathToken):
+            return stream.expect(PathToken)
+        if isinstance(tok, SinglelineStringToken):
+            collector.add(diag('parse.import_path_required', {}, tok.raw.source))
+            return stream.expect(SinglelineStringToken)
+        return stream.expect(PathToken)
+
+    @staticmethod
+    def _import_path_str(path_tok: PathToken | SinglelineStringToken) -> str:
+        """导入路径参数 → 语言内 POSIX 字符串（PathToken 取 as_posix）。"""
+        if isinstance(path_tok, PathToken):
+            return path_tok.value.as_posix()
+        return path_tok.value
+
+    @staticmethod
     def _parse_file_import(
         stream: TokenStream, collector: DiagnosticCollector, kw_tok: FileImportToken
     ) -> FileImportStmt:
-        """!file "path" [as <format>] import .path.to.key as alias, ..."""
-        path_tok = stream.expect(SinglelineStringToken)
+        """!file p"path" [as <format>] import .path.to.key as alias, ..."""
+        path_tok = Parser._expect_import_path(stream, collector)
 
         # 可选 as <format>
         fmt = None
@@ -380,7 +403,7 @@ class Parser:
         # 注意：不在此消费尾部换行（语句间分隔由 _parse_statement 统一处理）
         return FileImportStmt(
             source=stream.span_from(kw_tok),
-            file_path=path_tok.value,
+            file_path=Parser._import_path_str(path_tok),
             format=fmt,
             imports=items,
         )
@@ -521,8 +544,8 @@ class Parser:
     def _parse_template_import(
         stream: TokenStream, collector: DiagnosticCollector, kw_tok: FromImportToken
     ) -> TemplateImportStmt:
-        """!from "path" import Name1 [as Alias1], Name2, ..."""
-        path_tok = stream.expect(SinglelineStringToken)
+        """!from p"path" import Name1 [as Alias1], Name2, ..."""
+        path_tok = Parser._expect_import_path(stream, collector)
         Parser._expect_keyword(stream, collector, 'import')
 
         # 导入项列表（项之间必须用逗号分隔）
@@ -545,7 +568,7 @@ class Parser:
         # 注意：不在此消费尾部换行（语句间分隔由 _parse_statement 统一处理）
         return TemplateImportStmt(
             source=stream.span_from(kw_tok),
-            from_path=path_tok.value,
+            from_path=Parser._import_path_str(path_tok),
             items=items,
         )
 
@@ -842,6 +865,7 @@ class Parser:
                 BoolToken,
                 NullToken,
                 NoexistToken,
+                PathToken,
                 LbraceToken,
                 LbracketToken,
                 IdentifierToken,
@@ -856,7 +880,7 @@ class Parser:
             return False
         return isinstance(
             tok,
-            (IdentifierToken, QuestionToken, StringToken, IntegerToken, FloatToken, BoolToken, NullToken),
+            (IdentifierToken, QuestionToken, StringToken, IntegerToken, FloatToken, BoolToken, NullToken, PathToken),
         )
 
     # ═══════════════════════════════════════════════════════
@@ -1039,7 +1063,7 @@ class Parser:
                 stream.advance()
                 return ConstraintIdent(source=tok.raw.source, name='?')
 
-            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken():
+            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | PathToken():
                 base = Parser._parse_constraint_literal(stream)
 
             case _:
@@ -1122,7 +1146,15 @@ class Parser:
                 return Parser._parse_dollar_value(stream, collector)
 
             # ── 字面量（FloatToken 覆盖所有浮点值，含 NaN / ±Inf）──
-            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | NoexistToken() as tok:
+            case (
+                StringToken()
+                | IntegerToken()
+                | FloatToken()
+                | BoolToken()
+                | NullToken()
+                | NoexistToken()
+                | PathToken() as tok
+            ):
                 stream.advance()
                 return Parser._wrap_literal(tok)
 
@@ -1176,7 +1208,7 @@ class Parser:
             cast_tok = stream.peek()
             if isinstance(cast_tok, IdentifierToken):
                 name = cast_tok.name
-                if name in ('int', 'float', 'bool', 'str'):
+                if name in ('int', 'float', 'bool', 'str', 'path'):
                     type_cast = name
                 else:
                     collector.add(diag('parse.invalid_cast', {'type': name}, cast_tok.raw.source))

@@ -52,6 +52,11 @@ register_diagnostic_define(
         en='[{location}] invalid escape sequence: {raw!r}',
     ),
     diagnostic_define(
+        'tokenize.invalid_path',
+        '[{location}] 无效的路径字面量（无法构造路径）: {raw!r}',
+        en='[{location}] invalid path literal: {raw!r}',
+    ),
+    diagnostic_define(
         'tokenize.invalid_float',
         '[{location}] 无效的浮点字面量: {raw!r}',
         en='[{location}] invalid float literal: {raw!r}',

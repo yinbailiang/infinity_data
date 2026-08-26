@@ -79,7 +79,7 @@ def test_resolve_template_path(tmp_path: Path) -> None:
 def test_resolve_file_raw_explicit(tmp_path: Path) -> None:
     """raw：显式 as raw → 文件原文整体绑定为字符串（不解析）。"""
     (tmp_path / 'seed.txt').write_text('a\nb\n', encoding='utf-8')
-    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "seed.txt" as raw import . as seed\n')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file p"seed.txt" as raw import . as seed\n')
     doc, _ = parse_source(file)
     sb = Sandbox(SandboxConfig(allow_files=['./seed.txt']), base_dir=tmp_path)
     collector = DiagnosticCollector()
@@ -91,7 +91,7 @@ def test_resolve_file_raw_explicit(tmp_path: Path) -> None:
 def test_resolve_file_raw_suffix_detection(tmp_path: Path) -> None:
     """raw：无 as 时按后缀检测（.md → raw）。"""
     (tmp_path / 'README.md').write_text('# hi\n', encoding='utf-8')
-    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "README.md" import . as readme\n')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file p"README.md" import . as readme\n')
     doc, _ = parse_source(file)
     sb = Sandbox(SandboxConfig(allow_files=['./README.md']), base_dir=tmp_path)
     collector = DiagnosticCollector()
@@ -103,7 +103,7 @@ def test_resolve_file_raw_suffix_detection(tmp_path: Path) -> None:
 def test_resolve_file_raw_path_on_string_warns(tmp_path: Path) -> None:
     """raw：对字符串应用非空 path → import.path_failed 警告（不中断）。"""
     (tmp_path / 'seed.txt').write_text('data', encoding='utf-8')
-    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "seed.txt" as raw import .x as x\n')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file p"seed.txt" as raw import .x as x\n')
     doc, _ = parse_source(file)
     sb = Sandbox(SandboxConfig(allow_files=['./seed.txt']), base_dir=tmp_path)
     collector = DiagnosticCollector()
@@ -137,7 +137,7 @@ def test_import_identities_env_and_var() -> None:
 def test_import_identities_toml_file(tmp_path: Path) -> None:
     """import_identities：!file 来源哈希含文件内容（内容变 → 真名变）。"""
     (tmp_path / 'data.toml').write_text('port = 1\n', encoding='utf-8')
-    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "data.toml" as toml import .port as p\n')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file p"data.toml" as toml import .port as p\n')
     doc, _ = parse_source(file)
     sb = Sandbox(SandboxConfig(allow_files=['./data.toml']), base_dir=tmp_path)
     r = ImportResolver(sandbox=sb)
@@ -151,7 +151,7 @@ def test_parse_data_yaml_missing_warns(tmp_path: Path, monkeypatch: pytest.Monke
     """PyYAML 缺失 → import.yaml_missing 警告（import yaml 抛 ImportError）。"""
     monkeypatch.setitem(sys.modules, 'yaml', None)  # sys.modules 中 None → import 抛 ImportError
     (tmp_path / 'data.yaml').write_text('a: 1\n', encoding='utf-8')
-    file = MemFile(name='t.infd', root_path=tmp_path, content='!file "data.yaml" as yaml import .a as a\n')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file p"data.yaml" as yaml import .a as a\n')
     doc, _ = parse_source(file)
     sb = Sandbox(SandboxConfig(allow_files=['./data.yaml']), base_dir=tmp_path)
     collector = DiagnosticCollector()

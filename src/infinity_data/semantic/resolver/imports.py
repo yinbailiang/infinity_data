@@ -131,7 +131,7 @@ class ImportResolver:
         collector: DiagnosticCollector,
         base_dir: Path | None = None,
     ) -> None:
-        """!file "path" [as fmt] import .path.to.key as alias, ...（相对路径以 base_dir 解析）"""
+        """!file p"path" [as fmt] import .path.to.key as alias, ...（相对路径以 base_dir 解析）"""
         file = self._sandbox.open_file(stmt.file_path, source=stmt.source, base_dir=base_dir)
         if file is None:
             collector.add(Diagnostic(Severity.WARNING, 'import.file_denied', {'path_src': stmt.file_path}, stmt.source))

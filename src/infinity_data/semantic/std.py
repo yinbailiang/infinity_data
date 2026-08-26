@@ -8,12 +8,24 @@
 - 浮点统一为 :class:`decimal.Decimal`（规范要求无限精度十进制浮点）
 - ``python_to_std``：外部数据（dict / list / 标量）→ StdValue 树（统一入口）
 - ``_STD_VALUE_TYPES``：StdValue 成员 tuple（``isinstance`` 用；新增成员只改此处）
+
+**分层原则（与 emit 层是不同语义）**：
+
+- 本层（``python ↔ std``，:func:`python_to_std` / :func:`std_to_python`）是
+  **忠实互转**，确保**语义最小丢失**——path → :class:`PosixPath`、float →
+  :class:`decimal.Decimal`、noexist → :data:`NOEXIST` 哨兵，三态无损 round-trip。
+- emit 层（:mod:`infinity_data.emit`）则**从 Python 出发**投影到其他数据格式
+  （JSON / YAML / TOML），无需担心完整性——有损投影：path → 字符串、
+  Decimal 特殊值编码、可选的 ``{"__type__": ...}`` 自描述标记。
+
+**emit 不应被本层内部使用**；流水线内部的 Python 表示一律走本层的忠实转换。
 """
 
 from __future__ import annotations
 
 import decimal
 from dataclasses import dataclass, field
+from pathlib import PosixPath, PurePath
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeGuard, cast
 
 from infinity_data.infra.location import SourceRange
@@ -33,13 +45,67 @@ __all__ = [
     'StdValue',
     'is_std_node',
     'is_std_value',
+    'Noexist',
+    'NOEXIST',
+    'StdPythonValue',
     'python_to_std',
+    'std_to_python',
 ]
 
-LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist']
-"""字面量 kind 枚举。"""
+LiteralKind = Literal['str', 'int', 'float', 'bool', 'null', 'noexist', 'path']
+"""字面量 kind 枚举（含 ``path``：语言内 POSIX 路径，值用 :class:`PosixPath` 承载）。"""
 
 
+class Noexist:
+    """``noexist`` 哨兵：Python 域的三态可空表示（§1.6）。
+
+    用于表达**「键不存在」这一态**——与 ``None``（键存在但为 null）严格区分：
+
+    - Python 侧构造：``{'a': NOEXIST}`` → 字段 a 为 noexist（键不出现）；
+      ``{'a': None}`` → 字段 a 为 null（键出现、值为 null）
+    - :func:`python_to_std` 识别它 → ``noexist`` 字面量（否则 Python 侧无法表达三态）
+    - :func:`std_to_python` **默认保留**（转换层无损）；``keep_noexist=False`` 时丢弃
+
+    **参考用途**：控制发射层（emit）——:class:`~infinity_data.emit.config.EmitConfig`
+    的 ``keep_noexist`` 开启时，经 :func:`~infinity_data.emit.converter.to_json` 等
+    输出为 ``{"__type__": "noexist"}`` 自描述标记。
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return 'NOEXIST'
+
+
+NOEXIST = Noexist()
+"""``noexist`` 哨兵单例：表达「键不存在」而非「键存在但为 null」（§1.6）。
+
+与 ``None`` 严格区分（``NOEXIST is not None``）；见 :class:`Noexist`。
+"""
+
+
+# ═══════════════════════════════════════════════════════════
+# Python 域表示（忠实互转的类型契约）
+# ═══════════════════════════════════════════════════════════
+
+
+type StdPythonValue = (
+    None | bool | int | decimal.Decimal | PosixPath | str | Noexist | list[StdPythonValue] | dict[str, StdPythonValue]
+)
+"""Python 域忠实表示（§1.6 三态 + 各 kind 的专有类型）。
+
+:func:`std_to_python` 的返回类型与 :func:`python_to_std` 的**成对输入签名**：
+
+- ``float`` kind → :class:`decimal.Decimal`（无限精度，非 Python ``float``）
+- ``path`` kind → :class:`PosixPath`（语言内 POSIX 形式）
+- ``null`` → ``None``；``noexist`` → :data:`NOEXIST` 哨兵（**默认保留**，无损）
+- 数组 / dict 递归（dict 键恒为 ``str``，§1.4）
+
+签名是「无丢失 round-trip 的规范形式」契约；``python_to_std`` 运行时刻意宽容
+（外部数据入口：``float`` / ``PurePath`` 便利输入、未知类型回退 ``str``）。
+测试构造 StdPythonValue 请用
+:func:`~infinity_data.emit.converter.restore_python`。
+"""
 # ═══════════════════════════════════════════════════════════
 # 节点基类（统一携带来源位置）
 # ═══════════════════════════════════════════════════════════
@@ -97,7 +163,7 @@ class StdLiteral(StdNode):
     """
 
     kind: LiteralKind
-    value: str | int | decimal.Decimal | bool | None
+    value: str | int | decimal.Decimal | bool | PosixPath | None
 
 
 type StdValue = StdLiteral | StdArray | StdObject
@@ -119,12 +185,25 @@ def is_std_node(v: object) -> TypeGuard[StdNode]:
     return isinstance(v, StdNode)
 
 
-def python_to_std(value: Any) -> StdValue:
+def python_to_std(value: StdPythonValue) -> StdValue:
     """Python 值 → StdValue 树（外部导入数据统一入口，§2.7 / §3.3）。
+
+    **成对签名**：与 :func:`std_to_python` 构成互逆对——
+    ``StdPythonValue → StdValue`` / ``StdValue → StdPythonValue``。
 
     ``!file`` / ``!env`` 导入的原始数据经此转为 AST 后再消费（JSON path、约束、
     输出全部操作 StdValue）；``!var`` 的求值结果本就是 StdValue，无需此转换。
+
+    ``noexist`` 语义经 :data:`NOEXIST` 哨兵表达（Python 侧无原生三态）：
+    ``{'a': NOEXIST}`` → 字段 a 为 noexist；``{'a': None}`` → 字段 a 为 null。
+
+    **签名是契约，运行时刻意宽容**：这是外部数据（json/yaml/toml）统一入口——
+    ``float`` / ``PurePath`` 便利输入、未知类型回退 ``str`` 仍被接受并归一化；
+    无丢失 round-trip 的**规范形式**见 :data:`StdPythonValue`
+    （测试构造请用 :func:`~infinity_data.emit.converter.restore_python`）。
     """
+    if value is NOEXIST:
+        return StdLiteral(kind='noexist', value=None)
     if value is None:
         return StdLiteral(kind='null', value=None)
     if isinstance(value, bool):
@@ -135,6 +214,9 @@ def python_to_std(value: Any) -> StdValue:
         return StdLiteral(kind='float', value=value)
     if isinstance(value, float):
         return StdLiteral(kind='float', value=decimal.Decimal(str(value)))
+    if isinstance(value, PurePath):
+        # 任意 pathlib 路径 → path 值（统一归一为语言内 POSIX 形式，§1.5）
+        return StdLiteral(kind='path', value=PosixPath(value.as_posix()))
     if isinstance(value, str):
         return StdLiteral(kind='str', value=value)
     if isinstance(value, list):
@@ -144,6 +226,46 @@ def python_to_std(value: Any) -> StdValue:
         mapping = cast(dict[Any, Any], value)
         return StdObject(fields=[StdField(name=str(k), value=python_to_std(v)) for k, v in mapping.items()])
     return StdLiteral(kind='str', value=str(value))
+
+
+def std_to_python(val: StdValue, *, keep_null: bool = True, keep_noexist: bool = True) -> StdPythonValue:
+    """StdValue → Python 值（:func:`python_to_std` 的**忠实逆**，默认无损）。
+
+    与 emit 的有损投影不同，本函数保真：
+    - ``path`` → :class:`PosixPath`（保持路径语义，可 round-trip 回 std）
+    - ``float`` → :class:`decimal.Decimal`（无限精度，round-trip 无损）
+    - 三态可空：``noexist`` **默认保留**为 :data:`NOEXIST` 哨兵（转换层无损，§1.6）；
+      ``keep_noexist=False`` 时丢弃（键不出现，输出投影语义）；``null`` 保留键
+      （值为 None），``keep_null=False`` 时跳过
+
+    返回类型 :data:`StdPythonValue` 是 Python 域忠实表示的规范形式。
+    输出投影（键不出现、有损编码）见 emit 层与 :meth:`CompilationResult.value`。
+    """
+    match val:
+        case StdLiteral():
+            if val.kind == 'noexist':
+                return NOEXIST if keep_noexist else None
+            if val.kind == 'null':
+                return None
+            return val.value
+        case StdArray():
+            return [std_to_python(e, keep_null=keep_null, keep_noexist=keep_noexist) for e in val.elements]
+        case StdObject():
+            result: dict[str, Any] = {}
+            for f in val.fields:
+                if f.value is None:
+                    continue
+                if f.is_noexist:
+                    if keep_noexist:
+                        result[f.name] = NOEXIST
+                    continue
+                if f.is_null:
+                    if keep_null:
+                        result[f.name] = None
+                    continue
+                result[f.name] = std_to_python(f.value, keep_null=keep_null, keep_noexist=keep_noexist)
+            return result
+    raise TypeError(f'未知 StdValue 类型: {type(val)}')
 
 
 @dataclass
@@ -173,7 +295,7 @@ class StdField(StdNode):
 class StdArray(StdNode):
     """标准数组值（``source`` 继承自 :class:`StdNode`）。"""
 
-    elements: list[StdValue] = field(default_factory=list[StdValue])
+    elements: list[StdValue] = field(default_factory=lambda: [])
 
 
 @dataclass

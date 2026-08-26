@@ -102,7 +102,7 @@ def test_identity_dependency_different(tmp_path: Path) -> None:
     """内容相同但依赖不同（!from 解析到不同内容的 Base）→ 不同身份。"""
     _write(tmp_path / 't1' / 'base.inft', '~Base {\n    id: int = 1\n}\n')
     _write(tmp_path / 't2' / 'base.inft', '~Base {\n    id: int = 2\n}\n')
-    app = '!from "base.inft" import Base\n~A {\n    b: Base = Base()\n}\n'
+    app = '!from p"base.inft" import Base\n~A {\n    b: Base = Base()\n}\n'
     c1, d1 = _resolve_app(tmp_path / 't1', app)
     c2, d2 = _resolve_app(tmp_path / 't2', app)
     assert not list(d1) and not list(d2)
@@ -113,7 +113,7 @@ def test_identity_dependency_same(tmp_path: Path) -> None:
     """内容相同 + 依赖内容相同 → 同身份（跨路径去重）。"""
     _write(tmp_path / 't1' / 'base.inft', '~Base {\n    id: int = 1\n}\n')
     _write(tmp_path / 't2' / 'base.inft', '~Base {\n    id: int = 1\n}\n')
-    app = '!from "base.inft" import Base\n~A {\n    b: Base = Base()\n}\n'
+    app = '!from p"base.inft" import Base\n~A {\n    b: Base = Base()\n}\n'
     c1, d1 = _resolve_app(tmp_path / 't1', app)
     c2, d2 = _resolve_app(tmp_path / 't2', app)
     assert not list(d1) and not list(d2)
@@ -125,7 +125,7 @@ def test_identity_constraint_reference_dependency(tmp_path: Path) -> None:
     """模板即约束（约束中的模板名）也算依赖。"""
     _write(tmp_path / 't1' / 'base.inft', '~Base {\n    id: int = 1\n}\n')
     _write(tmp_path / 't2' / 'base.inft', '~Base {\n    id: int = 2\n}\n')
-    app = '!from "base.inft" import Base\n~A {\n    b: Base? = null\n}\n'
+    app = '!from p"base.inft" import Base\n~A {\n    b: Base? = null\n}\n'
     c1, _ = _resolve_app(tmp_path / 't1', app)
     c2, _ = _resolve_app(tmp_path / 't2', app)
     # 约束里引用 Base（模板即约束）→ Base 不同 → A 不同
@@ -139,10 +139,10 @@ def test_identity_constraint_reference_dependency(tmp_path: Path) -> None:
 
 def test_identity_circular_deterministic(tmp_path: Path) -> None:
     """循环导入（a ↔ b）：终止、确定、可复现。"""
-    _write(tmp_path / 'a.inft', '!from "b.inft" import B\n~A {\n    b: B = B()\n}\n')
-    _write(tmp_path / 'b.inft', '!from "a.inft" import A\n~B {\n    a: A? = null\n}\n')
+    _write(tmp_path / 'a.inft', '!from p"b.inft" import B\n~A {\n    b: B = B()\n}\n')
+    _write(tmp_path / 'b.inft', '!from p"a.inft" import A\n~B {\n    a: A? = null\n}\n')
     file = DiskFile.from_fullpath(tmp_path / 'app.infd')
-    _write(Path(file.name), '!from "a.inft" import A\nx = A()\n')
+    _write(Path(file.name), '!from p"a.inft" import A\nx = A()\n')
     doc, _ = parse_source(file)
     resolver = _make_resolver(tmp_path)
     c1 = resolver.resolve(doc, file, DiagnosticCollector())
@@ -163,7 +163,7 @@ def test_identity_dedup_across_files(tmp_path: Path) -> None:
     """内容 + 依赖相同的模板（不同文件、不同可见名）→ 共享同一身份。"""
     _write(tmp_path / 'a' / 'extra.inft', '~Extra {\n    name: str = "x"\n}\n')
     _write(tmp_path / 'b' / 'extra.inft', '~Extra {\n    name: str = "x"\n}\n')
-    app = '!from "extra.inft" import Extra as E1\n!from "extra.inft" import Extra as E2\n'
+    app = '!from p"extra.inft" import Extra as E1\n!from p"extra.inft" import Extra as E2\n'
     file = DiskFile.from_fullpath(tmp_path / 'a' / 'app.infd')
     _write(Path(file.name), app)
     doc, _ = parse_source(file)
@@ -238,7 +238,7 @@ def test_identity_file_dependency_different(tmp_path: Path) -> None:
     """.inft 的 !file 内容不同 → 模板身份不同（导入真名含文件内容哈希）。"""
     _write(tmp_path / 't1' / 'data.json', '{"port": 1}')
     _write(tmp_path / 't2' / 'data.json', '{"port": 2}')
-    app = '!file "data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
+    app = '!file p"data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
     c1, d1 = _resolve_app_full(tmp_path / 't1', app)
     c2, d2 = _resolve_app_full(tmp_path / 't2', app)
     assert not list(d1) and not list(d2)
@@ -249,7 +249,7 @@ def test_identity_file_dependency_same(tmp_path: Path) -> None:
     """.inft 的 !file 内容相同 + 模板内容相同 → 同身份（可复现）。"""
     _write(tmp_path / 't1' / 'data.json', '{"port": 1}')
     _write(tmp_path / 't2' / 'data.json', '{"port": 1}')
-    app = '!file "data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
+    app = '!file p"data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
     c1, d1 = _resolve_app_full(tmp_path / 't1', app)
     c2, d2 = _resolve_app_full(tmp_path / 't2', app)
     assert not list(d1) and not list(d2)
@@ -259,7 +259,7 @@ def test_identity_file_dependency_same(tmp_path: Path) -> None:
 def test_identity_file_denied_no_import_identity(tmp_path: Path) -> None:
     """.inft 的 !file 未授权 → 该 $ 绑定无导入真名 → 模板身份不纳入该数据依赖。"""
     _write(tmp_path / 'data.json', '{"port": 1}')
-    app = '!file "data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
+    app = '!file p"data.json" as json import .port as port\n~A {\n    v: int = $port\n}\n'
     file = DiskFile.from_fullpath(tmp_path / 'app.infd')
     _write(Path(file.name), app)
     doc, _ = parse_source(file)

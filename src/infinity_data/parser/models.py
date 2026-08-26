@@ -14,6 +14,7 @@ from infinity_data.tokenizer.models.tokens import (
     IntegerToken,
     NoexistToken,
     NullToken,
+    PathToken,
     StringToken,
 )
 
@@ -25,6 +26,11 @@ from infinity_data.tokenizer.models.tokens import (
 def _canonical_str(s: str) -> str:
     """字符串 → 标准单行 infd 字符串字面量（json 风格转义，UTF-8 保留）。"""
     return json.dumps(s, ensure_ascii=False)
+
+
+def _canonical_path(s: str) -> str:
+    """路径 → 标准 infd 路径字面量（``p"..."``，§1.5）。"""
+    return 'p' + json.dumps(s, ensure_ascii=False)
 
 
 def _canonical_constraint_list(constraints: Iterable['Constraint']) -> str:
@@ -116,7 +122,7 @@ class TemplateImportItem(AstNode):
 
 @dataclass
 class TemplateImportStmt(AstNode):
-    """模板导入: !from "path" import Name1, Name2 as N2"""
+    """模板导入: !from p"path" import Name1, Name2 as N2"""
 
     from_path: str  # 文件路径（unix 风格）
     items: list[TemplateImportItem]  # 导入项列表
@@ -126,7 +132,7 @@ class TemplateImportStmt(AstNode):
 
     def canonical(self) -> str:
         items = ', '.join(i.canonical() for i in self.items)
-        return f'!from {_canonical_str(self.from_path)} import {items}'
+        return f'!from {_canonical_path(self.from_path)} import {items}'
 
 
 @dataclass
@@ -199,7 +205,7 @@ class FileImportItem(AstNode):
 
 @dataclass
 class FileImportStmt(AstNode):
-    """配置文件导入: !file "path" as <format> import .path.to.key as alias, ..."""
+    """配置文件导入: !file p"path" as <format> import .path.to.key as alias, ..."""
 
     file_path: str  # 文件路径
     format: str | None  # 文件格式: "yaml", "json", "toml", "raw" 或 None（自动检测后缀）
@@ -211,7 +217,7 @@ class FileImportStmt(AstNode):
     def canonical(self) -> str:
         fmt = f' as {self.format}' if self.format else ''
         items = ', '.join(i.canonical() for i in self.imports)
-        return f'!file {_canonical_str(self.file_path)}{fmt} import {items}'
+        return f'!file {_canonical_path(self.file_path)}{fmt} import {items}'
 
 
 @dataclass
@@ -428,7 +434,7 @@ class Constraints(AstNode):
 class LiteralValue(AstNode):
     """字面量值"""
 
-    value: FloatToken | IntegerToken | BoolToken | NullToken | NoexistToken | StringToken
+    value: FloatToken | IntegerToken | BoolToken | NullToken | NoexistToken | StringToken | PathToken
 
     def canonical(self) -> str:
         return self.value.canonical()
@@ -442,7 +448,7 @@ class DollarValue(AstNode):
     """
 
     name: str  # 变量名
-    type_cast: Literal['int', 'float', 'bool', 'str', None]  # 可选类型转换
+    type_cast: Literal['int', 'float', 'bool', 'str', 'path', None]  # 可选类型转换
 
     def canonical(self) -> str:
         if self.type_cast is None:

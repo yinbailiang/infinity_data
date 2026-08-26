@@ -29,6 +29,7 @@ from infinity_data.tokenizer.models.tokens import (
     IntegerToken,
     NoexistToken,
     NullToken,
+    PathToken,
     StringToken,
 )
 
@@ -155,6 +156,8 @@ def literal_python_value(lit: LiteralValue) -> Any:
         case BoolToken(value=v):
             return v
         case StringToken(value=v):
+            return v
+        case PathToken(value=v):
             return v
         case NullToken():
             return None

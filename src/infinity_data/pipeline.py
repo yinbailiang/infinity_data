@@ -18,9 +18,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from infinity_data.emit import reduce_object
 from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.infra.file import DiskFile, File, MemFile
@@ -29,6 +28,7 @@ from infinity_data.semantic.builder import AstBuilder, StdDocument
 from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.registry import ConstraintRegistry
 from infinity_data.semantic.resolver import ImportResolver, TemplateGraphResolver
+from infinity_data.semantic.std import std_to_python
 
 
 @dataclass(frozen=True)
@@ -60,8 +60,10 @@ class CompilationResult:
     """一次编译的完整产物（根产物 + 诊断）。
 
     - ``document``：:class:`StdDocument`（纯数据：root / templates / scope；诊断见 ``diagnostics``）
-    - ``root`` / ``value``：由 ``document`` 派生（惰性）——降维属 emit 层职责，
-      编译阶段不急于产出，访问时经 :mod:`infinity_data.emit` 计算
+    - ``root`` / ``value``：由 ``document`` 派生（惰性）——value 经
+      :func:`~infinity_data.semantic.std.std_to_python` **忠实**转换
+      （path → :class:`PosixPath`、float → :class:`decimal.Decimal`，语义最小丢失）；
+      有损输出投影（path → 字符串等）属 emit 层职责，不在本层发生
     """
 
     document: StdDocument
@@ -69,8 +71,12 @@ class CompilationResult:
 
     @cached_property
     def value(self) -> dict[str, Any]:
-        """降维后的纯 Python dict（惰性，由 emit 层负责；尽力而为）。"""
-        return reduce_object(self.document.root)
+        """忠实 std → Python（path 保持 PosixPath；惰性计算）。
+
+        ``noexist`` 显式丢弃（``keep_noexist=False``）：转换层本身默认无损（§1.6
+        三态经 NOEXIST 哨兵保留），而这里是**输出投影**，兑现「noexist 键不出现」。
+        """
+        return cast(dict[str, Any], std_to_python(self.document.root, keep_noexist=False))
 
     @property
     def has_errors(self) -> bool:
@@ -129,6 +135,7 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
             registry=resolver.registry,
             templates=std.templates,
             template_scopes=context.template_scopes,
+            sandbox=sandbox_impl,
         )
         executor.validate(std.root, collector)
         if resolver.schema is not None:

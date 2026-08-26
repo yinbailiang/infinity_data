@@ -95,7 +95,7 @@ def test_resolve_does_not_execute_constraints() -> None:
 def test_resolve_imported_template_scope(tmp_path: Path) -> None:
     _write(tmp_path / 'templates' / 'extra.inft', '~Extra {\n    name: str = "x"\n}\n')
     file = DiskFile.from_fullpath(tmp_path / 'app.infd')
-    _write(Path(file.name), '!from "templates/extra.inft" import Extra\nval = Extra()\n')
+    _write(Path(file.name), '!from p"templates/extra.inft" import Extra\nval = Extra()\n')
     doc, _ = parse_source(file)
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['./templates/*.inft']))
     collector = DiagnosticCollector()
@@ -111,10 +111,10 @@ def test_resolve_imported_template_scope(tmp_path: Path) -> None:
 
 def test_resolve_circular_import_guard(tmp_path: Path) -> None:
     """a ↔ b 互相导入：不无限递归，两模板都进表。"""
-    _write(tmp_path / 'a.inft', '!from "b.inft" import B\n~A {\n    b: B = B()\n}\n')
-    _write(tmp_path / 'b.inft', '!from "a.inft" import A\n~B {\n    a: A? = null\n}\n')
+    _write(tmp_path / 'a.inft', '!from p"b.inft" import B\n~A {\n    b: B = B()\n}\n')
+    _write(tmp_path / 'b.inft', '!from p"a.inft" import A\n~B {\n    a: A? = null\n}\n')
     file = DiskFile.from_fullpath(tmp_path / 'app.infd')
-    _write(Path(file.name), '!from "a.inft" import A\nx = A()\n')
+    _write(Path(file.name), '!from p"a.inft" import A\nx = A()\n')
     doc, _ = parse_source(file)
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']))
     collector = DiagnosticCollector()
@@ -127,9 +127,9 @@ def test_resolve_circular_import_guard(tmp_path: Path) -> None:
 def test_resolve_nested_import_mapping(tmp_path: Path) -> None:
     """嵌套导入：导入文件的 !from 也解析进该文件的 scope。"""
     _write(tmp_path / 'base.inft', '~Base {\n    id: int = 0\n}\n')
-    _write(tmp_path / 'mid.inft', '!from "base.inft" import Base\n~Mid {\n    base: Base = Base()\n}\n')
+    _write(tmp_path / 'mid.inft', '!from p"base.inft" import Base\n~Mid {\n    base: Base = Base()\n}\n')
     file = DiskFile.from_fullpath(tmp_path / 'app.infd')
-    _write(Path(file.name), '!from "mid.inft" import Mid\nm = Mid()\n')
+    _write(Path(file.name), '!from p"mid.inft" import Mid\nm = Mid()\n')
     doc, _ = parse_source(file)
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']))
     collector = DiagnosticCollector()
@@ -178,7 +178,7 @@ def test_parse_cache_reuse(tmp_path: Path) -> None:
     tpl_file = DiskFile.from_fullpath(tmp_path / 'tpl.inft')
     _write(Path(tpl_file.name), '~T {\n    a: int = 1\n}\n')
     app = DiskFile.from_fullpath(tmp_path / 'app.infd')
-    _write(Path(app.name), '!from "tpl.inft" import T\n')
+    _write(Path(app.name), '!from p"tpl.inft" import T\n')
     doc, _ = parse_source(app)
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']), parse_cache=cache)
 

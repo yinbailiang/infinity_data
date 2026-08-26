@@ -12,6 +12,7 @@ from __future__ import annotations
 import decimal
 import json
 from collections.abc import Iterable, Iterator
+from pathlib import PosixPath
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.tokenizer.diagnostics import diag
@@ -45,6 +46,7 @@ from infinity_data.tokenizer.models.tokens import (
     NewlineToken,
     NoexistToken,
     NullToken,
+    PathToken,
     QuestionToken,
     RangleToken,
     RbraceToken,
@@ -206,6 +208,9 @@ class FinalTokenizer:
         if token_type == RawTokenType.STRING:
             return self._convert_string(raw)
 
+        if token_type == RawTokenType.PATH:
+            return self._convert_path(raw)
+
         if token_type == RawTokenType.MULTILINE_STRING:
             return self._convert_multiline_string(raw)
 
@@ -244,6 +249,27 @@ class FinalTokenizer:
         """处理多行字符串：提取 tags、修剪空白。"""
         content, tags = _process_multiline_string(raw.raw)
         return MultilineStringToken(raw=raw, value=content, tags=tags)
+
+    def _convert_path(self, raw: RawToken) -> PathToken:
+        """``p"..."`` → :class:`PosixPath`（语言内 POSIX 形式）。
+
+        JSON 转义无效 → 复用字符串诊断并回退去引号原文；
+        空串 / NUL 等无法构成路径 → ``tokenize.invalid_path`` 诊断并回退 ``PosixPath('.')``。
+        """
+        inner = raw.raw[1:]  # 去掉 p 前缀，保留 "..."
+        try:
+            value = json.loads(inner)
+        except json.JSONDecodeError:
+            self._errors.add(diag('tokenize.invalid_escape', {'raw': raw.raw}, raw.source))
+            value = inner[1:-1] if len(inner) >= 2 else inner
+        try:
+            if not value:
+                raise ValueError('empty path')
+            path = PosixPath(value)
+        except ValueError:
+            self._errors.add(diag('tokenize.invalid_path', {'raw': raw.raw}, raw.source))
+            path = PosixPath('.')
+        return PathToken(raw=raw, value=path)
 
     def _convert_integer(self, raw: RawToken) -> IntegerToken:
         """解析整数字面量；失败收集诊断并回退 0（防御性：RawTokenizer 已校验）。"""

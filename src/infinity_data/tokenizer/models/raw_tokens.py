@@ -37,6 +37,7 @@ class RawTokenType(Enum):
 
     # ── 字面量 ─────────────────────────────────────
     STRING = 'str'  # 双引号单行字符串
+    PATH = 'path'  # p"..." 路径字面量（§1.5）
     MULTILINE_STRING = 'mlstr'  # 反引号多行字符串
     INTEGER = 'int'
     FLOAT = 'float'
@@ -50,8 +51,8 @@ class RawTokenType(Enum):
 
     # ── 导入关键字（! + 标识符组合，词法阶段识别，避免语法阶段二义）──
     ENV_IMPORT = '!env'  # !env import NAME
-    FILE_IMPORT = '!file'  # !file "path" import ...
-    FROM_IMPORT = '!from'  # !from "path" import ...
+    FILE_IMPORT = '!file'  # !file p"path" import ...
+    FROM_IMPORT = '!from'  # !from p"path" import ...
     VAR_IMPORT = '!var'  # !var <值表达式> import path as name（本地 $ 空间注入）
 
     # ── 换行 / EOF ─────────────────────────────────

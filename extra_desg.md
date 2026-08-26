@@ -290,8 +290,8 @@ Layer 1: load(sandbox=..., schema=...)
 | 导入类型 | sandbox 控制 | 默认 (deny_all) | 默认 (full_access) |
 |------|------|:--:|:--:|
 | `!env import NAME` | `env` 注入 dict（优先）+ `allow_env` 白名单（OS 实时读取） | ❌ 禁止 | ✅ 真实 OS 环境变量 |
-| `!file "path"` | `allow_files` glob 列表 | ❌ 禁止 | ✅ 任意文件 |
-| `!from "path"` | `allow_templates` glob 列表 | ❌ 禁止 | ✅ 任意模板 |
+| `!file p"path"` | `allow_files` glob 列表 | ❌ 禁止 | ✅ 任意文件 |
+| `!from p"path"` | `allow_templates` glob 列表 | ❌ 禁止 | ✅ 任意模板 |
 
 ### 3.4 安全保证
 
@@ -518,7 +518,7 @@ github.com/infd/aws/
 
 ```infd
 # !from 使用远程模板
-!from "github.com/infd/aws" import Lambda, EKS, RDS
+!from p"github.com/infd/aws" import Lambda, EKS, RDS
 
 my_api = Lambda(
     name = "user-service",

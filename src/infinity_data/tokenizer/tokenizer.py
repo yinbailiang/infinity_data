@@ -180,7 +180,12 @@ class RawTokenizer:
                     return tok
                 continue  # 非法数字序列已报错并跳过
 
-            # ── 标识符 / 关键字 ───────────────────────
+            # ── 标识符 / 关键字 / 路径字面量 ────────────
+            if ch == 'p':
+                # p"..." 路径字面量（§1.5）：p 后紧跟 "（无空白）才识别为路径，
+                # 否则按普通标识符处理（p 是合法字段名）
+                return self._read_path_or_identifier(stream, collector, file)
+
             if _is_ident_start(ch):
                 return self._read_identifier_or_keyword(stream, file)
 
@@ -510,13 +515,26 @@ class RawTokenizer:
         collector.add(diag('tokenize.invalid_bang', {'actual': repr(actual)}, SourceRange.at(file, start)))
         return None
 
-    # ── 单行字符串 ────────────────────────────────────
+    # ── 单行字符串 / 路径字面量 ─────────────────────────
 
     @staticmethod
-    def _read_string(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:
-        """读取双引号包裹的单行字符串"""
-        start = stream.info()
-        raw_parts: list[str] = [stream.advance()]  # 消费 '"'
+    def _read_string(
+        stream: CharStream,
+        collector: DiagnosticCollector,
+        file: File,
+        *,
+        prefix: str = '',
+        start: SourceInfo | None = None,
+    ) -> RawToken:
+        """读取双引号包裹的单行字符串；``prefix='p'`` → 路径字面量 ``p"..."``（§1.5）。
+
+        约定：调用时流已停在**开引号** ``"`` 处；``prefix`` 由调用方消费（``start``
+        须指向完整 token 起始位置，含前缀）。
+        """
+        if start is None:
+            start = stream.info()
+        token_type = RawTokenType.PATH if prefix else RawTokenType.STRING
+        raw_parts: list[str] = [prefix, stream.advance()]  # 消费 '"'
 
         def close() -> None:
             """补全结束引号：若尾部是未完成的转义反斜杠则先丢弃，保证 raw 是合法 JSON 字符串。"""
@@ -534,7 +552,7 @@ class RawTokenizer:
                     collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
                     close()
                     return RawTokenizer._make_token(
-                        RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
+                        token_type, ''.join(raw_parts), start=start, stream=stream, file=file
                     )
                 nxt = stream.peek()
                 assert not isinstance(nxt, NoNextType)
@@ -543,7 +561,7 @@ class RawTokenizer:
                     collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
                     close()
                     return RawTokenizer._make_token(
-                        RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
+                        token_type, ''.join(raw_parts), start=start, stream=stream, file=file
                     )
                 raw_parts.append(stream.advance())
                 continue
@@ -551,23 +569,33 @@ class RawTokenizer:
             if ch == '"':
                 raw_parts.append(ch)
                 stream.advance()
-                return RawTokenizer._make_token(
-                    RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
-                )
+                return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
 
             if ch == '\n':
                 collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
                 close()
-                return RawTokenizer._make_token(
-                    RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file
-                )
+                return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
 
             raw_parts.append(ch)
             stream.advance()
 
         collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
         close()
-        return RawTokenizer._make_token(RawTokenType.STRING, ''.join(raw_parts), start=start, stream=stream, file=file)
+        return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
+
+    @staticmethod
+    def _read_path_or_identifier(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:
+        """``p`` 起始：``p"..."`` 路径字面量；否则普通标识符/关键字。
+
+        合法语法中标识符后不会紧跟字符串（无隐式拼接），故 ``p"`` 唯一含义是路径字面量。
+        """
+        start = stream.info()
+        stream.advance()  # 消费 p
+        nxt = _peek_char(stream)
+        if nxt == '"':
+            return RawTokenizer._read_string(stream, collector, file, prefix='p', start=start)
+        # 普通标识符：继续读取 p 之后的标识符字符
+        return RawTokenizer._read_identifier_rest(stream, file, start=start, raw_parts=['p'])
 
     # ── 多行字符串（Markdown 风格） ────────────────────
 
@@ -771,9 +799,21 @@ class RawTokenizer:
     @staticmethod
     def _read_identifier_or_keyword(stream: CharStream, file: File) -> RawToken:
         """读取标识符，识别关键字。"""
-        start = stream.info()
-        raw_parts: list[str] = []
+        return RawTokenizer._read_identifier_rest(stream, file, start=stream.info(), raw_parts=[])
 
+    @staticmethod
+    def _read_identifier_rest(
+        stream: CharStream,
+        file: File,
+        *,
+        start: SourceInfo,
+        raw_parts: list[str],
+    ) -> RawToken:
+        """从当前流位置继续读取标识符字符，识别关键字。
+
+        ``start`` / ``raw_parts``：调用方已消费部分字符（如 ``p``）时传入，
+        保证 source 覆盖完整标识符。
+        """
         while not stream.eof():
             ch = stream.peek()
             if not isinstance(ch, NoNextType) and _is_ident_char(ch):
