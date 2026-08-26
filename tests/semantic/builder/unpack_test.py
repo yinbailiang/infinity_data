@@ -84,6 +84,34 @@ def test_template_unpack_args_positional() -> None:
     assert _int(_field_of(obj, 'b')) == 2
 
 
+def test_template_unpack_args_positional_source_order() -> None:
+    """*expr 解包与显式位置参数按源码顺序拼接（回归：解包项被错误挪到末尾）。"""
+    std, c = _build(
+        '~X(extra_positional_vars = rest) {\n    a: int\n    b: int\n    c: int\n    rest: list = []\n}\n'
+        'x = X(*[1, 2, 3], 4, 5, 6)\n'
+    )
+    assert not _codes(c)
+    obj = _obj(_root_field(std, 'x'))
+    assert _int(_field_of(obj, 'a')) == 1
+    assert _int(_field_of(obj, 'b')) == 2
+    assert _int(_field_of(obj, 'c')) == 3
+    assert _arr_values(_field_of(obj, 'rest')) == [4, 5, 6]
+
+
+def test_template_unpack_args_positional_interleaved() -> None:
+    """*expr 解包与显式位置参数交错书写 → 保持源码顺序（§2.7 拼接）。"""
+    std, c = _build(
+        '~X(extra_positional_vars = rest) {\n    a: int\n    b: int\n    c: int\n    rest: list = []\n}\n'
+        'x = X(*[1, 2], 3, *[4, 5], 6)\n'
+    )
+    assert not _codes(c)
+    obj = _obj(_root_field(std, 'x'))
+    assert _int(_field_of(obj, 'a')) == 1
+    assert _int(_field_of(obj, 'b')) == 2
+    assert _int(_field_of(obj, 'c')) == 3
+    assert _arr_values(_field_of(obj, 'rest')) == [4, 5, 6]
+
+
 def test_unpack_type_error_dict() -> None:
     _, c = _build('x = { **5 }\n')
     assert 'unpack.type_error' in _codes(c)
@@ -106,6 +134,35 @@ def test_template_unpack_kwargs_conflict() -> None:
     """模板调用 ** 解包键与显式参数冲突 → dict.duplicate_key。"""
     _, c = _build('~X {\n    a: int = 0\n}\nx = X(a = 1, **{ a = 2 })\n')
     assert 'dict.duplicate_key' in _codes(c)
+
+
+def test_template_unpack_kwargs_conflict_source_order() -> None:
+    """** 解包在前、显式命名在后：先到者（解包）胜出（回归：命名参数恒先处理）。"""
+    std, c = _build('~X {\n    a: int = 0\n}\nx = X(**{ a = 1 }, a = 2)\n')
+    assert 'dict.duplicate_key' in _codes(c)
+    assert _int(_field_of(_obj(_root_field(std, 'x')), 'a')) == 1
+
+
+def test_template_unpack_kwargs_conflict_named_first() -> None:
+    """显式命名在前、** 解包在后：先到者（显式）胜出。"""
+    std, c = _build('~X {\n    a: int = 0\n}\nx = X(a = 2, **{ a = 1 })\n')
+    assert 'dict.duplicate_key' in _codes(c)
+    assert _int(_field_of(_obj(_root_field(std, 'x')), 'a')) == 2
+
+
+def test_dict_unpack_conflict_source_order() -> None:
+    """dict 字面量显式字段在前、** 解包在后：先到者（显式）胜出（回归：解包恒先处理）。"""
+    std, c = _build('x = { a = 2, **{ a = 1 } }\n')
+    assert 'dict.duplicate_key' in _codes(c)
+    assert _int(_field_of(_obj(_root_field(std, 'x')), 'a')) == 2
+
+
+def test_variadic_named_conflict_with_unpack() -> None:
+    """extra_named_vars 收集 + ** 解包键冲突 → dict.duplicate_key（回归：原先静默覆盖）。"""
+    std, c = _build('~T(extra_named_vars = extra) {\n    extra: <dict> = {}\n}\nt = T(**{ foo = 1 }, foo = 2)\n')
+    assert 'dict.duplicate_key' in _codes(c)
+    extra = _obj(_field_of(_obj(_root_field(std, 't')), 'extra'))
+    assert _int(_field_of(extra, 'foo')) == 1  # 先到者（解包）保留
 
 
 def test_unpack_into_array_noexist() -> None:

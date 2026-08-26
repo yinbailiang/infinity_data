@@ -29,6 +29,7 @@ from infinity_data.parser.models import (
     JsonPathKey,
     JsonPathSegment,
     LiteralValue,
+    NamedArg,
     Statement,
     TemplateCallValue,
     TemplateConfig,
@@ -1196,8 +1197,7 @@ class Parser:
         lbrace_tok = stream.expect(LbraceToken)
         stream.skip_separators()
 
-        fields: list[Field] = []
-        unpacks: list[UnpackValue] = []
+        items: list[Field | UnpackValue] = []
         constraints: list[Constraint] = []
         missing_sep_reported = [False]
         while not stream.check(RawTokenType.RBRACE) and not stream.eof():
@@ -1207,12 +1207,13 @@ class Parser:
                 parsed = Parser._parse_constraints(stream, collector)
                 constraints.extend(parsed.constraints)
             elif isinstance(stream.peek(), DoubleStarToken):
-                # **expr：dict 解包（展开为键值对并入字段集）
+                # **expr：dict 解包（展开为键值对并入字段集）；
+                # 与显式字段同槽存放，保持源码顺序（先到者胜出，§2.7）
                 tok = stream.expect(DoubleStarToken)
                 val = Parser._parse_value(stream, collector)
-                unpacks.append(UnpackValue(source=stream.span_from(tok), value=val, double=True))
+                items.append(UnpackValue(source=stream.span_from(tok), value=val, double=True))
             else:
-                fields.append(Parser._parse_field(stream, collector))
+                items.append(Parser._parse_field(stream, collector))
             had_sep = stream.skip_separators()
             Parser._missing_separator(
                 stream,
@@ -1224,7 +1225,7 @@ class Parser:
             )
 
         stream.expect(RbraceToken)
-        return DictValue(source=stream.span_from(lbrace_tok), fields=fields, constraints=constraints, unpacks=unpacks)
+        return DictValue(source=stream.span_from(lbrace_tok), items=items, constraints=constraints)
 
     @staticmethod
     def _parse_array(stream: TokenStream, collector: DiagnosticCollector) -> ArrayValue:
@@ -1263,13 +1264,11 @@ class Parser:
         stream.expect(LparenToken)
         stream.skip_newlines()
 
-        positional: list[Value] = []
-        named: dict[str, Value] = {}
-        unpack_args: list[UnpackValue] = []  # *expr（list → 位置参数）
-        unpack_kwargs: list[UnpackValue] = []  # **expr（dict → 命名参数）
-        axis_positional: set[int] = set()  # 位置参数中带 ... 的索引（展开轴，§2.8）
+        positional: list[Value | UnpackValue] = []  # 位置参数 + *expr 解包项（保持源码顺序，§2.7）
+        named: list[NamedArg | UnpackValue] = []  # 命名参数 + **expr 解包项（保持源码顺序，§2.7）
+        axis_positional: set[int] = set()  # 位置参数槽中带 ... 的索引（展开轴，§2.8）
         axis_named: set[str] = set()  # 命名参数中带 ... 的键
-        axis_unpack_kwargs: set[int] = set()  # **expr 解包参数中带 ... 的索引
+        axis_unpack_kwargs: set[int] = set()  # named 槽中 **expr 解包项的索引
         saw_named = False
         missing_sep_reported = [False]
 
@@ -1284,15 +1283,16 @@ class Parser:
             if isinstance(tok, DoubleStarToken):
                 stream.advance()
                 val = Parser._parse_value(stream, collector)
-                idx = len(unpack_kwargs)
-                unpack_kwargs.append(UnpackValue(source=stream.single_span(tok), value=val, double=True))
+                idx = len(named)
+                named.append(UnpackValue(source=stream.single_span(tok), value=val, double=True))
                 if Parser._consume_ellipsis(stream):
                     axis_unpack_kwargs.add(idx)  # **expr...：list[dict] 逐元素解包（§2.8）
                 saw_named = True
             elif isinstance(tok, StarToken):
                 stream.advance()
                 val = Parser._parse_value(stream, collector)
-                unpack_args.append(UnpackValue(source=stream.single_span(tok), value=val, double=False))
+                # *expr 解包项与显式位置参数同槽存放，保持源码顺序（§2.7）
+                positional.append(UnpackValue(source=stream.single_span(tok), value=val, double=False))
             # 分支 1：标识符 → 可能是命名参数或模板调用（位置参数）
             elif isinstance(tok, IdentifierToken):
                 ident: IdentifierToken = stream.expect(IdentifierToken)  # 消费到缓冲区
@@ -1300,7 +1300,7 @@ class Parser:
 
                 if isinstance(nxt, EqualsToken):
                     stream.advance()  # 消费 =
-                    if ident.name in named:
+                    if ident.name in {s.name for s in named if isinstance(s, NamedArg)}:
                         collector.add(
                             diag(
                                 'template.dup_argument',
@@ -1308,7 +1308,13 @@ class Parser:
                                 stream.single_span(ident),
                             )
                         )
-                    named[ident.name] = Parser._parse_value(stream, collector)
+                    named.append(
+                        NamedArg(
+                            source=stream.single_span(ident),
+                            name=ident.name,
+                            value=Parser._parse_value(stream, collector),
+                        )
+                    )
                     if Parser._consume_ellipsis(stream):
                         axis_named.add(ident.name)  # 命名参数轴
                     saw_named = True
@@ -1358,8 +1364,6 @@ class Parser:
             template_name=name_tok.name,
             positional_args=positional,
             named_args=named,
-            unpack_args=unpack_args,
-            unpack_kwargs=unpack_kwargs,
             axis_positional=frozenset(axis_positional),
             axis_named=frozenset(axis_named),
             axis_unpack_kwargs=frozenset(axis_unpack_kwargs),

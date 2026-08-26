@@ -37,6 +37,16 @@ def _canonical_constraint_list(constraints: Iterable['Constraint']) -> str:
     return '<' + ', '.join(c.canonical() for c in items) + '>'
 
 
+def _canonical_error(message: str) -> str:
+    """错误节点容错序列化：``error("...")`` 占位符。
+
+    错误节点是**解析失败恢复**的产物，对应的源码本就无效，无法还原为等价 AST——
+    canonical 仅作**容错**（模板真名哈希 / 调试 / LSP 提示不因错误节点崩溃），
+    不承诺 round-trip（``error(...)`` 是显示占位符，不是可解析的模板调用语法）。
+    """
+    return f'error({_canonical_str(message)})'
+
+
 # ═══════════════════════════════════════════════════════════
 # 节点
 # ═══════════════════════════════════════════════════════════
@@ -458,23 +468,40 @@ class UnpackValue(AstNode):
 
 
 @dataclass
+class NamedArg(AstNode):
+    """模板调用命名参数槽: name = value。
+
+    与 ``**expr`` 解包项（:class:`UnpackValue`）在 :attr:`TemplateCallValue.named_args`
+    中按**源码顺序**混排——键冲突「保留先到者」（disjoint merge，§2.7）与书写顺序一致。
+    """
+
+    name: str
+    value: Value
+
+    def children(self) -> Iterable[AstNode]:
+        return [self.value]
+
+    def canonical(self) -> str:
+        return f'{self.name} = {self.value.canonical()}'
+
+
+@dataclass
 class DictValue(AstNode):
     """对象值: { ... }
 
     ``: <constraint, ...>`` 结构级约束作用于该字面量 dict 的整体。
-    ``unpacks``：``**expr`` 解包项（展开为键值对后并入字段集）。
+    ``items``：字段（:class:`Field`）与 ``**expr`` 解包项（:class:`UnpackValue`）按
+    **源码顺序**混排——键冲突「保留先到者」（disjoint merge，§2.7）与书写顺序一致。
     """
 
-    fields: list[Field]
+    items: list[Field | UnpackValue]
     constraints: list[Constraint] = field(default_factory=lambda: [])
-    unpacks: list[UnpackValue] = field(default_factory=lambda: [])
 
     def children(self) -> Iterable[AstNode]:
-        return [*self.fields, *self.constraints, *self.unpacks]
+        return [*self.items, *self.constraints]
 
     def canonical(self) -> str:
-        inner: list[str] = [f.canonical() for f in self.fields]
-        inner.extend(u.canonical() for u in self.unpacks)
+        inner: list[str] = [i.canonical() for i in self.items]
         cs = _canonical_constraint_list(self.constraints)
         if cs:
             inner.append(': ' + cs)
@@ -501,18 +528,21 @@ class TemplateCallValue(AstNode):
     展开（§2.8）：参数值后缀 ``...`` = 展开轴；调用级（``)`` 后）``...`` = 展开传播
     （本调用的展开结果作为包围模板调用的轴，整体模式逐元素重复）、``^`` = 笛卡尔积
     （多轴全组合，首轴最慢变化；与 ``propagate`` 正交，``^...`` 可叠加）。
-    - ``axis_positional``：位置参数中带 ``...`` 的索引
-    - ``axis_named``：命名参数中带 ``...`` 的键
-    - ``axis_unpack_kwargs``：``**expr`` 解包参数中带 ``...`` 的索引
+    - ``positional_args``：位置参数槽，**保持源码顺序**；``*expr`` 解包项
+      （:class:`UnpackValue`，double=False）也在其中，实例化时展开为多个位置参数（§2.7）
+    - ``named_args``：命名参数槽，**保持源码顺序**；显式 ``name = value``（:class:`NamedArg`）
+      与 ``**expr`` 解包项（:class:`UnpackValue`，double=True）混排——键冲突「保留先到者」
+      与书写顺序一致（§2.7 disjoint merge）
+    - ``axis_positional``：位置参数槽中带 ``...`` 的索引（``*expr`` 解包项不是轴）
+    - ``axis_named``：命名参数（:class:`NamedArg`）中带 ``...`` 的键
+    - ``axis_unpack_kwargs``：``**expr`` 解包项（named_args 槽索引）中带 ``...`` 的索引
     - ``propagate``：调用级 ``...``（展开传播；无 = 展开止于本调用）
     - ``cartesian``：调用级 ``^``（笛卡尔积展开；无 = zip 配对）
     """
 
     template_name: str
-    positional_args: list[Value]
-    named_args: dict[str, Value]
-    unpack_args: list[UnpackValue] = field(default_factory=lambda: [])  # *expr（list → 位置参数）
-    unpack_kwargs: list[UnpackValue] = field(default_factory=lambda: [])  # **expr（dict → 命名参数）
+    positional_args: list[Value | UnpackValue]
+    named_args: list[NamedArg | UnpackValue]
     axis_positional: frozenset[int] = field(default_factory=frozenset[int])
     axis_named: frozenset[str] = field(default_factory=frozenset[str])
     axis_unpack_kwargs: frozenset[int] = field(default_factory=frozenset[int])
@@ -522,27 +552,22 @@ class TemplateCallValue(AstNode):
     def children(self) -> Iterable[AstNode]:
         return [
             *self.positional_args,
-            *self.named_args.values(),
-            *self.unpack_args,
-            *self.unpack_kwargs,
+            *self.named_args,
         ]
 
     def canonical(self) -> str:
         args: list[str] = []
         for i, a in enumerate(self.positional_args):
             s = a.canonical()
-            if i in self.axis_positional:
+            if not isinstance(a, UnpackValue) and i in self.axis_positional:
                 s += '...'
             args.append(s)
-        args.extend(u.canonical() for u in self.unpack_args)
-        for k, v in sorted(self.named_args.items()):
-            s = f'{k} = {v.canonical()}'
-            if k in self.axis_named:
-                s += '...'
-            args.append(s)
-        for j, u in enumerate(self.unpack_kwargs):
-            s = u.canonical()
-            if j in self.axis_unpack_kwargs:
+        for i, n in enumerate(self.named_args):
+            s = n.canonical()
+            if isinstance(n, UnpackValue):
+                if i in self.axis_unpack_kwargs:
+                    s += '...'
+            elif n.name in self.axis_named:
                 s += '...'
             args.append(s)
         out = f'{self.template_name}({", ".join(args)})'
@@ -560,32 +585,41 @@ class TemplateCallValue(AstNode):
 
 @dataclass
 class ErrorStatement(AstNode):
-    """解析失败的语句。用于错误恢复。"""
+    """解析失败的语句。用于错误恢复。
+
+    canonical 容错输出 ``error("message")``（不抛异常），供哈希 / LSP 提示。
+    """
 
     message: str
 
     def canonical(self) -> str:
-        raise TypeError('错误节点不可序列化为 infd')
+        return _canonical_error(self.message)
 
 
 @dataclass
 class ErrorValue(AstNode):
-    """解析失败的值。用于错误恢复。"""
+    """解析失败的值。用于错误恢复。
+
+    canonical 容错输出 ``error("message")``（不抛异常），供哈希 / LSP 提示。
+    """
 
     message: str
 
     def canonical(self) -> str:
-        raise TypeError('错误节点不可序列化为 infd')
+        return _canonical_error(self.message)
 
 
 @dataclass
 class ErrorConstraint(AstNode):
-    """解析失败的约束。用于错误恢复。"""
+    """解析失败的约束。用于错误恢复。
+
+    canonical 容错输出 ``error("message")``（不抛异常），供哈希 / LSP 提示。
+    """
 
     message: str
 
     def canonical(self) -> str:
-        raise TypeError('错误节点不可序列化为 infd')
+        return _canonical_error(self.message)
 
 
 # ═══════════════════════════════════════════════════════════

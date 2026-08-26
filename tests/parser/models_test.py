@@ -5,6 +5,9 @@ from infinity_data.parser import (
     ConstraintCall,
     ConstraintIdent,
     Constraints,
+    ErrorConstraint,
+    ErrorStatement,
+    ErrorValue,
     Field,
     TemplateConfig,
     TemplateDef,
@@ -45,3 +48,19 @@ def test_field_optional_value() -> None:
 def test_template_def_config_default() -> None:
     tpl = TemplateDef(source=SourceRange.empty(), name='X', fields=[])
     assert tpl.config.positional is True
+
+
+def test_error_node_canonical_placeholder() -> None:
+    """错误节点 canonical 容错输出 error("message") 占位符（不抛异常）。"""
+    assert ErrorStatement(source=SourceRange.empty(), message='坏语句').canonical() == 'error("坏语句")'
+    assert ErrorValue(source=SourceRange.empty(), message='坏值').canonical() == 'error("坏值")'
+    assert ErrorConstraint(source=SourceRange.empty(), message='坏约束').canonical() == 'error("坏约束")'
+
+
+def test_error_node_canonical_escapes_message() -> None:
+    """消息中的引号/反斜杠经 JSON 转义（与 _canonical_str 一致）。"""
+    import json
+
+    msg = '含 "引号" 与 \\ 反斜杠'
+    v = ErrorValue(source=SourceRange.empty(), message=msg)
+    assert v.canonical() == f'error({json.dumps(msg, ensure_ascii=False)})'

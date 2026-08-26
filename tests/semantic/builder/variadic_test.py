@@ -83,6 +83,25 @@ def test_variadic_default_when_empty() -> None:
     assert not list(_obj(_field_of(obj, 'extra')).fields)
 
 
+def test_variadic_positional_unpack_source_order() -> None:
+    """*expr 解包与显式位置参数混合：多余位置按源码顺序进收集字段（回归：参数绑定错位）。"""
+    std, c = _build(
+        '~T(extra_positional_vars = rest) {\n'
+        '    _1: int\n'
+        '    _2: int\n'
+        '    _3: int\n'
+        '    rest: <list, each(int)> = []\n'
+        '}\n'
+        't = T(*[1, 2, 3], 4, 5, 6)\n'
+    )
+    assert not _codes(c)
+    obj = _obj(_root_field(std, 't'))
+    assert _int(_field_of(obj, '_1')) == 1
+    assert _int(_field_of(obj, '_2')) == 2
+    assert _int(_field_of(obj, '_3')) == 3
+    assert _arr_values(_field_of(obj, 'rest')) == [4, 5, 6]
+
+
 def test_variadic_collected_constraint() -> None:
     """收集值过字段普通约束（each(str) 收到 int → type_mismatch，executor 执行）。"""
     import tempfile

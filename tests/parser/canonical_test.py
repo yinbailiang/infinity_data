@@ -3,7 +3,7 @@
 - ``canonical()`` 输出**标准 infd 源码**，可被 :func:`parse_source` 解析回等价 AST
 - 不动点：``parse(canonical(x)).canonical() == canonical(x)``（规范化稳定）
 - 注释 / 空白 / 尾逗号 / 单约束省略尖括号 → 相同 canonical
-- 命名参数按名排序（确定性）
+- 位置 / 命名参数保持源码顺序（含 ``*`` / ``**`` 解包项，round-trip 语义等价）
 """
 
 from pathlib import Path
@@ -76,6 +76,24 @@ def test_canonical_template_call_fixed_point() -> None:
     assert _field(_parse(c)).canonical() == c
 
 
+def test_canonical_template_call_unpack_order_fixed_point() -> None:
+    """*expr 解包与显式位置参数交错：canonical 保持源码顺序（语义等价 round-trip）。"""
+    src = 'x = T(*[1, 2, 3], 4, 5, *[6], 7)\n'
+    f = _field(_parse(src))
+    c = f.canonical()
+    assert '*[ 1, 2, 3 ], 4, 5, *[ 6 ], 7' in c  # 解包项不挪位
+    assert _field(_parse(c)).canonical() == c  # 不动点
+
+
+def test_canonical_template_call_named_unpack_order_fixed_point() -> None:
+    """** 解包项与显式命名参数交错：canonical 保持源码顺序（round-trip 语义等价）。"""
+    src = 'x = T(b = 2, **{ a = 1 }, c = 3)\n'
+    f = _field(_parse(src))
+    c = f.canonical()
+    assert 'b = 2, **{ a = 1 }, c = 3' in c  # ** 解包项不挪位
+    assert _field(_parse(c)).canonical() == c  # 不动点
+
+
 def test_canonical_string_escaping_round_trip() -> None:
     """含转义/中文/特殊字符的字符串 round-trip。"""
     src = 'x = { msg = "a\\"b\\n中文\\t\\u00e9", path = "C:\\\\x" }\n'
@@ -110,10 +128,10 @@ def test_canonical_single_constraint_brackets_equivalence() -> None:
     assert a == b
 
 
-def test_canonical_sorts_named_args() -> None:
-    """命名参数按名排序（确定性）。"""
-    c = _field(_parse('x = T(b = 2, a = 1)\n')).canonical()
-    assert c == 'x = T(a = 1, b = 2)'
+def test_canonical_preserves_arg_order() -> None:
+    """位置/命名参数（含 ** 解包项）保持源码顺序（确定性，round-trip 语义等价）。"""
+    c = _field(_parse('x = T(b = 2, a = 1, **{ c = 3 }, d = 4)\n')).canonical()
+    assert c == 'x = T(b = 2, a = 1, **{ c = 3 }, d = 4)'
 
 
 def test_canonical_top_level_unpack_fixed_point() -> None:

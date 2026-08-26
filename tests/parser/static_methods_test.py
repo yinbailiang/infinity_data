@@ -22,10 +22,12 @@ from infinity_data.parser.models import (
     JsonPathIndex,
     JsonPathKey,
     LiteralValue,
+    NamedArg,
     TemplateCallValue,
     TemplateConfig,
     TemplateField,
     TemplateImportItem,
+    UnpackValue,
 )
 from infinity_data.parser.parser import Parser
 from infinity_data.parser.token_stream import TokenStream
@@ -196,7 +198,7 @@ def test_parse_value_object() -> None:
     s = _stream('{a = 1}', col)
     v = Parser._parse_value(s, col)
     assert isinstance(v, DictValue)
-    assert len(v.fields) == 1
+    assert len(v.items) == 1
 
 
 def test_parse_array() -> None:
@@ -212,7 +214,17 @@ def test_parse_object() -> None:
     s = _stream('{a = 1, b = 2}', col)
     obj = Parser._parse_object(s, col)
     assert isinstance(obj, DictValue)
-    assert [f.name for f in obj.fields] == ['a', 'b']
+    assert [f.name for f in obj.items if isinstance(f, Field)] == ['a', 'b']
+
+
+def test_parse_object_unpack_keeps_order() -> None:
+    """dict 字面量 **expr 解包项与显式字段按源码顺序混排（§2.7）。"""
+    col = DiagnosticCollector()
+    s = _stream('{a = 1, **{ b = 2 }, c = 3}', col)
+    obj = Parser._parse_object(s, col)
+    assert isinstance(obj, DictValue)
+    assert [getattr(i, 'name', None) for i in obj.items] == ['a', None, 'c']
+    assert isinstance(obj.items[1], UnpackValue) and obj.items[1].double
 
 
 # ── 模板 ──────────────────────────────────────────────
@@ -225,7 +237,7 @@ def test_parse_template_call() -> None:
     call = Parser._parse_template_call(s, col, name_tok)
     assert isinstance(call, TemplateCallValue)
     assert call.template_name == 'X'
-    assert list(call.named_args) == ['a']
+    assert [s.name for s in call.named_args if isinstance(s, NamedArg)] == ['a']
     assert len(call.positional_args) == 1
 
 

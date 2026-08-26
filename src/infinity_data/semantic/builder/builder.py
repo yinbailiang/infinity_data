@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import decimal
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from itertools import product
 from typing import Any, cast
 
@@ -32,6 +32,7 @@ from infinity_data.parser import (
     Field,
     FileImportStmt,
     LiteralValue,
+    NamedArg,
     TemplateCallValue,
     TemplateDef,
     TemplateImportStmt,
@@ -448,19 +449,21 @@ class AstBuilder:
                     return self._convert_literal(tok)
                 case DollarValue(name=n, type_cast=tc, source=src):
                     return self._resolve_dollar(n, tc, path, src, scope)
-                case DictValue(fields=fs, constraints=cs, unpacks=ups):
+                case DictValue(items=its, constraints=cs):
                     std_fields: list[StdField] = []
-                    # **expr 解包：目标必须是 dict，展开为键值对（disjoint merge 查重在 _finalize_object）
-                    for up in ups:
-                        rv = self._resolve_value(up.value, path, scope)
-                        fields = self._unpack_dict(rv, up.source, path)
-                        if fields is not None:
-                            std_fields.extend(fields)
-                    for f in fs:
-                        child = f'{path}.{f.name}' if path else f.name
-                        sf = self._build_field(f, path=child, scope=scope)
-                        if sf is not None:
-                            std_fields.append(sf)
+                    # **expr 解包与显式字段按源码顺序处理：解包展开为键值对，
+                    # disjoint merge「保留先到者」查重在 _finalize_object（§2.7）
+                    for it in its:
+                        if isinstance(it, UnpackValue):
+                            rv = self._resolve_value(it.value, path, scope)
+                            fields = self._unpack_dict(rv, it.source, path)
+                            if fields is not None:
+                                std_fields.extend(fields)
+                        else:
+                            child = f'{path}.{it.name}' if path else it.name
+                            sf = self._build_field(it, path=child, scope=scope)
+                            if sf is not None:
+                                std_fields.append(sf)
                     # dict 结构级约束（作用于该字面量整体）：解析后挂节点，不执行
                     specs, diags = resolve_constraint_list(cs, scope)
                     self._collector.extend(diags)
@@ -488,17 +491,13 @@ class AstBuilder:
                     template_name=tn,
                     positional_args=pa,
                     named_args=na,
-                    unpack_args=upa,
-                    unpack_kwargs=upk,
                     axis_positional=axp,
                     axis_named=axn,
                     axis_unpack_kwargs=axu,
                     propagate=prop,
                     cartesian=cart,
                 ):
-                    return self._expand_template_call(
-                        tn, pa, na, upa, upk, axp, axn, axu, prop, cart, path, raw.source, scope
-                    )
+                    return self._expand_template_call(tn, pa, na, axp, axn, axu, prop, cart, path, raw.source, scope)
                 case ErrorValue():
                     # 值解析失败已在语法层报告（parse.value_field / parse.unrecognized_value），不重复
                     return None
@@ -645,10 +644,8 @@ class AstBuilder:
     def _expand_template_call(
         self,
         template_name: str,
-        positional_args: list[Value],
-        named_args: dict[str, Value],
-        unpack_args: list[UnpackValue],
-        unpack_kwargs: list[UnpackValue],
+        positional_args: list[Value | UnpackValue],
+        named_args: list[NamedArg | UnpackValue],
         axis_positional: frozenset[int],
         axis_named: frozenset[str],
         axis_unpack_kwargs: frozenset[int],
@@ -667,26 +664,36 @@ class AstBuilder:
 
         每个展开实例是完整模板实例（默认值注入 + 约束照常）。
         """
-        # 收集本调用自身的轴值（参数级 ...，每个轴解析为 list）
+        # 收集本调用自身的轴值（参数级 ...，每个轴解析为 list）。
+        # 轴只可能标在显式位置/命名参数上（*expr / **expr 解包项不是轴，解析器保证）
         axes: list[tuple[tuple[str, str | int], StdArray]] = []
         for i in sorted(axis_positional):
-            arr = self._resolve_axis(positional_args[i], scope, source, path, template_name)
+            arg = positional_args[i]
+            assert not isinstance(arg, UnpackValue), '展开轴不能是 *expr 解包项'
+            arr = self._resolve_axis(arg, scope, source, path, template_name)
             if arr is not None:
                 axes.append((('pos', i), arr))
+        # 显式命名参数轴（name = value...，按名排序保持确定性）
         for k in sorted(axis_named):
-            arr = self._resolve_axis(named_args[k], scope, source, path, template_name)
+            slot = next((s for s in named_args if isinstance(s, NamedArg) and s.name == k), None)
+            if slot is None:
+                continue
+            arr = self._resolve_axis(slot.value, scope, source, path, template_name)
             if arr is not None:
                 axes.append((('named', k), arr))
+        # **expr 解包轴（**expr...：list[dict] 逐元素解包）
         for j in sorted(axis_unpack_kwargs):
-            arr = self._resolve_axis(unpack_kwargs[j].value, scope, source, path, template_name)
+            slot = named_args[j]
+            assert isinstance(slot, UnpackValue), '** 解包轴槽必须是 UnpackValue'
+            arr = self._resolve_axis(slot.value, scope, source, path, template_name)
             if arr is not None:
                 axes.append((('unpack', j), arr))
 
         # 传播轴：参数值是带调用级 ... 的模板调用 → 其展开结果（list）作为本调用的轴。
         # 内层无展开源（结果非 list，expand_no_source 已在内层报告）→ 用解析值替换参数，
         # 避免外层单次实例化时二次解析、重复报错。
-        pos_args: list[Value | StdValue] = list(positional_args)
-        named: dict[str, Value | StdValue] = dict(named_args)
+        pos_args: list[Value | UnpackValue | StdValue] = list(positional_args)
+        named: list[NamedArg | UnpackValue] = list(named_args)
         for i, arg in enumerate(pos_args):
             if i in axis_positional:
                 continue
@@ -696,23 +703,24 @@ class AstBuilder:
                     axes.append((('pos', i), rv))
                 elif rv is not None:
                     pos_args[i] = rv
-        for k, arg in named.items():
-            if k in axis_named:
+        for i, slot in enumerate(named):
+            if isinstance(slot, UnpackValue):
+                continue  # ** 解包项不参与传播
+            if slot.name in axis_named:
                 continue
-            if isinstance(arg, TemplateCallValue) and arg.propagate:
-                rv = self._resolve_value(arg, path, scope)
+            if isinstance(slot.value, TemplateCallValue) and slot.value.propagate:
+                rv = self._resolve_value(slot.value, path, scope)
                 if isinstance(rv, StdArray):
-                    axes.append((('named', k), rv))
+                    axes.append((('named', slot.name), rv))
                 elif rv is not None:
-                    named[k] = rv
+                    # 用解析值替换该槽（保持槽位顺序）
+                    named[i] = NamedArg(name=slot.name, value=cast(Value, rv), source=slot.source)
 
         if not axes:
             # 调用级 ^ / ... 但无任何展开源（自身无轴、也无内层传播而来）→ 报错
             if propagate or cartesian:
                 self._err('template.expand_no_source', {'template': template_name}, source, path)
-            return self._instantiate_once(
-                template_name, pos_args, named, unpack_args, unpack_kwargs, path, source, scope
-            )
+            return self._instantiate_once(template_name, pos_args, named, path, source, scope)
 
         # 组合：zip（等长配对）或笛卡尔积（全组合，首轴最慢变化）
         if cartesian:
@@ -751,8 +759,8 @@ class AstBuilder:
 
         results: list[StdValue] = []
         for combo in combos:
-            pa, na, upa, upk = self._build_expand_args(pos_args, named, unpack_args, unpack_kwargs, axes, combo)
-            results.append(self._instantiate_once(template_name, pa, na, upa, upk, path, source, scope))
+            pa, na = self._build_expand_args(pos_args, named, axes, combo)
+            results.append(self._instantiate_once(template_name, pa, na, path, source, scope))
         return StdArray(elements=results, source=source)
 
     def _resolve_axis(
@@ -774,22 +782,20 @@ class AstBuilder:
 
     @staticmethod
     def _build_expand_args(
-        positional_args: list[Value | StdValue],
-        named_args: dict[str, Value | StdValue],
-        unpack_args: list[UnpackValue],
-        unpack_kwargs: list[UnpackValue],
+        positional_args: list[Value | UnpackValue | StdValue],
+        named_args: list[NamedArg | UnpackValue],
         axes: list[tuple[tuple[str, str | int], StdArray]],
         combo: tuple[StdValue, ...],
-    ) -> tuple[list[Value | StdValue], dict[str, Value | StdValue], list[UnpackValue], list[UnpackValue]]:
+    ) -> tuple[list[Value | UnpackValue | StdValue], list[NamedArg | UnpackValue]]:
         """把组合元素替换进轴参数位，构造单次调用的参数视图。
 
-        ``**`` 解包轴：元素（dict）字段并入命名参数，移除该项（§2.8 轴与解包叠加）。
+        ``**`` 解包轴：元素（dict）字段并入命名参数，移除该项；
+        并入字段在**原槽位**展开（保持源码顺序，§2.8 轴与解包叠加）。
         """
-        pa: list[Value | StdValue] = list(positional_args)
-        na: dict[str, Value | StdValue] = dict(named_args)
-        upa = list(unpack_args)
-        upk = list(unpack_kwargs)
-        unpack_removed: set[int] = set()
+        pa: list[Value | UnpackValue | StdValue] = list(positional_args)
+        na: list[NamedArg | UnpackValue] = list(named_args)
+        taken = {s.name for s in na if isinstance(s, NamedArg)}
+        slot_merges: dict[int, list[NamedArg]] = {}
         for (axis_spec, _arr), elem in zip(axes, combo):
             kind, idx = axis_spec
             if kind == 'pos':
@@ -797,25 +803,39 @@ class AstBuilder:
                 pa[idx] = elem
             elif kind == 'named':
                 assert isinstance(idx, str)
-                na[idx] = elem
+                # 按名替换命名参数槽的值（保持槽位顺序）
+                for i, slot in enumerate(na):
+                    if isinstance(slot, NamedArg) and slot.name == idx:
+                        na[i] = NamedArg(name=slot.name, value=cast(Value, elem), source=slot.source)
+                        break
             else:  # unpack 轴：元素（dict）字段并入命名参数
                 assert isinstance(idx, int)
+                slot = na[idx]
+                assert isinstance(slot, UnpackValue)
+                merged: list[NamedArg] = []
                 if isinstance(elem, StdObject):
                     for f in elem.fields:
-                        if f.value is not None and f.name not in na:
-                            na[f.name] = f.value
-                unpack_removed.add(idx)
-        if unpack_removed:
-            upk = [u for i, u in enumerate(upk) if i not in unpack_removed]
-        return pa, na, upa, upk
+                        if f.value is not None and f.name not in taken:
+                            taken.add(f.name)
+                            # 并入字段的 source 指向 **expr... 槽位（诊断定位）
+                            merged.append(NamedArg(name=f.name, value=cast(Value, f.value), source=slot.source))
+                slot_merges[idx] = merged
+        # 移除 ** 解包轴槽，在其原位置展开合并字段（保持源码顺序）
+        if slot_merges:
+            out: list[NamedArg | UnpackValue] = []
+            for i, s in enumerate(na):
+                if i in slot_merges:
+                    out.extend(slot_merges[i])
+                else:
+                    out.append(s)
+            na = out
+        return pa, na
 
     def _instantiate_once(
         self,
         template_name: str,
-        positional_args: Sequence[Value | StdValue],
-        named_args: Mapping[str, Value | StdValue],
-        unpack_args: list[UnpackValue],
-        unpack_kwargs: list[UnpackValue],
+        positional_args: Sequence[Value | UnpackValue | StdValue],
+        named_args: Sequence[NamedArg | UnpackValue],
         path: str,
         source: SourceRange | None,
         scope: Scope,
@@ -840,13 +860,19 @@ class AstBuilder:
 
         required = [tf for tf in template.fields if tf.default_value is None]
 
-        # ── 位置参数：显式 + *expr 解包（list → 逐个位置参数）──
-        expanded_positional: list[Value | StdValue] = list(positional_args)
-        for up in unpack_args:
-            rv = self._resolve_value(up.value, path, scope)
-            items = self._unpack_list(rv, up.source, path)
-            if items is not None:
-                expanded_positional.extend(items)
+        # ── 位置参数：显式 + *expr 解包（list → 逐个位置参数），保持源码顺序（§2.7）──
+        # 解析器把 *expr 解包项与显式位置参数按源码顺序合并存进 positional_args：
+        # 解包项（UnpackValue）在此展开，显式值直接进入 → 顺序与书写一致
+        # （如 Test(*[1,2,3], 4, 5, 6) ⟹ [1,2,3,4,5,6]，而非 [4,5,6,1,2,3]）
+        expanded_positional: list[Value | StdValue] = []
+        for pa in positional_args:
+            if isinstance(pa, UnpackValue):
+                rv = self._resolve_value(pa.value, path, scope)
+                items = self._unpack_list(rv, pa.source, path)
+                if items is not None:
+                    expanded_positional.extend(items)
+            else:
+                expanded_positional.append(pa)
 
         # 模板配置 positional=false：位置参数违规报错，但值仍绑定必填字段
         # （放宽必填绑定：只报 positional_disabled 一条，避免 missing_required 级联）
@@ -861,16 +887,25 @@ class AstBuilder:
                 )
             )
 
-        # ── 命名参数：显式 + **expr 解包（dict → 键值对）──
+        # ── 命名参数：显式 + **expr 解包（dict → 键值对），保持源码顺序（§2.7）──
+        # 解析器把 **expr 解包项与显式命名参数按源码顺序合并存进 named_args：
+        # 解包项（UnpackValue）在此展开，显式命名参数（NamedArg）直接进入 →
+        # 键冲突「保留先到者」（disjoint merge）与书写顺序一致
         # 未知命名参数：extra_named_vars 收集（与 allow_extra 互斥）；否则 allow_extra/报错
         declared = {tf.name for tf in template.fields}
         named_vars = template.config.extra_named_vars
         if named_vars is not None and named_vars not in declared:
             named_vars = None  # 定义时已报 variadic_target_missing（_check_variadic_config）
-        param_values: dict[str, Value | StdValue] = dict(named_args)
+        param_values: dict[str, Value | StdValue] = {}
         extra_args: dict[str, tuple[Value | StdValue, SourceRange | None]] = {}
         extra_named: dict[str, Value | StdValue] = {}
-        for name, arg_val in named_args.items():
+
+        def _bind_named(name: str, arg_val: Value | StdValue, arg_source: SourceRange | None) -> None:
+            """按名绑定命名参数：已绑定 / 已收集 → 重复键（先到者保留）；否则走声明/收集/放行。"""
+            child = f'{path}.{name}' if path else name
+            if name in param_values or name in extra_args or name in extra_named:
+                self._err('dict.duplicate_key', {'name': name}, arg_source, child)
+                return
             if name not in declared:
                 if named_vars is not None:
                     extra_named[name] = arg_val
@@ -881,36 +916,24 @@ class AstBuilder:
                     self._err(
                         'template.unknown_argument',
                         {'template': template_name, 'arg': name},
-                        source,
-                        path,
+                        arg_source,
+                        child,
                     )
-        for up in unpack_kwargs:
-            rv = self._resolve_value(up.value, path, scope)
-            fields = self._unpack_dict(rv, up.source, path)
-            if fields is None:
-                continue
-            for f in fields:
-                if f.value is None:
-                    continue  # 防御：解包字段值缺失（理论不可达）
-                child = f'{path}.{f.name}' if path else f.name
-                if f.name in param_values or f.name in extra_args:
-                    # 解包键与已有参数冲突 → 重复键（disjoint merge）
-                    self._err('dict.duplicate_key', {'name': f.name}, up.source, child)
+            else:
+                param_values[name] = arg_val
+
+        for slot in named_args:
+            if isinstance(slot, UnpackValue):
+                rv = self._resolve_value(slot.value, path, scope)
+                fields = self._unpack_dict(rv, slot.source, path)
+                if fields is None:
                     continue
-                if f.name not in declared:
-                    if named_vars is not None:
-                        extra_named[f.name] = f.value
-                    elif template.config.allow_extra:
-                        extra_args[f.name] = (f.value, f.source)
-                    else:
-                        self._err(
-                            'template.unknown_argument',
-                            {'template': template_name, 'arg': f.name},
-                            up.source,
-                            child,
-                        )
-                else:
-                    param_values[f.name] = f.value
+                for f in fields:
+                    if f.value is None:
+                        continue  # 防御：解包字段值缺失（理论不可达）
+                    _bind_named(f.name, f.value, slot.source)
+            else:  # 显式命名参数（值可能是展开轴替换来的 StdValue）
+                _bind_named(slot.name, slot.value, slot.source)
         if named_vars is not None and extra_named:
             # 收集未声明命名参数为 dict 字段（约束由字段声明承担，§2.9）
             param_values[named_vars] = StdObject(

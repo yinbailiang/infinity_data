@@ -84,6 +84,11 @@ EofToken 后 `peek()` 仍会返回 `NoNextType`，相关守卫只是从"兜底"�
 语义层对 `ErrorValue` **不再重复报告**（`_resolve_value` 直接返回 `None`）。
 曾有一层 `value.invalid` 在语义层重报 parser 产物，属跨层重复，已删除。
 
+**错误节点序列化容错**：`ErrorStatement` / `ErrorValue` / `ErrorConstraint` 的
+`canonical()` 输出 `error("message")` 占位符（**不抛异常**）——错误节点是解析失败
+恢复产物，对应源码本就无效、无法还原为等价 AST；canonical 仅作容错（模板真名哈希
+/ 调试 / LSP 提示），不承诺 round-trip，`error(...)` 也不是可解析的模板调用语法。
+
 ---
 
 ## 3. 未闭合括号的健壮性：两级报告
