@@ -1,0 +1,36 @@
+# InfinityData 转换演示（infd-cov）—— 一个干净的 .infd 配置
+# 运行: uv run infd-cov examples/app.infd            → YAML
+#        uv run infd-cov examples/app.infd -f json   → JSON
+#        uv run infd-cov examples/app.infd --extract web.spec → 提取子路径
+
+#env: LOG_LEVEL "info"
+!env import LOG_LEVEL as log_level
+
+~Server(description="服务端点配置") {
+    name: str
+    host: str = "0.0.0.0"
+    port: <int, range(1, 65535)> = 80
+    tls: bool = false
+}
+
+~Database {
+    name: str
+    pool: <int, range(1, 100)> = 10
+    url: str = "postgres://localhost/db"
+}
+
+app {
+    name = "demo"
+    log_level = $log_level as str
+    debug = false
+    servers = [
+        Server(name="api", port=443),
+        Server(name="metrics", port=9090),
+    ]
+    database = Database(name="primary", pool=20)
+    features {
+        auth = true
+        cache_ttl: <int, range(1, 86400)> = 3600
+        retries = 3
+    }
+}

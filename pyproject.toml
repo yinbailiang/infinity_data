@@ -28,16 +28,26 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = []
 
+[project.scripts]
+infd-lsp = "infinity_data.tools.lsp.__main__:main"
+infd-cov = "infinity_data.tools.cov.__main__:main"
+
 [project.urls]
 Repository = "https://github.com/yinbailiang/infinity_data"
 Documentation = "https://github.com/yinbailiang/infinity_data#readme"
 
 [dependency-groups]
+# 工具组：cli/lsp 工具的可选运行依赖（测试/开发组保证安装，测试可依赖它们存在）
+tool = [
+    "tomli-w",   # infd-cov -f toml 输出
+    "pyyaml",    # !file 的 yaml/yml 格式导入（LSP / 编译器）
+]
 # 测试组：仅运行测试所需（CI test job 只装这组，更快）
 test = [
     "pyyaml",
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    { include-group = "tool" },
 ]
 # 开发组：lint/类型/钩子 + 测试组（本地开发与 CI pre-commit job 装这组）
 dev = [

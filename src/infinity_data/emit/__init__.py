@@ -7,7 +7,8 @@
 - **本层（emit，有损投影）** → :func:`to_json` / :func:`to_yaml` / :func:`to_toml`，
   按 :class:`EmitConfig` 控制 Decimal 编码与 noexist 标记；:func:`project_output`
   为纯 Python 值的轻量投影；:func:`restore_python` 反向**尝试还原**加载的原始
-  dict 为 :data:`~infinity_data.semantic.std.StdPythonValue`
+  dict 为 :data:`~infinity_data.semantic.std.StdPythonValue`；:func:`yaml_dump`
+  为零依赖 YAML block emitter（覆盖配置常用值，不依赖 PyYAML）
 
 **emit 不应被流水线内部使用**——内部表示一律走 semantic 的忠实转换。
 """
@@ -22,6 +23,7 @@ from infinity_data.emit.converter import (
     to_toml,
     to_yaml,
 )
+from infinity_data.emit.plain_yaml import yaml_dump
 
 __all__ = [
     'EmitConfig',
@@ -32,4 +34,5 @@ __all__ = [
     'to_json',
     'to_toml',
     'to_yaml',
+    'yaml_dump',
 ]

@@ -4,8 +4,6 @@ import json
 from decimal import Decimal
 from pathlib import PurePosixPath
 
-import pytest
-
 from infinity_data.emit import (
     EmitConfig,
     dump_to_json,
@@ -132,10 +130,9 @@ def test_to_yaml() -> None:
     assert 'i: 1' in text
 
 
-def test_to_toml_requires_tomli_w() -> None:
-    """tomli-w 未安装 → NotImplementedError（明确提示）。"""
-    with pytest.raises(NotImplementedError):
-        to_toml({'a': 1})
+def test_to_toml() -> None:
+    """tool 组保证 tomli-w 已装：to_toml 正常输出。"""
+    assert 'a' in to_toml({'a': 1})
 
 
 # ═══════════════════════════════════════════════════════════

@@ -1,0 +1,33 @@
+# InfinityData 官方 LSP 演示文件 —— 故意包含若干错误以展示诊断
+# 在 VS Code 里打开本文件即可看到波浪线（或运行 examples/lsp_demo.py）
+
+#env: DEEPSEEK_API_KEY "sk-virtual-key"
+#env: APP_TIMEOUT "100.0"
+!env import DEEPSEEK_API_KEY as ds_key
+!env import APP_TIMEOUT as timeout
+
+
+~Server(description="服务端点配置") {
+    name: str
+    host: str = "0.0.0.0"
+    port: <int, range(1, 65535)> = 80
+    tls: bool = false
+    timeout: <float, range(1.0, 360.0)> = $timeout as float
+}
+
+~Database {
+    name: str
+    pool: <int, range(1, 100)> = 10
+}
+
+model = "deepseek-v4-pro"
+base_url = "https://api.deepseek.com/v1"
+api_key = $ds_key as str
+main_server = Server(name="primary", host="primary.local", port=443)
+
+# ── 故意错误区 ──────────────────────────────────────────────
+
+bad_port: <int, range(1, 100)> = 200      # 超出 range(1, 100)
+ghost = Ghost()                            # 未定义模板 Ghost
+db = Database()                            # 缺少必填字段 name
+undefined_ref = $NOT_IMPORTED              # $ 引用未定义（警告）
