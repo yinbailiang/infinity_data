@@ -172,6 +172,12 @@ name = "infinity-data"
 version = "3.1.1"
 source = { editable = "." }
 
+[package.optional-dependencies]
+tool = [
+    { name = "pyyaml" },
+    { name = "tomli-w" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "interrogate" },
@@ -195,6 +201,11 @@ tool = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "pyyaml", marker = "extra == 'tool'" },
+    { name = "tomli-w", marker = "extra == 'tool'" },
+]
+provides-extras = ["tool"]
 
 [package.metadata.requires-dev]
 dev = [

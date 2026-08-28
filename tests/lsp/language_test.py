@@ -157,6 +157,30 @@ def test_completion_template_field_inside_call() -> None:
     assert host['insertText'] == 'host = '
 
 
+def test_completion_template_field_after_newline() -> None:
+    """换行后输入部分字段名（na）→ 仍补全该模板字段。"""
+    text = '~Server {\n  name: str\n  port: int = 80\n}\ns = Server(\n  na\n)\n'
+    items = language.completion_items(text, 'test.infd', {'line': 5, 'character': 3})
+    labels = [it['label'] for it in items]
+    assert labels == ['name']  # 前缀过滤，不被伪嵌套调用 na(...) 干扰
+
+
+def test_completion_template_field_unterminated() -> None:
+    """未闭合模板调用（无右括号）内输入字段名 → 仍补全。"""
+    text = '~Server {\n  name: str\n  port: int = 80\n}\ns = Server(\n  na\n'
+    items = language.completion_items(text, 'test.infd', {'line': 5, 'character': 3})
+    labels = [it['label'] for it in items]
+    assert labels == ['name']
+
+
+def test_completion_template_field_excludes_used() -> None:
+    """已填写的参数名不再提示（只提剩余字段）。"""
+    text = '~Server {\n  name: str\n  port: int = 80\n}\ns = Server(\n  name = "x"\n  \n)\n'
+    items = language.completion_items(text, 'test.infd', {'line': 6, 'character': 3})
+    labels = {it['label'] for it in items}
+    assert labels == {'port'}
+
+
 def test_completion_template_field_required_marked() -> None:
     """无默认值的模板字段 → 补全项标记必填。"""
     text = TEMPLATE_TEXT
@@ -229,6 +253,117 @@ def test_hover_template_description_metadata() -> None:
     h = language.hover(text, 'test.infd', {'line': 0, 'character': 3})
     assert h is not None
     assert '服务配置' in h['contents']['value']
+
+
+# ── 子字段 / 模板实例 / 模板参数 / $ 变量 ──────────────────
+
+
+HOVER_TEXT = """#env: MY_KEY "sk-virtual"
+!env import MY_KEY as k
+~Server {
+    name: str
+    port: int = 80
+}
+!var {a = 1, b = 2} import . as obj
+app {
+    servers = [Server(name="api", port=443)]
+    features {
+        auth = true
+    }
+    x = $k as str
+    y = $obj
+}
+"""
+
+
+def test_hover_subfield_value() -> None:
+    """嵌套 dict 子字段 → 编译产物投影。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 9, 'character': 10})  # auth
+    assert h is not None
+    assert 'auth' in h['contents']['value']
+    assert 'true' in h['contents']['value']
+
+
+def test_hover_subfield_object() -> None:
+    """子对象字段 → 编译产物投影（含下级）。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 9, 'character': 7})  # features
+    assert h is not None
+    assert 'features' in h['contents']['value']
+    assert 'auth' in h['contents']['value']
+
+
+def test_hover_template_instance() -> None:
+    """被实例化的模板调用 → 模板提示（骨架）在前 + 实例预览在后。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 8, 'character': 17})  # Server
+    assert h is not None
+    value = h['contents']['value']
+    # 模板提示（骨架）
+    assert '~Server' in value
+    assert '必填' in value
+    # 实例预览
+    assert '模板实例' in value
+    assert 'api' in value
+    assert '443' in value
+    # 顺序：模板提示在实例预览之前
+    assert value.index('~Server') < value.index('模板实例')
+
+
+def test_hover_template_argument_name() -> None:
+    """模板调用命名参数名 → 该参数编译值。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 8, 'character': 23})  # name= 关键字
+    assert h is not None
+    assert '模板参数' in h['contents']['value']
+    assert 'api' in h['contents']['value']
+
+
+def test_hover_template_argument_value() -> None:
+    """模板调用参数值字面量 → 编译值。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 8, 'character': 29})  # "api"
+    assert h is not None
+    assert 'api' in h['contents']['value']
+
+
+def test_hover_dollar_call_point() -> None:
+    """$ 引用（调用点）→ 命名空间值。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 12, 'character': 10})  # $k
+    assert h is not None
+    assert 'sk-virtual' in h['contents']['value']
+
+
+def test_hover_dollar_definition_point() -> None:
+    """!env 导入的名字/别名（定义点）→ 命名空间值。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 1, 'character': 22})  # 别名 k
+    assert h is not None
+    assert 'sk-virtual' in h['contents']['value']
+    # 原名 MY_KEY 也能预览
+    h2 = language.hover(HOVER_TEXT, 'test.infd', {'line': 1, 'character': 14})
+    assert h2 is not None
+    assert 'sk-virtual' in h2['contents']['value']
+
+
+def test_hover_var_definition_point() -> None:
+    """!var 别名（定义点）→ 求值结果。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 6, 'character': 34})  # obj
+    assert h is not None
+    assert 'a' in h['contents']['value']
+    assert '1' in h['contents']['value']
+
+
+def test_hover_dollar_call_point_bare() -> None:
+    """裸 $ 引用（无 as 转换）→ 命名空间值。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 13, 'character': 10})  # $obj
+    assert h is not None
+    assert 'b' in h['contents']['value']
+    assert '2' in h['contents']['value']
+
+
+def test_hover_template_def_field() -> None:
+    """模板定义内字段 → 类型 + 默认值。"""
+    h = language.hover(HOVER_TEXT, 'test.infd', {'line': 4, 'character': 6})  # port
+    assert h is not None
+    assert '模板字段' in h['contents']['value']
+    assert 'int' in h['contents']['value']
+    assert '80' in h['contents']['value']
 
 
 # ═══════════════════════════════════════════════════════════

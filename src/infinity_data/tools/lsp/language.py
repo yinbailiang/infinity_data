@@ -22,6 +22,8 @@ import decimal
 import json
 import os
 import re
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -41,18 +43,25 @@ from infinity_data.parser import (
     EnvImportStmt,
     Field,
     FileImportStmt,
-    JsonPathIndex,
-    JsonPathKey,
     LiteralValue,
     NamedArg,
     TemplateCallValue,
     TemplateDef,
+    TemplateField,
     UnpackValue,
     VarStmt,
 )
-from infinity_data.semantic.jsonpath import apply_json_path
+from infinity_data.sandbox import Sandbox
+from infinity_data.semantic import AstBuilder, ImportResolver, TemplateGraphResolver
 from infinity_data.semantic.registry import ConstraintRegistry
-from infinity_data.semantic.std import StdLiteral, std_to_python
+from infinity_data.semantic.std import (
+    StdArray,
+    StdField,
+    StdLiteral,
+    StdObject,
+    StdValue,
+    std_to_python,
+)
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
 from infinity_data.tokenizer.models.tokens import NoexistToken, NullToken
 from infinity_data.tokenizer.tokenizer import RawTokenizer
@@ -347,11 +356,15 @@ def analyze(text: str, file_path: str) -> list[dict[str, Any]]:
     return diags
 
 
-def _document(text: str, file_path: str) -> Any:
-    """编译并返回 StdDocument（scope / templates 供补全、悬停、定义用）。"""
-    return compile_source(
-        text, file_path=file_path, sandbox=SandboxConfig.development(), env=virtual_env(text)
-    ).document
+def _document(text: str, file_path: str, sandbox: SandboxConfig | None = None) -> Any:
+    """编译并返回 StdDocument（scope / templates 供补全、悬停、定义用）。
+
+    ``sandbox`` 缺省用 development()（补全沿用）；hover 传 full_access()
+    与 analyze 的授权一致（跨目录 !from / !file 也能解析）。
+    """
+    if sandbox is None:
+        sandbox = SandboxConfig.development()
+    return compile_source(text, file_path=file_path, sandbox=sandbox, env=virtual_env(text)).document
 
 
 # ── 文本辅助 ──────────────────────────────────────────
@@ -401,10 +414,23 @@ def _namespace_names(text: str, file_path: str) -> set[str]:
 # ── 模板字段补全（光标在 TemplateName(...) 参数内 → 提示字段名）────
 
 
-def _template_call_at(text: str, file_path: str, position: dict[str, Any]) -> TemplateCallValue | None:
-    """返回覆盖光标位置的模板调用（嵌套时取最内层），无则 None。"""
-    file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
-    doc, _ = parse_source(file)
+def _template_call_at(
+    text: str,
+    file_path: str,
+    position: dict[str, Any],
+    doc: Any | None = None,
+    known: set[str] | None = None,
+) -> TemplateCallValue | None:
+    """返回覆盖光标位置的模板调用（嵌套时取最内层），无则 None。
+
+    ``doc``：可传入已解析的 Document 避免重复 parse（hover 复用）。
+    ``known``：可见模板名集合；传入时**跳过名字不在其中的调用**——部分输入的
+    字段名（如 ``Server(\n na`` 里的 ``na``）会被解析器当成伪嵌套模板调用，
+    跳过它才能定位到真正的 ``Server(...)``。缺省 None 时保持原行为（取最内层）。
+    """
+    if doc is None:
+        file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
+        doc, _ = parse_source(file)
     cursor = _pos_index(text, position)
     best: TemplateCallValue | None = None
     best_size = 1 << 60
@@ -414,10 +440,11 @@ def _template_call_at(text: str, file_path: str, position: dict[str, Any]) -> Te
         if isinstance(v, TemplateCallValue):
             s = v.source
             if s.start.index <= cursor <= s.end.index:
-                size = s.end.index - s.start.index
-                if size < best_size:
-                    best = v
-                    best_size = size
+                if known is None or v.template_name in known:
+                    size = s.end.index - s.start.index
+                    if size < best_size:
+                        best = v
+                        best_size = size
             for a in v.positional_args:
                 visit(a)
             for a in v.named_args:
@@ -516,13 +543,16 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
 
     # 模板调用参数内 → 补全该模板的字段名（最高优先级）
     doc = _document(text, file_path)
-    call = _template_call_at(text, file_path, position)
+    call = _template_call_at(text, file_path, position, known=set(doc.scope))
     if call is not None:
         key = doc.scope.get(call.template_name)
         if key is not None:
             tpl = doc.templates.get(key)
             if tpl is not None:
                 fields = _template_field_items(tpl)
+                # 已用参数名不再提示（避免重复填写）
+                used = {a.name for a in call.named_args if isinstance(a, NamedArg)}
+                fields = [it for it in fields if it['label'] not in used]
                 if word:
                     fields = [it for it in fields if it['label'].startswith(word)]
                 return fields
@@ -595,27 +625,6 @@ def _json_default(o: Any) -> Any:
     raise TypeError(f'无法 JSON 序列化: {type(o).__name__}')
 
 
-def _field_preview(doc: Any, word: str) -> tuple[str, Any] | None:
-    """顶层字段 → (标题, 值)：取上游编译产物 root + jsonpath 投影 + 降维。
-
-    模板展开（``...`` 轴 / 笛卡尔积）、解包（``*`` / ``**``）、``!var`` 求值与
-    默认值填充都已在编译期完成并落在 ``document.root`` 里——这里只做投影与
-    降维（``apply_json_path`` + ``std_to_python``/``project_output``），不重复实现发射逻辑。
-    字段不在产物中（编译失败 / 未构建成功）→ None。
-    """
-    try:
-        # JsonPathKey.source 为必需字段（上游 dataclass），投影用不上，传空占位
-        key = JsonPathKey(source=SourceRange.empty(), key=word)
-        segments: list[JsonPathKey | JsonPathIndex] = [key]
-        std = apply_json_path(doc.root, segments)
-    except (KeyError, IndexError, TypeError):
-        return None
-    if isinstance(std, StdLiteral) and std.kind == 'noexist':
-        return ('字段值（编译结果）', '<noexist>')
-    # 上游 3.x：忠实转换 → 有损输出投影（path→字符串），Decimal 由预览层转 float
-    return ('字段值（编译结果）', project_output(std_to_python(std, keep_noexist=False)))
-
-
 def _template_preview(tpl: TemplateDef) -> str:
     """模板字段默认值 → 结构骨架 JSON（hover 预览，**不实例化**）。
 
@@ -673,48 +682,281 @@ def _structure_value(v: Any) -> Any:
     return '…'
 
 
+# ── 悬停增强：$ 命名空间 / 编译产物树节点定位 ─────────────
+
+
+def _namespaces(text: str, file_path: str) -> dict[str, StdValue]:
+    """解析当前文件的 ``$`` 命名空间（!env / !file / !var 别名 → 值）。
+
+    复用公开的 resolver + builder（与 pipeline Phase 1/2a 一致）：resolver 只含
+    !env/!file，!var 由 builder 求值后写入同一 scope.namespaces。
+    hover 尽力而为：任何失败（沙盒 / 文件 IO / 导入错误）→ 空 dict。
+    """
+    file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
+    collector = DiagnosticCollector()
+    doc, _ = parse_source(file, collector)
+    try:
+        config = replace(SandboxConfig.full_access(), env=virtual_env(text))
+        resolver = TemplateGraphResolver(
+            registry=None,
+            import_resolver=ImportResolver(sandbox=Sandbox(config=config, base_dir=file.root_path)),
+            schema=None,
+        )
+        context = resolver.resolve(doc, file, collector)
+        AstBuilder().build(doc, context, collector)
+        return dict(context.root_scope.namespaces)
+    except Exception:  # noqa: BLE001 - hover 尽力而为，不崩溃
+        return {}
+
+
+def _visit_std_tree(root: Any, fn: Callable[[Any], None]) -> None:
+    """遍历编译产物树（StdValue + StdField），对每个节点调 fn(node)。"""
+
+    def visit(v: Any) -> None:
+        fn(v)
+        if isinstance(v, StdObject):
+            for f in v.fields:
+                visit(f)
+                if f.value is not None:
+                    visit(f.value)
+        elif isinstance(v, StdArray):
+            for e in v.elements:
+                visit(e)
+
+    visit(root)
+
+
+def _node_at(root: Any, cursor: int, file_path: str) -> Any:
+    """编译产物树中覆盖光标（码点 index）的最深 StdNode（仅当前文件 source）。"""
+    best: Any = None
+    best_size = 1 << 60
+
+    def consider(v: Any) -> None:
+        nonlocal best, best_size
+        src = getattr(v, 'source', None)
+        if (
+            src is not None
+            and src.file.name == file_path
+            and src.end.index > src.start.index
+            and src.start.index <= cursor <= src.end.index
+        ):
+            size = src.end.index - src.start.index
+            if size < best_size:
+                best = v
+                best_size = size
+
+    _visit_std_tree(root, consider)
+    return best
+
+
+def _value_at_source(root: Any, start_index: int, file_path: str) -> Any:
+    """编译树中 source 起点 == start_index 的最深**值节点**（模板参数值定位）。
+
+    只匹配值节点（StdLiteral / StdObject / StdArray），跳过 StdField 包装——
+    实例字段的 source 与值表达式起点相同，取字段会给预览层喂非值对象。
+    """
+    best: Any = None
+    best_size = 1 << 60
+
+    def consider(v: Any) -> None:
+        nonlocal best, best_size
+        if isinstance(v, StdField):
+            return
+        src = getattr(v, 'source', None)
+        if src is not None and src.file.name == file_path and src.start.index == start_index:
+            size = src.end.index - src.start.index
+            if size < best_size:
+                best = v
+                best_size = size
+
+    _visit_std_tree(root, consider)
+    return best
+
+
+def _named_arg_at(call: TemplateCallValue, cursor: int, word: str) -> NamedArg | None:
+    """模板调用中光标所在命名参数槽（且名字 == word）。"""
+    for a in call.named_args:
+        if isinstance(a, NamedArg) and a.name == word and a.source.start.index <= cursor <= a.source.end.index:
+            return a
+    return None
+
+
+def _namespace_key_at(doc: Any, cursor: int, word: str) -> str | None:
+    """光标所在导入项的名字/别名 → 命名空间键（!env/!file/!var），无则 None。"""
+    for stmt in doc.statements:
+        if isinstance(stmt, EnvImportStmt):
+            for item in stmt.items:
+                if item.source.start.index <= cursor <= item.source.end.index and word in (item.alias, item.name):
+                    return item.alias or item.name
+        elif isinstance(stmt, FileImportStmt):
+            for item in stmt.imports:
+                if item.source.start.index <= cursor <= item.source.end.index and word == item.alias:
+                    return item.alias
+        elif isinstance(stmt, VarStmt):
+            if stmt.source.start.index <= cursor <= stmt.source.end.index and word == stmt.alias:
+                return stmt.alias
+    return None
+
+
+def _template_field_at(doc: Any, cursor: int) -> tuple[TemplateDef | None, TemplateField | None]:
+    """光标在 ~Template 定义内 → (TemplateDef, 该处字段 | None)。"""
+    for stmt in doc.statements:
+        if isinstance(stmt, TemplateDef) and stmt.source.start.index <= cursor <= stmt.source.end.index:
+            for f in stmt.fields:
+                if f.source.start.index <= cursor <= f.source.end.index:
+                    return stmt, f
+            return stmt, None
+    return None, None
+
+
+def _std_preview(value: Any) -> str:
+    """StdValue → 预览 JSON 文本（noexist → 占位）。"""
+    if isinstance(value, StdLiteral) and value.kind == 'noexist':
+        return '<noexist>'
+    return _dump_json(project_output(std_to_python(value, keep_noexist=False)))
+
+
+def _value_hover(word: str, title: str, value: Any) -> dict[str, Any]:
+    """值悬停：标题 + JSON 预览。"""
+    return {
+        'contents': {
+            'kind': 'markdown',
+            'value': f'**`{word}`** — {title}\n\n```json\n{_std_preview(value)}\n```',
+        }
+    }
+
+
+def _template_skeleton_hover(tpl: TemplateDef) -> str:
+    """模板 → 结构骨架 markdown（~名 + description + JSON 骨架 + 字段列表）。"""
+    md = [f'**`~{tpl.name}`** — 模板', '']
+    desc = tpl.config.description
+    if desc:
+        md.append(desc)
+        md.append('')
+    preview = _template_preview(tpl)
+    if preview != '{}':
+        md.append('```json')
+        md.append(preview)
+        md.append('```')
+        md.append('')
+    for f in tpl.fields:
+        required = '必填' if f.default_value is None else '可选'
+        md.append(f'- `{f.name}`（{required}）')
+    return '\n'.join(md)
+
+
+def _node_hover(node: Any, word: str) -> dict[str, Any] | None:
+    """编译产物节点 → 悬停。"""
+    if isinstance(node, StdField):
+        if node.value is None:
+            return None
+        return _value_hover(word, '字段值（编译结果）', node.value)
+    if isinstance(node, StdObject):
+        title = '模板实例（编译结果）' if node.template is not None else '对象值（编译结果）'
+        return _value_hover(word, title, node)
+    if isinstance(node, StdArray):
+        return _value_hover(word, '数组值（编译结果）', node)
+    if isinstance(node, StdLiteral):
+        return _value_hover(word, '值（编译结果）', node)
+    return None
+
+
 def hover(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any] | None:
-    """悬停：内置约束 → 描述；顶层字段 → 编译产物投影；模板 → 结构骨架。"""
-    word = _word_at(text, position)
+    """悬停：约束描述 / 字段与子字段 / 模板与实例 / 模板参数 / $ 变量 / 模板骨架。
+
+    优先级：
+    1. 内置约束（word 查注册表）
+    2. ``$`` 引用调用点（光标前是 ``$``）→ 命名空间值
+    3. ~模板定义内字段（类型 + 默认值）
+    4. 模板调用命名参数名 → 该参数编译值
+    5. 编译产物树节点定位（字段/子字段/模板实例/字面量/数组）——
+       被实例化的模板：模板提示（骨架）在前 + 实例预览在后
+    6. ``$`` 定义点（!env/!file/!var 的名字/别名）→ 命名空间值
+    7. 模板名 → 结构骨架
+    """
+    word, start, _ = _word_span(text, position)
     if not word:
         return None
+    lines = text.splitlines()
+    line_no = int(position.get('line', 0))
+    line_text = lines[line_no] if 0 <= line_no < len(lines) else ''
 
+    # 1. 内置约束
     entry = _REGISTRY.lookup(word)
     if entry is not None:
         desc = entry.description or '（无描述）'
         return {'contents': {'kind': 'markdown', 'value': f'**`{word}`** — 内置约束\n\n{desc}'}}
 
-    doc = _document(text, file_path)
+    file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
+    ast, _ = parse_source(file)
+    cursor = _pos_index(text, position)
 
-    # 顶层字段 → 上游编译产物 root 直接投影（模板展开 / 解包 / !var 求值 / 默认值填充
-    # 都已在编译期完成，这里只做 jsonpath 投影 + 降维，不重复发射）
-    fv = _field_preview(doc, word)
-    if fv is not None:
-        title, obj = fv
-        preview = _dump_json(obj)
-        return {'contents': {'kind': 'markdown', 'value': f'**`{word}`** — {title}\n\n```json\n{preview}\n```'}}
+    namespaces: dict[str, StdValue] | None = None
 
-    key = doc.scope.get(word)
+    def ns() -> dict[str, StdValue]:
+        nonlocal namespaces
+        if namespaces is None:
+            namespaces = _namespaces(text, file_path)
+        return namespaces
+
+    # 2. $ 引用（调用点）
+    if start > 0 and line_text[start - 1] == '$':
+        value = ns().get(word)
+        if value is not None:
+            return _value_hover(f'${word}', '$ 变量（编译结果）', value)
+
+    # 3. ~模板定义内字段（类型 + 默认值）
+    _def_tpl, tf = _template_field_at(ast, cursor)
+    if tf is not None:
+        type_text = ', '.join(_constraint_text(c) for c in tf.constraints.constraints) or '?'
+        required = '必填' if tf.default_value is None else '可选'
+        md = [f'**`{tf.name}`** — 模板字段（{required}）', '', f'- 类型: `{type_text}`']
+        if tf.default_value is not None:
+            md.append('- 默认值:')
+            md.append('```json')
+            md.append(_dump_json(_structure_value(tf.default_value)))
+            md.append('```')
+        return {'contents': {'kind': 'markdown', 'value': '\n'.join(md)}}
+
+    doc = _document(text, file_path, sandbox=SandboxConfig.full_access())
+
+    # 4. 模板调用命名参数名 → 该参数编译值
+    call = _template_call_at(text, file_path, position, doc=ast, known=set(doc.scope))
+    if call is not None:
+        arg = _named_arg_at(call, cursor, word)
+        if arg is not None:
+            value = _value_at_source(doc.root, arg.value.source.start.index, file_path)
+            if value is not None:
+                return _value_hover(arg.name, '模板参数（编译结果）', value)
+
+    # 5. 编译产物树节点定位
+    node = _node_at(doc.root, cursor, file_path)
+    if node is not None:
+        # 被实例化的模板：模板提示（骨架）在前，实例预览在后
+        if isinstance(node, StdObject) and node.template is not None:
+            tpl = doc.templates.get(node.template)
+            if tpl is not None:
+                skeleton = _template_skeleton_hover(tpl)
+                instance = _value_hover(word, '模板实例（编译结果）', node)
+                combined = f'{skeleton}\n\n---\n\n{instance["contents"]["value"]}'
+                return {'contents': {'kind': 'markdown', 'value': combined}}
+        hv = _node_hover(node, word)
+        if hv is not None:
+            return hv
+
+    # 6. $ 定义点
+    key = _namespace_key_at(ast, cursor, word)
     if key is not None:
-        tpl = doc.templates.get(key)
+        value = ns().get(key)
+        if value is not None:
+            return _value_hover(key, '$ 变量定义（编译结果）', value)
+
+    # 7. 模板名 → 结构骨架
+    tkey = doc.scope.get(word)
+    if tkey is not None:
+        tpl = doc.templates.get(tkey)
         if tpl is not None:
-            lines = [f'**`~{tpl.name}`** — 模板', '']
-            # 模板 description 元数据（~Name(description="...")，TemplateConfig.description）
-            desc = tpl.config.description
-            if desc:
-                lines.append(desc)
-                lines.append('')
-            # 结构骨架预览（默认值填充；必填 → <必填>；不实例化嵌套调用）
-            preview = _template_preview(tpl)
-            if preview != '{}':
-                lines.append('```json')
-                lines.append(preview)
-                lines.append('```')
-                lines.append('')
-            for f in tpl.fields:
-                required = '必填' if f.default_value is None else '可选'
-                lines.append(f'- `{f.name}`（{required}）')
-            return {'contents': {'kind': 'markdown', 'value': '\n'.join(lines)}}
+            return {'contents': {'kind': 'markdown', 'value': _template_skeleton_hover(tpl)}}
     return None
 
 

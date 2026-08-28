@@ -32,6 +32,13 @@ dependencies = []
 infd-lsp = "infinity_data.tools.lsp.__main__:main"
 infd-cov = "infinity_data.tools.cov.__main__:main"
 
+[project.optional-dependencies]
+# 工具 extra：infd-lsp / infd-cov 的可选运行依赖（uv add 'infinity_data[tool]'）
+tool = [
+    "pyyaml",    # !file 的 yaml/yml 格式导入（LSP / 编译器）
+    "tomli-w",   # infd-cov -f toml 输出
+]
+
 [project.urls]
 Repository = "https://github.com/yinbailiang/infinity_data"
 Documentation = "https://github.com/yinbailiang/infinity_data#readme"

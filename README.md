@@ -9,6 +9,10 @@
 
 ## 快速使用
 
+```bash
+uv add infinity_data        # 或 pip install infinity-data
+```
+
 ```python
 from infinity_data import load, safe_load, SandboxConfig, Schema
 
@@ -33,11 +37,10 @@ else:
 随库内置两个命令行工具（`infd-lsp` 语言服务器 + `infd-cov` 配置转换器），
 零依赖手写 JSON-RPC / emitter，直接消费编译器的公开 API
 （`compile_source` / `parse_source` / `RawTokenizer` / emit / semantic）。
-它们的可选运行依赖（PyYAML / tomli-w）统一放在 **`tool` 依赖组**：
+工具的**可选运行依赖**（PyYAML / tomli-w）由 `tool` extra 提供，一次装齐：
 
 ```bash
-uv sync --group tool          # 安装 tool 组（本地开发）
-uv sync --all-groups          # 或安装全部组
+uv add 'infinity_data[tool]'   # 可选：!file 的 yaml 导入 + infd-cov -f toml 输出
 ```
 
 ### 配置转换（infd-cov）
@@ -47,7 +50,7 @@ uv sync --all-groups          # 或安装全部组
 ```bash
 infd-cov app.infd                          # → YAML（stdout，零依赖 emitter）
 infd-cov app.infd out.json -f json         # → JSON 文件
-infd-cov app.infd -f toml                  # → TOML（需 tomli-w，tool 组）
+infd-cov app.infd -f toml                  # → TOML（需 tomli-w，见 tool extra）
 infd-cov app.infd --extract web.spec       # → 点分路径提取
 cat a.infd | infd-cov -f json              # stdin → stdout
 ```
@@ -74,7 +77,7 @@ python -m infinity_data.tools.lsp
 |---|---|
 | 诊断 | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`（精确位置 + 稳定错误码 + 中文消息；UTF-16 对齐） |
 | 补全 | 命名空间（`$` 触发）+ 内置约束名 + 当前文件可见模板名 + 模板字段（含必填/可选）+ 语言关键字 |
-| 悬停 | 约束描述、**顶层字段编译产物投影**（jsonpath + std_to_python/project_output）、模板结构骨架（必填/可选 + description 元数据） |
+| 悬停 | 约束描述、**编译产物预览**（字段/子字段/模板参数，jsonpath 投影）、**被实例化的模板**（模板骨架提示在前 + 实例预览在后）、**`$` 变量值**（定义点与调用点）、模板结构骨架（必填/可选 + description 元数据） |
 | 文档大纲 | `documentSymbol`：模板定义（Class）+ 顶层字段（Property） |
 | 跳转定义 | `definition`：模板调用 / `!from` 导入 / `$` 引用（含跨文件） |
 | 语义令牌 | `semanticTokens`：直接用 `RawTokenizer` 分词（UTF-16 单元对齐；跨行多行字符串按行拆分） |
@@ -102,6 +105,21 @@ uv run python examples/lsp_demo.py   # 自动起服务器 + 走一遍握手 + �
 ```
 
 演示文件在 `examples/demo.infd`（故意含若干错误，展示诊断 / 补全 / 悬停 / 高亮）。
+
+### 虚拟环境变量（`#env` 注释）
+
+`.infd` / `.inft` 里可以用**特殊注释**声明环境变量名和虚拟值，工具（LSP / `infd-cov`）
+在当前进程缺失该变量时自动注入，避免 `env_not_set` 中止编译、吞掉同文件其他诊断：
+
+```infd
+#env: DEEPSEEK_API_KEY "sk-virtual-key"
+!env import DEEPSEEK_API_KEY as ds_key
+```
+
+- 语法：`#env: NAME "VALUE"` —— **变量名在前、虚拟值在后**
+- 真实环境变量优先：进程里已设置时用真实值，只有缺失时才用注释里的虚拟值兜底
+- 动机：`infinity_data` 沙盒在 env 未授权/未设置时会中止编译；用 `#env` 声明兜底后，
+  编辑器/CLI 始终能看到全部诊断（如约束违反、未定义模板）
 
 ## 开发
 
