@@ -191,6 +191,25 @@ def test_dollar_cast_any_import_string(tmp_path: Path) -> None:
     }
 
 
+def test_dollar_cast_structured_value_errors_and_keeps(tmp_path: Path) -> None:
+    """结构化值（list / dict）应用 as → dollar.convert_unsupported 错误 + 原样返回（容错继续）。"""
+    f = tmp_path / 'app.infd'
+    _write(
+        f,
+        '!var { a = 1 } import . as cfg\n'
+        '!var [1, 2] import . as nums\n'
+        'keep_dict = $cfg as int\n'
+        'keep_list = $nums as str\n',
+    )
+    result = load(f)
+    assert result.has_errors
+    assert [(d.severity, d.code) for d in result.diagnostics] == [
+        (Severity.ERROR, 'dollar.convert_unsupported'),
+        (Severity.ERROR, 'dollar.convert_unsupported'),
+    ]
+    assert result.value == {'keep_dict': {'a': 1}, 'keep_list': [1, 2]}
+
+
 def test_dollar_cast_str_any_literal(tmp_path: Path) -> None:
     """as str 字符串化：任意字面量按语言风格转字符串，不泄漏 Python 内部表示。
 

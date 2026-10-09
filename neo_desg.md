@@ -363,8 +363,9 @@ tags可为空，内容不做约束
 
 转换规则（`as`）:
 - **作用于任何导入空间的字符串数据**（`!env` / `!file` 含 `raw` / `!var`），与来源无关：
-  命名空间统一存 StdValue，`$name as type` 只要求值是字符串（或其他标量），
-  非字符串结构化值（list / dict）不受 `as` 影响（原样返回）
+  命名空间统一存 StdValue，`$name as type` 只要求值是字符串（或其他标量）；
+  非字符串结构化值（list / dict）应用 `as` → 错误（`dollar.convert_unsupported`），
+  容错原样返回该值并继续编译（写了 `as` 就必须转换，不静默忽略）
 - **空字面量保持传播**：`null` / `noexist` 经 `as` 转换**原样保持**（`null → null`、
   `noexist → noexist`），不做转换、不产生警告、不回退——三态可空语义不因显式
   `as` 而丢失（`noexist` 字段在输出中依旧消失）

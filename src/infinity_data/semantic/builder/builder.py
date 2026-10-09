@@ -541,6 +541,8 @@ class AstBuilder:
 
         type_cast 为显式 as bool/int/float/str 转换；source 为 ``$name`` 表达式在源码中的位置。
         本文件空间查不到 → ``dollar.undefined`` 警告取 null（不中断编译）。
+        非字符串结构化值（list / dict）应用 as → ``dollar.convert_unsupported``
+        错误 + 原样返回（容错继续编译，§1.8）。
         """
         namespace = scope.namespaces if scope is not None else {}
         if name not in namespace:
@@ -552,7 +554,15 @@ class AstBuilder:
         if type_cast is None:
             return raw
         if isinstance(raw, (StdArray, StdObject)):
-            return raw  # 结构化值 cast 不适用
+            # 结构化值（list / dict）不支持 as 转换：写了 as 就必须转换、不静默忽略——
+            # 报错 + 原样返回容错（继续编译）
+            self._err(
+                'dollar.convert_unsupported',
+                {'name': name, 'kind': 'list' if isinstance(raw, StdArray) else 'dict', 'type': type_cast},
+                source,
+                path,
+            )
+            return raw
         # 空字面量：as 转换**保持传播**（null → null、noexist → noexist），
         # 不做任何转换、不产生警告——三态可空语义不因显式 as 而丢失
         # （此时 raw 已收窄为 StdLiteral）

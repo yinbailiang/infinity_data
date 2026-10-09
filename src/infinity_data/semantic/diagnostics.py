@@ -135,6 +135,11 @@ register_diagnostic_define(
         '{path_prefix}无法将 ${name}={raw!r} 转为 {type}',
         en='{path_prefix}cannot convert ${name}={raw!r} to {type}',
     ),
+    diagnostic_define(
+        'dollar.convert_unsupported',
+        '{path_prefix}结构化值 ${name}（{kind}）不支持 as {type} 转换，已原样保留',
+        en='{path_prefix}structured value ${name} ({kind}) does not support as {type}; kept as-is',
+    ),
     diagnostic_define('inft.not_allowed', '{path_prefix}.inft 文件只允许模板定义，发现其他语句'),
     diagnostic_define('error.generic', '{path_prefix}{message}'),
     # ═══════════════════════════════════════════════════════════
