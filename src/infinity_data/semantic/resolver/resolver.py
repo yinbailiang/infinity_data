@@ -192,6 +192,7 @@ class TemplateGraphResolver:
         """把 ``!from`` 的导入项映射进目标 scope；冲突一律 ERROR。
 
         - 导入文件中不存在该模板 → ERROR
+        - 可见名（含 ``as`` 别名）与注册约束同名 → ERROR（模板即约束，内置约束不可被遮蔽）
         - 可见名与文件内定义同名 → ERROR（与文件内定义冲突）
         - 可见名已存在（重复导入）→ ERROR，保留先到者（拒绝隐式覆盖）
         """
@@ -203,6 +204,8 @@ class TemplateGraphResolver:
                 )
                 continue
             visible = item.alias or item.name
+            if self._check_template_name_conflict(visible, item.source):
+                continue
             if visible in scope.visible:
                 if visible in local_names:
                     self._collector.add(
@@ -295,9 +298,9 @@ class TemplateGraphResolver:
         imported_doc = self._parse_document(file)
 
         # 1) 本地模板：先注册（循环导入时依赖文件的本地名部分已可见）
-        #    身份含来源文件路径：不同路径的文件即使内容相同也是不同模板身份——
-        #    模板内部 !from 按定义文件所在目录解析，内容相同的文件其依赖语义
-        #    可能不同，不能互相覆盖（纯内容寻址无法表达这一区别）
+        #    身份初始按来源文件路径区分（收集阶段，避免同名互相覆盖）；最终由
+        #    _remap_content_identities 重算为依赖闭包组合哈希（§2.5）——内容 + 依赖
+        #    相同 → 同身份；依赖不同 → 依赖 identity 进 hash → 自然区分
         scope: Scope = Scope()
         local_names: set[str] = set()
         for s in imported_doc.statements:

@@ -138,6 +138,19 @@ def test_resolve_nested_import_mapping(tmp_path: Path) -> None:
     assert {'Mid', 'Base'} <= {k.name for k in ctx.templates}
 
 
+def test_resolve_import_alias_shadows_builtin(tmp_path: Path) -> None:
+    """!from 导入别名遮蔽内置约束（as str）→ ERROR，且该可见名不绑定。"""
+    _write(tmp_path / 'extra.inft', '~Extra {\n    name: str = "x"\n}\n')
+    file = DiskFile.from_fullpath(tmp_path / 'app.infd')
+    _write(Path(file.name), '!from p"extra.inft" import Extra as str\n')
+    doc, _ = parse_source(file)
+    resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']))
+    collector = DiagnosticCollector()
+    ctx = resolver.resolve(doc, file, collector)
+    assert _codes(collector) == ['template.shadows_builtin']
+    assert 'str' not in ctx.root_scope.visible
+
+
 # ═══════════════════════════════════════════════════════════
 # 数据导入（!env / !file）命名空间
 # ═══════════════════════════════════════════════════════════
