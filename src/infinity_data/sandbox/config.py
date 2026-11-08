@@ -29,7 +29,7 @@ class SandboxConfig:
     # ── 模板导入白名单（glob 模式；None = 全部允许）──
     allow_templates: list[str] | None = field(default_factory=lambda: [])
 
-    # ── 严格模式：True 白名单外导入抛 SandboxError；False 仅警告 ──
+    # ── 严格模式：True 白名单外或目标不存在 → 抛 SandboxError；False 仅警告 ──
     strict: bool = True
 
     # ── 工厂方法 ──────────────────────────────────────

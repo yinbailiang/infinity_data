@@ -15,7 +15,12 @@ from infinity_data.infra.file import DiskFile, File
 from infinity_data.infra.location import SourceRange
 from infinity_data.infra.path import native_to_posix, posix_to_native
 from infinity_data.sandbox.config import SandboxConfig
-from infinity_data.sandbox.errors import AccessDeniedError, EnvNotAuthorizedError, EnvNotSetError
+from infinity_data.sandbox.errors import (
+    AccessDeniedError,
+    EnvNotAuthorizedError,
+    EnvNotSetError,
+    FileMissingError,
+)
 
 __all__ = ['Sandbox']
 
@@ -215,7 +220,12 @@ class Sandbox:
         base_dir: Path | None,
         source: SourceRange | None,
     ) -> File | None:
-        """公共路径解析 + 授权（相对路径以 base_dir 解析，glob 以入口目录匹配）。"""
+        """公共路径解析 + 授权 + 存在性校验（相对路径以 base_dir 解析，glob 以入口目录匹配）。
+
+        ``strict`` 下「白名单内但目标不存在」同样中止编译：``!file`` / ``!from`` 是配置
+        显式声明的依赖，缺失属于部署错误，不该退化成可用的空值。非 ``strict`` 模式
+        （扫描 / 容错）保持软失败，交由语义层产出 ``import.file_missing``。
+        """
         base = base_dir if base_dir is not None else self._base_dir
         path = posix_to_native(from_path)  # 语言内 POSIX → 当前平台原生（/c/... → C:\...）
         if not path.is_absolute():
@@ -225,4 +235,6 @@ class Sandbox:
             if self._config.strict:
                 raise AccessDeniedError(label, from_path, source)
             return None
+        if self._config.strict and not path.is_file():
+            raise FileMissingError(label, from_path, source)
         return DiskFile.from_fullpath(path)

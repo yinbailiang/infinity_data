@@ -18,6 +18,7 @@ __all__ = [
     'EnvNotAuthorizedError',
     'EnvNotSetError',
     'AccessDeniedError',
+    'FileMissingError',
     'SchemaError',
 ]
 
@@ -36,6 +37,11 @@ register_diagnostic_define(
         'sandbox.access_denied',
         '[{location}] {label}超出沙盒授权: {path_src}',
         en='[{location}] {label} denied by sandbox: {path_src}',
+    ),
+    diagnostic_define(
+        'sandbox.file_missing',
+        '[{location}] {label}的目标不存在: {path_src}',
+        en='[{location}] {label} target does not exist: {path_src}',
     ),
     diagnostic_define(
         'schema.undefined_template', '未定义的 schema 模板 {template!r}', en='undefined schema template {template!r}'
@@ -98,6 +104,13 @@ class AccessDeniedError(SandboxError):
 
     def __init__(self, label: str, path: str, source: SourceRange | None = None) -> None:
         super().__init__('sandbox.access_denied', {'label': label, 'path_src': path}, source)
+
+
+class FileMissingError(SandboxError):
+    """白名单内但目标不存在（``strict`` 模式下中止编译）。"""
+
+    def __init__(self, label: str, path: str, source: SourceRange | None = None) -> None:
+        super().__init__('sandbox.file_missing', {'label': label, 'path_src': path}, source)
 
 
 class SchemaError(SandboxError):

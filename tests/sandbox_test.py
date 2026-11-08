@@ -751,8 +751,8 @@ def test_inft_file_denied_strict_fails(tmp_path: Path) -> None:
     assert result.value == {}
 
 
-def test_inft_file_missing_warns(tmp_path: Path) -> None:
-    """.inft 的 !file 文件不存在 → import.file_missing 警告，$ 未绑定。"""
+def test_inft_file_missing_strict_errors(tmp_path: Path) -> None:
+    """strict：``!file`` 目标不存在 → sandbox.file_missing ERROR，中止编译返回空文档。"""
     _write(
         tmp_path / 'templates' / 'svc.inft',
         '!file p"nope.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
@@ -760,6 +760,21 @@ def test_inft_file_missing_warns(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['sandbox.file_missing']
+    assert result.value == {}
+
+
+def test_inft_file_missing_lenient_warns(tmp_path: Path) -> None:
+    """非 strict（容错扫描）：``!file`` 目标不存在 → import.file_missing 警告，$ 未绑定。"""
+    _write(
+        tmp_path / 'templates' / 'svc.inft',
+        '!file p"nope.json" import .port as port\n~S {\n    port: <int?> = $port\n}\n',
+    )
+    f = tmp_path / 'app.infd'
+    _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
+    sandbox = SandboxConfig(allow_env=None, allow_files=['**/*'], allow_templates=['**/*'], strict=False)
+    result = load(f, sandbox=sandbox)
     assert not result.has_errors, [d.message for d in result.diagnostics]
     assert any(d.code == 'import.file_missing' for d in result.diagnostics)
     assert result.value == {'s': {'port': None}}
