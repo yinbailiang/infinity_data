@@ -38,6 +38,10 @@ tool = [
     "pyyaml",    # !file 的 yaml/yml 格式导入（LSP / 编译器）
     "tomli-w",   # infd-cov -f toml 输出
 ]
+# 文档 extra：MkDocs 站点构建（uv sync --group docs）
+docs = [
+    "mkdocs-material>=9.5",
+]
 
 [project.urls]
 Repository = "https://github.com/yinbailiang/infinity_data"
@@ -56,13 +60,19 @@ test = [
     "pytest-cov>=5.0",
     { include-group = "tool" },
 ]
-# 开发组：lint/类型/钩子 + 测试组（本地开发与 CI pre-commit job 装这组）
+# 文档组：MkDocs 站点构建（CI docs job 只装这组）
+docs = [
+    "mkdocs-material>=9.5",
+]
+# 开发组：lint/类型/钩子 + 测试组 + 文档组（本地开发与 CI pre-commit job 装这组）
 dev = [
     "ruff>=0.15.21",
     "pyright",
     "pre-commit>=4.0",
     "interrogate>=1.7.0",
+    "infinity-agent-kit>=1.1.0",
     { include-group = "test" },
+    { include-group = "docs" },
 ]
 
 [build-system]
@@ -105,13 +115,25 @@ line-ending = "lf"
 
 [tool.pyright]
 typeCheckingMode = "strict"
+pythonVersion = "3.12"
 reportMissingTypeStubs = false
 reportMissingImports = "error"
+include = ["src", "tests"]
 exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv", "build"]
 venvPath = "."
 venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.interrogate]
 fail-under = 60
 # 测试函数名自解释，docstring 可选；产品代码（src）不豁免
 ignore-regex = ["^test_"]
+ignore-init-method = true
+ignore-init-module = true
+ignore-magic = true
+ignore-private = true
+ignore-semiprivate = true
+ignore-nested-functions = true
+exclude = ["tests", "docs", "others", "build", ".agents"]
