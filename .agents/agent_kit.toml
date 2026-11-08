@@ -1,0 +1,31 @@
+# agent_kit 项目配置（由 agent-kit 生成；可手工微调，改动在下次 update 时生效）
+kit_version = 1
+
+[project]
+name = "infinity-data"
+summary = "InfinityData：声明式配置语言（.infd/.inft）的 Python 编译器库"
+package = "infinity_data"
+src_dir = "src/infinity_data"
+repo_url = "https://github.com/yinbailiang/infinity_data"
+pypi_name = "infinity-data"
+extra_sources = [
+  "README.md :: 快速开始与 API / CLI / LSP 入口",
+  "docs/zh-CN/language/ :: 语言规范（语法 / 类型 / 约束 / 模板 / 导入 / 词法）",
+  "ENGINEERING.md :: 工程质量标准与指标",
+  "CONTRIBUTING.md :: 贡献流程与提交规范",
+  ".agents/MEMORY/project/ :: 决策 / 实现取舍 / 历史记忆",
+]
+
+[toolchain]
+setup = "uv sync --group dev && uv run pre-commit install"
+lint = "uv run ruff check src tests"
+format = "uv run ruff format src tests"
+typecheck = "uv run pyright"
+test = "uv run pytest --cov=infinity_data --cov-fail-under=90 -q"
+extras = [
+  "uv run interrogate src/infinity_data/ :: 公开 API docstring 覆盖率检查",
+  "uv run mkdocs build --strict :: 文档构建与链接检查",
+]
+
+[skills]
+enabled = ["modify-core-api", "pre-commit-check", "write-tests", "write-docs", "write-skill", "publish"]
