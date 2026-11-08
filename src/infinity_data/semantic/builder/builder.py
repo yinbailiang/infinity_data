@@ -122,7 +122,7 @@ class AstBuilder:
         self._root_scope = context.root_scope
         self._schema_scope = context.schema_scope
 
-        # 静态防护：默认值引用环检测（默认值禁止自引用，见 neo_desg.md 2.6）
+        # 静态防护：默认值引用环检测（默认值禁止自引用，见 docs/zh-CN/language/templates.md §2.6）
         self._detect_recursive_defaults()
 
         # 模板配置校验：extra_*_vars 指向的字段必须在模板中声明（§2.9，定义即报错）

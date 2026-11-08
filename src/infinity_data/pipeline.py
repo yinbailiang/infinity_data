@@ -221,7 +221,7 @@ def safe_load(
     只允许纯字段定义、模板定义与字面量值。
 
     用途:
-    - 读取沙盒配置文件（自举：SandboxConfig.from_dict）
+    - 读取沙盒配置文件（自举：``SandboxConfig(**safe_load(...).value)``）
     - 读取纯模板文件 (.inft)
     - 读取不需要外部资源的配置
     """

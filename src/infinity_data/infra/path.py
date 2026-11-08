@@ -1,6 +1,6 @@
 """跨平台路径通行：语言内 POSIX 路径 ↔ 当前平台原生路径。
 
-语言约定（见 neo_desg.md 3.2）：
+语言约定（见 docs/zh-CN/language/imports.md §3.2）：
 - 语言内**只允许** POSIX 风格路径（``/`` 分割），Windows 盘符写作 ``/c/...``（小写单字母）
 - 访问文件系统时按当前平台**自动映射**，同一份 .infd 在 linux/windows/mac 均可用
 

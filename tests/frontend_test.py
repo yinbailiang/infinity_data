@@ -21,7 +21,7 @@ def test_parse_source_collects_errors() -> None:
 
 
 def test_parse_source_empty() -> None:
-    # 空源码 → 空配置（非错误），见 neo_desg.md §4.1
+    # 空源码 → 空配置（非错误），见 docs/zh-CN/language/lexical.md §4.1
     file = MemFile(name='t.infd', root_path=Path('.'), content='')
     doc, diags = parse_source(file)
     assert not diags

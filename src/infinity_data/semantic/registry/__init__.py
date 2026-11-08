@@ -133,7 +133,7 @@ class ConstraintRegistry:
         return entry.fn(value, source, path, constraint.args, executor)
 
     def _register_builtins(self) -> None:
-        """注册 neo_desg.md §1.2 全部内置约束。"""
+        """注册语言规范 §1.2 的全部内置约束。"""
         # ── 类型约束 ──────────────────────────────
         self.register('object', _check_object, description='通用超类型，总是通过')
         self.register('?', _check_nullable, description='纯可空类型：noexist 或 null')

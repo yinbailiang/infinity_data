@@ -1,0 +1,66 @@
+site_name: InfinityData
+site_url: https://yinbailiang.github.io/infinity_data/
+site_description: 声明式配置语言（.infd/.inft）的 Python 编译器库
+repo_url: https://github.com/yinbailiang/infinity_data
+repo_name: yinbailiang/infinity_data
+edit_uri: edit/master/docs/zh-CN/
+copyright: MIT License
+
+docs_dir: docs/zh-CN
+site_dir: site
+
+theme:
+  name: material
+  language: zh
+  logo: res/infinity_icon_simple/128x128.png
+  favicon: res/infinity_icon_simple/32x32.png
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+
+plugins:
+  - search:
+      lang: [zh]
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - 首页: index.md
+  - 语言参考:
+      - 总览: language/index.md
+      - 基础语法: language/syntax.md
+      - 模板: language/templates.md
+      - 外部导入: language/imports.md
+      - 词法与解析: language/lexical.md
