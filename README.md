@@ -1,5 +1,13 @@
 # InfinityData
 
+[![Test](https://github.com/yinbailiang/infinity_data/actions/workflows/test.yml/badge.svg)](https://github.com/yinbailiang/infinity_data/actions/workflows/test.yml)
+[![Docs](https://github.com/yinbailiang/infinity_data/actions/workflows/docs.yml/badge.svg)](https://yinbailiang.github.io/infinity_data/)
+[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)](ENGINEERING.md)
+[![Pyright](https://img.shields.io/badge/pyright-strict-blue)](ENGINEERING.md)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE.md)
+[![PyPI](https://img.shields.io/pypi/v/infinity-data)](https://pypi.org/project/infinity-data/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://pypi.org/project/infinity-data/)
+
 声明式配置语言（`.infd` / `.inft`）的 Python 编译器库。
 
 - **编译优先**：`.infd` 是源码，JSON/YAML/TOML 是构建产物
@@ -26,11 +34,18 @@ else:
 
 ## 文档导航
 
+> **文档分流**：语言规范在 `docs/`；决策与实现取舍在 `.agents/MEMORY/project/`。
+
 | 文档 | 内容 |
 |---|---|
-| [neo_desg.md](./neo_desg.md) | 语言基础设计（语法 / 类型 / 模板 / 约束） |
-| [extra_desg.md](./extra_desg.md) | 库 API / CLI / 生态设计 |
-| [impl_desg.md](./impl_desg.md) | 编译器实现层的取舍与假设 |
+| [docs/zh-CN/](./docs/zh-CN/index.md) | **语言参考**（语法 / 类型 / 约束 / 模板 / 导入 / 词法） |
+| [在线文档](https://yinbailiang.github.io/infinity_data/) | MkDocs 站点（GitHub Pages） |
+| [.agents/MEMORY/project/decisions.md](./.agents/MEMORY/project/decisions.md) | 决策与设计记忆（库 API / CLI / 生态 / 路线图） |
+| [.agents/MEMORY/project/internals.md](./.agents/MEMORY/project/internals.md) | 实现内部记忆（EOF / 错误模型 / 位置 / 沙盒边界） |
+| [ENGINEERING.md](./ENGINEERING.md) | 工程质量标准与指标 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 贡献流程与提交规范 |
+| [COMMIT_LOG.md](./COMMIT_LOG.md) | 发布基线与提交历史快照 |
+| [AGENT.md](./AGENT.md) | 智能体引导入口（技能 / 记忆 / 临时文件） |
 
 ## 官方工具
 
@@ -124,8 +139,16 @@ uv run python examples/lsp_demo.py   # 自动起服务器 + 走一遍握手 + �
 ## 开发
 
 ```bash
-uv run pytest -q      # 测试
-uv run ruff check src tests   # lint
-uv run pyright        # 类型检查（strict）
-uv run python test.py # 错误报告演示
+uv sync --group dev            # 安装开发依赖
+uv run pre-commit install      # 安装提交钩子
+uv run pytest -q               # 测试
+uv run ruff check src tests    # lint
+uv run pyright                 # 类型检查（strict）
+uv run interrogate src/infinity_data/  # docstring 覆盖率
+uv run mkdocs serve            # 文档本地预览
+uv run agent-kit update --check  # 智能体规则漂移检查
+uv run python others/test.py   # 错误报告演示
 ```
+
+工程质量标准、测试矩阵与发布流程见 [ENGINEERING.md](./ENGINEERING.md)；
+贡献流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
