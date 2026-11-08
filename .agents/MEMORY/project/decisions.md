@@ -1,8 +1,16 @@
-# InfinityData 进阶设计文档
+# 决策与设计记忆
 
-> 基于讨论沉淀的库特性、设计取向、工具设计与改进计划。
-> 前置阅读：[neo_desg.md](./neo_desg.md)（语言基础设计）；
-> 实现层取舍见 [impl_desg.md](./impl_desg.md)（实现设计笔记）。
+> **类型**：项目记忆（决策 / 设计）
+> **范围**：库 API、安全模型、编译模型、工具链、生态与路线图。
+> **语言规范**：[docs/zh-CN/language/](../../../docs/zh-CN/language/index.md)（对外文档）
+> **实现取舍**：[internals.md](./internals.md)
+> **历史记录**：[history.md](./history.md) · [semantic_pipeline.md](./semantic_pipeline.md)
+>
+> 本文件是长期维护的项目记忆，记录「为什么这样设计」；对外教程与语言规范见 `docs/`。
+>
+> **文档状态（v3.3.0，2026-11）**：第 2–5、8 章已按当前代码校准；
+> 尚未落地的能力统一标注「规划」。当前实现基线：753 个测试通过、
+> ruff 干净、pyright strict 零错误。
 
 ---
 
@@ -15,7 +23,7 @@
 5. [CLI 工具设计](#5-cli-工具设计)
 6. [Git 模板生态](#6-git-模板生态)
 7. [JSON Schema 双向转换](#7-json-schema-双向转换)
-8. [LSP 设计方向](#8-lsp-设计方向)
+8. [LSP 现状与设计方向](#8-lsp-现状与设计方向)
 9. [改进计划](#9-改进计划)
 
 ---
@@ -28,7 +36,7 @@
 |------|------|
 | **渐进增强** | Level 0 裸键值对就能用；按需加类型、加约束、加模板。无概念墙 |
 | **编译优先** | .infd 是源码，JSON/YAML/TOML 是构建产物。可审计、可 diff、可签名 |
-| **零信任默认** | 库默认 deny all；CLI 默认 full access。显式开放而非事后限制 |
+| **零信任默认** | 库默认 deny all；官方工具（`infd-cov` / `infd-lsp`）默认 full access。显式开放而非事后限制 |
 | **模板即约束** | 模板定义三重身份：宏展开、类型校验、JSON Schema 生成 |
 | **寄生生态** | 不建新生态，通过编译输出和 JSON Schema 桥接接入已有工具链 |
 | **Python-first** | 库 API 为 Python 生态优化；CLI 为通用场景服务 |
@@ -67,9 +75,16 @@ from infinity_data import (
     check,              # 仅校验 → list[Diagnostic]
     compile_document,   # 编译为 StdDocument（不降维）
     SandboxConfig,      # 沙盒配置
+    SandboxError,       # 沙盒/schema 违规异常基类（load 内部转为诊断）
     Schema,             # 顶层 schema 约束
-    CompilationResult,  # 编译结果：value / diagnostics / has_errors / warnings
+    SchemaError,        # schema 违规异常（继承 SandboxError）
+    CompilationResult,  # 编译结果：document / value / diagnostics / has_errors / warnings
+    Diagnostic,         # 诊断（code / params / severity / source / message）
+    Severity,           # ERROR / WARNING / INFO / DEBUG
 )
+
+# 产物输出在独立子包（顶层不导出；可选依赖仅在调用时导入）
+from infinity_data.emit import EmitConfig, to_json, to_yaml, to_toml
 ```
 
 ### 2.2 safe_load —— 零信任加载
@@ -128,15 +143,15 @@ class SandboxConfig:
 
     # ── 环境变量读取白名单：授权从真实 os.environ 实时读取。
     #    None = 全部允许；[] = 全部禁止（默认，零信任）──
-    allow_env: list[str] | None = None
+    allow_env: list[str] | None = field(default_factory=lambda: [])
 
-    # ── 文件导入白名单（glob 模式；None = 全部允许）──
-    allow_files: list[str] | None = None
+    # ── 文件导入白名单（glob 模式；None = 全部允许；默认 [] = 全部禁止）──
+    allow_files: list[str] | None = field(default_factory=lambda: [])
 
-    # ── 模板导入白名单（glob 模式；None = 全部允许）──
-    allow_templates: list[str] | None = None
+    # ── 模板导入白名单（glob 模式；None = 全部允许；默认 [] = 全部禁止）──
+    allow_templates: list[str] | None = field(default_factory=lambda: [])
 
-    # ── 严格模式：True 白名单外导入报错；False 仅警告 ──
+    # ── 严格模式：True 白名单外或目标不存在 → 抛 SandboxError；False 仅警告 ──
     strict: bool = True
 
     # ── 工厂方法 ──
@@ -191,33 +206,55 @@ config = result.value   # → dict；result.has_errors / result.diagnostics 可�
 # 约束链    → 控制"值对不对"（数据安全）
 ```
 
-### 2.7 转换输出（规划 M4，**尚未实现**）
+### 2.7 转换输出（已实现，emit 层）
 
-> `to_json` / `to_yaml` / `to_toml` / `to_json_file` 为规划 API（emit 层），当前**未实现、未导出**。
-> 现有产物入口：`result.value`（降维 dict）与 `compile_document()`（StdDocument）。
-> 特殊值处理约定如下，实现时须遵循：
+> 实现位置：`infinity_data.emit`（**不在** `infinity_data` 顶层导出）。
+> 可选运行依赖 PyYAML / tomli-w 由 `tool` extra 提供；
+> `infd-cov` 默认 YAML 输出使用零依赖 `yaml_dump`。
 
 ```python
-from infinity_data import load, to_json, to_yaml, to_toml
+from infinity_data import load
+from infinity_data.emit import EmitConfig, to_json, to_yaml, to_toml
 
-config = load("app.infd")
+result = load("app.infd")
 
-json_str = to_json(config, indent=2)           # → JSON 字符串
-yaml_str = to_yaml(config)                     # → YAML 字符串
-toml_str = to_toml(config)                     # → TOML 字符串
-
-to_json_file(config, "dist/app.json")          # 直接写文件
+json_str = to_json(result.document.root, config=EmitConfig(indent=2))  # std 值
+yaml_str = to_yaml(result.value)                                      # 需 PyYAML
+toml_str = to_toml(result.value)                                      # 需 tomli-w
 ```
 
-特殊值处理：
-- `noexist` → 键不出现在输出
-- `null` → 保留键，值为 `null`/`None`
-- `nan` → JSON: `"NaN"`（自定义 encoder）；YAML: `.nan`
-- `+inf`/`-inf` → JSON: `"Infinity"`/`"-Infinity"`；YAML: `.inf`/`-.inf`
+输出入口：
+- `to_json(value, *, config=None)`：JSON 文本；接受 `StdValue`（如
+  `result.document.root`，完整选项可用）或 Python 值（如 `result.value`）
+- `to_yaml(value, *, config=None)`：基于 PyYAML（未安装 → `ImportError`）
+- `to_toml(value, *, config=None)`：基于 tomli-w（未安装 → `NotImplementedError`）
+- `yaml_dump(value)`：**零依赖** YAML block emitter（覆盖配置常用值），
+  `infd-cov` 默认 YAML 输出使用；不依赖 PyYAML
+- `project_output(value)`：纯 Python 值的轻量有损投影（path → POSIX 字符串）
+- `dump_to_json` / `load_from_json`：默认开启全部自描述标记的无损 JSON 闭环；
+  `restore_python` 负责反向还原
+- 无 `to_json_file` 之类写文件 API；写文件由调用方（如 `infd-cov`）完成
+
+分层约定（与 `semantic.std` 的忠实转换区分）：
+- `CompilationResult.value` / `std_to_python`：**忠实**（path → `PurePosixPath`、
+  float → `Decimal`、noexist → `NOEXIST` 哨兵）
+- `emit` 层：**有损投影**（输出格式无需完整性）
+
+特殊值处理（由 `EmitConfig` 控制）：
+
+| 值 | 默认输出 | 自描述标记（可选） |
+|---|---|---|
+| `noexist` | 键不出现（`keep_noexist=False`） | `{"__type__": "noexist"}`（`keep_noexist=True`） |
+| `null` | 保留键，值为 `null` / `None` | — |
+| 有限 `float`（Decimal） | JSON 数字（整值转 int） | `{"__type__": "decimal", "num": "1.5"}`（`full_float=True`） |
+| `nan` / `+inf` / `-inf` | `{"__type__": "decimal", "num": "NaN"}` 等标记 | 同左（无法用 JSON 数字表达） |
+| `path` | POSIX 字符串 | `{"__type__": "path", "path": "/c/foo"}`（`full_path=True`） |
 
 ### 2.8 JSON Schema 转换（规划 M5，**尚未实现**）
 
-> `to_json_schema` / `from_json_schema` / `verify_schema_equivalence` 为规划 API，当前**未实现、未导出**。
+> `to_json_schema` / `from_json_schema` / `verify_schema_equivalence` 仍为规划 API
+> （顶层未导出、仓库内无实现）。约束注册表已预留扩展点：`ConstraintEntry` 计划追加
+> json_schema 生成回调。以下为**目标用法**，不代表当前可运行。
 
 ```python
 from infinity_data import (
@@ -249,14 +286,15 @@ if not result.equivalent:
 ```python
 from infinity_data import check, compile_document
 
-# 仅校验，不输出
+# 仅校验，不输出（等价 load(...).diagnostics）
 diagnostics = check("app.infd", sandbox=sandbox, schema=...)
 # → list[Diagnostic]
 
 # 编译为 StdDocument（不经过降维，不输出字符串）
-result = compile_document("app.infd", sandbox=sandbox, schema=...)
+doc = compile_document("app.infd", sandbox=sandbox, schema=...)
 # → StdDocument，含 .root (StdObject) / .templates / .scope
 #   （纯数据，不携带诊断；诊断经 load().diagnostics 获取）
+#   沙盒/schema 违规时返回**空文档**（不抛出）
 ```
 
 ---
@@ -279,9 +317,9 @@ Layer 1: load(sandbox=..., schema=...)
 
 ### 3.2 两个场景，两种默认
 
-| | CLI (`infd build`) | 库 (`infd.load()`) |
+| | 官方工具（`infd-cov` / `infd-lsp`） | 库 (`infd.load()`) |
 |------|:--:|:--:|
-| **默认 sandbox** | `full_access()` | `deny_all()` |
+| **默认 sandbox** | `full_access()`（LSP 补全缺省 `development()`） | `deny_all()` |
 | **信任假设** | 用户 = 文件作者 = 机器主人 | 文件作者 ≠ 调用者 |
 | **安全模型** | "我信任我自己" | "我不信任输入" |
 
@@ -322,41 +360,51 @@ Layer 1: load(sandbox=..., schema=...)
 文件(.infd/.inft)
   │
   ▼
-RawTokenizer ──→ RawToken 流 (容错，收集错误)
+RawTokenizer ──→ RawToken 流（容错，收集词法错误）
   │
   ▼
-FinalTokenizer ──→ Token 流 (值转换)
+FinalTokenizer ──→ Token 流（值语义：转义 / 数值转换）
   │
   ▼
-Parser ──→ RawAst (语法树)
+Parser ──→ RawAst（语法树）
   │
   ▼
-SemanticAnalyzer ──→ StandardAst (展开模板、执行约束、解析导入)
+TemplateGraphResolver（Phase 1）──→ ResolvedContext
+  │                                  （模板图 / 可见名表 / $ 命名空间）
+  ▼
+AstBuilder（Phase 2a）──→ StdDocument（展开模板、挂载约束，不执行）
   │
   ▼
-Converter ──→ Python dict
+ConstraintExecutor（Phase 2b）──→ 校验后的 root（字段/结构约束 + schema）
   │
-  ├──→ to_json()  ──→ JSON 字符串
-  ├──→ to_yaml()  ──→ YAML 字符串
-  └──→ to_toml()  ──→ TOML 字符串
+  ▼
+std_to_python ──→ 忠实 Python 值（PurePosixPath / Decimal / NOEXIST）
+  │
+  ▼
+emit ──→ to_json() / to_yaml() / to_toml()（有损投影）
 ```
+
+- 前端（RawTokenizer → Parser）由 `frontend.parse_source` 统一组装，
+  主文件与 `!from` 导入文件共用
+- 三阶段语义流水线在 `pipeline._compile` 顶层组装，阶段间只经数据模型耦合；
+  单一 `DiagnosticCollector` 从词法到语义全程复用
+- 公共 API（`load` / `safe_load` / `compile_source` / `check` / `compile_document`）
+  都是 `_compile` 的薄包装
 
 ### 4.3 产物管理
 
 ```bash
-# 编译
+# 当前可用（随库内置）
+infd-cov app.infd                        # → YAML（stdout，零依赖 emitter）
+infd-cov app.infd dist/app.json -f json  # → JSON 文件
+infd-cov app.infd -f toml                # → TOML（需 tomli-w）
+infd-cov app.infd --extract web.spec     # → 点分路径提取
+infd-cov app.infd --severity warning     # → 达到阈值即拒绝（stderr + 退出 1）
+
+# 规划中（尚未实现）
 infd build app.infd -o dist/app.json
-
-# 签名
 infd sign dist/app.json --key team-key.pem
-# → dist/app.json.sig
-
-# 验证签名
 infd verify dist/app.json --key team-key.pub
-
-# CI 校验一致性
-infd build app.infd -o /tmp/app.json
-diff /tmp/app.json dist/app.json   # 不一致 → CI 报错
 ```
 
 构建产物是可独立部署的纯数据文件。生产环境不需要安装 InfinityData。
@@ -365,7 +413,37 @@ diff /tmp/app.json dist/app.json   # 不一致 → CI 报错
 
 ## 5. CLI 工具设计
 
-### 5.1 命令一览
+### 5.1 已实现：随库内置的两个工具
+
+| 工具 | 入口 | 说明 |
+|---|---|---|
+| `infd-cov` | `infinity_data.tools.cov.__main__:main` | 编译 `.infd`/`.inft` → YAML / JSON / TOML |
+| `infd-lsp` | `infinity_data.tools.lsp.__main__:main` | 零依赖 JSON-RPC 2.0 over stdio 语言服务器 |
+
+两个工具都直接消费编译器公开 API（`compile_source` / `parse_source` /
+`RawTokenizer` / `emit` / `semantic`），不复制编译逻辑。可选运行依赖
+（PyYAML / tomli-w）由 `tool` extra 提供。
+
+```bash
+# 配置转换
+infd-cov app.infd                          # → YAML（stdout，零依赖 emitter）
+infd-cov app.infd out.json -f json         # → JSON 文件
+infd-cov app.infd -f toml                  # → TOML（需 tomli-w）
+infd-cov app.infd --extract web.spec       # → 点分路径提取
+infd-cov app.infd --severity none          # → 从不拒绝（默认 error）
+cat a.infd | infd-cov -f json              # stdin → stdout
+
+# 语言服务器
+infd-lsp                                   # 作为任意 LSP 客户端后端
+python -m infinity_data.tools.lsp          # 等价模块入口
+```
+
+`#env: NAME "VALUE"` 声明在当前进程缺失时会自动注入虚拟值（两个工具一致），
+详见 [README](./README.md#虚拟环境变量env-注释)。
+
+### 5.2 规划中的统一 CLI（尚未实现）
+
+> 以下为面向生态的完整 `infd` 命令设计，当前**未实现**。
 
 ```bash
 # ═══════════════════════════════════════════════════════
@@ -432,7 +510,7 @@ infd fmt --check               # 仅检查格式（CI 用）
 infd lint                      # 静态分析（未使用模板、冗余约束等）
 ```
 
-### 5.2 项目配置 (infd.yaml)
+### 5.3 项目配置 (infd.yaml，规划)
 
 ```yaml
 # infd.yaml —— 项目根目录
@@ -550,6 +628,9 @@ $ infd template search aws
 
 ## 7. JSON Schema 双向转换
 
+> **状态（v3.3.0）：规划（M5，尚未实现）。** 本章描述目标映射与设计；
+> `ConstraintEntry` 已预留 json_schema 生成回调的扩展点。
+
 ### 7.1 映射覆盖
 
 ```
@@ -598,7 +679,7 @@ InfinityData 作为 JSON Schema 的"最佳编写方式"：
 
 ---
 
-## 8. LSP 设计方向
+## 8. LSP 现状与设计方向
 
 ### 8.1 为什么 InfinityData 天然适合 LSP
 
@@ -606,94 +687,91 @@ InfinityData 作为 JSON Schema 的"最佳编写方式"：
 - 约束就是类型标注，零类型推断
 - 纯声明式，无控制流
 - 单文件通常 < 500 行
-- 全量重分析 < 10ms → 不需要复杂的增量编译框架
+- 全量重分析开销小 → 不需要复杂的增量编译框架（当前实现为 Full sync）
 
-### 8.2 计划支持的功能
+### 8.2 已实现能力（`infd-lsp`，v3.3.0）
 
-| 功能 | 说明 |
-|------|------|
-| **诊断 (Diagnostics)** | 约束违反实时波浪线 + 错误信息 |
-| **补全 (Completion)** | 模板字段补全、约束名补全、关键字补全 |
-| **悬停 (Hover)** | 约束文档、类型信息、默认值来源 |
-| **跳转 (Go to Definition)** | 模板定义、`!from` 路径、`$` 引用 |
-| **代码操作 (Code Actions)** | Quick Fix（修改值满足约束、添加缺失字段等） |
-| **格式化 (Formatting)** | 标准缩进、逗号/换行规范化 |
-| **重命名 (Rename)** | 模板名、字段名语义重命名 |
-| **文档符号 (Document Symbols)** | 文件大纲（模板定义、字段列表） |
+| 能力 | 状态 | 说明 |
+|------|:--:|------|
+| **诊断 (Diagnostics)** | ✅ | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`；精确 `SourceRange` + 稳定错误码 + 中文消息；UTF-16 对齐 |
+| **补全 (Completion)** | ✅ | `$` 命名空间、内置约束名、当前文件可见模板名、模板字段（必填/可选）、语言关键字 |
+| **悬停 (Hover)** | ✅ | 约束描述、编译产物预览、被实例化的模板、`$` 变量值（定义点/调用点）、模板结构骨架 |
+| **跳转定义 (Definition)** | ✅ | 模板调用 / `!from` 导入 / `$` 引用（含跨文件） |
+| **文档符号 (Document Symbols)** | ✅ | 模板定义（Class）+ 顶层字段（Property） |
+| **语义令牌 (Semantic Tokens)** | ✅ | 直接复用 `RawTokenizer`；UTF-16 单元对齐；多行字符串按行拆分 |
+| **虚拟环境变量** | ✅ | 扫描 `#env: NAME "VALUE"`，进程未设置时注入虚拟值，避免 `env_not_set` 中止编译 |
+| **代码操作 (Code Actions)** | ❌ | 规划：Quick Fix（改值满足约束、补缺失字段等） |
+| **格式化 (Formatting)** | ❌ | 规划：标准缩进、逗号/换行规范化 |
+| **重命名 (Rename)** | ❌ | 规划：模板名 / 字段名语义重命名 |
 
-### 8.3 独特体验
+传输与部署：单线程 stdio、JSON-RPC 2.0 手写实现（零依赖）；VS Code 目前经
+任意自定义 LSP 客户端扩展（如 `lspConfig`）接入，配置见
+[README](./README.md#在-vs-code-中使用)。
 
-- **约束阶梯提示**：`<int, range(1, 65535), not(in(80, 443))>` 拆分为三层，每层可 hover 查看详情
-- **模板即约束补全**：在 `Server = {` 内自动补全 `Server` 的所有字段
-- **必填字段星标**：补全列表中必填字段标记 ★
-- **智能 Quick Fix**：值不满足 `in("debug", "info")` 时建议最近匹配项
-- **约束文档内联**：`range` 悬停显示参数说明
+### 8.3 体验设计（✅ 已实现 / 🚧 规划）
+
+- ✅ **模板即约束补全**：在模板调用参数内自动补全该模板的字段
+- ✅ **必填字段标记**：模板字段悬停与补全项区分必填/可选
+- ✅ **约束文档内联**：约束名悬停显示参数说明
+- 🚧 **约束阶梯提示**：`<int, range(1, 65535), not(in(80, 443))>` 分层展示
+  （当前整体展示约束描述）
+- 🚧 **智能 Quick Fix**：值不满足 `in("debug", "info")` 时建议最近匹配项
 
 ---
 
 ## 9. 改进计划
 
-### 9.1 总体路线
+### 9.1 总体路线（含当前状态）
 
 ```
-Phase 1: 地基加固 (1-2 周)
-Phase 2: 边界清晰化 (1-2 周)
-Phase 3: CLI + 生态 (2-3 周)
-Phase 4: LSP + 体验 (3-4 周)
-Phase 5: 模板市场 + 推广 (持续)
+Phase 1: 地基加固          ✅ 已完成
+Phase 2: 边界清晰化        ✅ 已完成
+Phase 3: CLI + 生态        🚧 部分完成（infd-cov / infd-lsp 已交付）
+Phase 4: LSP + 体验        🚧 部分完成（LSP 服务器已交付）
+Phase 5: 模板市场 + 推广    ⏳ 未开始
 ```
 
-### 9.2 Phase 1: 地基加固
+### 9.2 Phase 1: 地基加固 ✅
 
 **目标**：代码从原型变成可维护项目
 
-- [ ] **补测试** —— 最高优先级。核心路径覆盖率 > 80%
-  - [ ] Tokenizer 测试（字面量、多行字符串、多行注释、特殊浮点）
-  - [ ] Parser 测试（各种语句、类型标注、约束解析）
-  - [ ] SemanticAnalyzer 测试（模板展开、约束执行、导入解析）
-  - [ ] Converter 测试（noexist 过滤、特殊值处理、各格式输出）
-- [ ] **修复约束组合引擎** —— 改为递归约束执行
-  - [ ] `apply_constraint_by_name` 的 `args` 保留为 `Constraint` 列表而非扁平值
-  - [ ] 逻辑约束 `not/any/one/all` 递归执行内部约束
-- [ ] **统一错误处理**
-  - [ ] 消除静默错误兜底（如 `ConstraintIdent(name="?")`）
-  - [ ] 引入明确的错误标记 `<error>`
-  - [ ] 错误恢复：一个字段失败不影响其他字段
-- [ ] **消除全局单例**
-  - [ ] 去掉 `constraints.py` 中的 `_default_registry`
-  - [ ] `SemanticAnalyzer` 持有 `registry` 实例
-- [ ] **循环引用检测** —— 模板 A → B → A
+- [x] **补测试** —— 753 个用例，测试目录完全镜像 `src/`
+  - [x] Tokenizer 测试（字面量、多行字符串、多行注释、特殊浮点、fuzz）
+  - [x] Parser 测试（各语句、类型标注、约束解析、错误恢复）
+  - [x] Semantic 测试（resolver / builder / executor / registry / sandbox）
+  - [x] Emit 测试（noexist 过滤、特殊值、JSON/YAML/TOML 输出）
+- [x] **修复约束组合引擎** —— 递归约束执行（逻辑约束 `not/any/one/all` 递归内部约束）
+- [x] **统一错误处理** —— 稳定错误码 + 结构化参数 + 集中注册表；错误节点容错；
+  单字段失败不影响其他字段
+- [x] **消除全局单例** —— `ConstraintRegistry` 实例由流水线注入（`CompileOptions`）
+- [x] **循环引用检测** —— 模板依赖环（DFS 栈）+ 默认值引用图静态环检测
 
-### 9.3 Phase 2: 边界清晰化
+### 9.3 Phase 2: 边界清晰化 ✅
 
 **目标**：建立干净的公开 API
 
-- [ ] **分离 CLI 和 Library**
-  - [ ] `main.py` → `cli.py`
-  - [ ] 库 API 通过 `__init__.py` 导出
-- [ ] **补全 `__init__.py` 导出**
-  - [ ] `parser/__init__.py`
-  - [ ] `tokenizer/__init__.py`
-- [ ] **实现 SandboxConfig**
+- [x] **分离 CLI 和 Library** —— 工具收敛到 `infinity_data.tools`（lsp / cov），
+  库 API 经 `infinity_data` 顶层导出
+- [x] **补全 `__init__.py` 导出** —— parser / tokenizer / semantic / emit 公共面
+- [x] **实现 SandboxConfig**
   - [x] 完整沙盒模型（env、allow_env、allow_files、allow_templates、strict）
   - [x] 工厂方法（deny_all、full_access、development；无 from_dict，自举用 SandboxConfig(**value)）
-  - [x] `SemanticAnalyzer` 集成沙盒
-- [ ] **实现 Schema 顶层约束**
-  - [ ] `Schema` 数据类 + mode 参数
-  - [ ] strict / lenient / strip 模式
-- [ ] **实现 safe_load**
-  - [ ] 等价于 `load(path, sandbox=SandboxConfig.deny_all())`
-- [ ] **扩展 converter**
-  - [ ] `to_json()`——自定义 encoder 处理 nan/+inf/-inf
-  - [ ] `to_yaml()`
-  - [ ] `to_toml()`
-- [ ] **文件类型检查** —— `.inft` 文件不允许数据定义
+  - [x] `strict` 覆盖「白名单内但目标不存在」（`sandbox.file_missing`）
+- [x] **实现 Schema 顶层约束** —— `Schema` + strict / lenient / strip 模式
+- [x] **实现 safe_load** —— 等价 `load(path, sandbox=SandboxConfig.deny_all())`
+- [x] **扩展 converter → emit 层**
+  - [x] `to_json()` / `to_yaml()` / `to_toml()` + `EmitConfig`
+  - [x] `dump_to_json` / `load_from_json` 无损标记闭环；`yaml_dump` 零依赖 YAML
+  - [ ] `to_json_file` 写文件 API（未提供；由调用方写文件）
+- [x] **文件类型检查** —— `.inft` 非模板/导入语句 → `inft.not_allowed` ERROR
 
-### 9.4 Phase 3: CLI + 生态
+### 9.4 Phase 3: CLI + 生态 🚧
 
 **目标**：可发布的 CLI 工具 + Git 模板支持
 
-- [ ] **CLI 命令**
+- [ ] **统一 `infd` CLI**（尚未实现）
+  - [x] `infd-cov`：编译 → YAML/JSON/TOML（`--format` / `--extract` / `--severity` / stdin）
+  - [x] `infd-lsp`：语言服务器（见第 8 章）
   - [ ] `infd init`
   - [ ] `infd check`（含 `--watch`）
   - [ ] `infd build`（含 `--format`、`-o`）
@@ -718,26 +796,28 @@ Phase 5: 模板市场 + 推广 (持续)
   - [ ] 示例配置
   - [ ] README 文档
 
-### 9.5 Phase 4: LSP + 体验
+### 9.5 Phase 4: LSP + 体验 🚧
 
 **目标**：IDE 体验达到同类最佳
 
-- [ ] **LSP 服务器**
-  - [ ] 诊断（全量重分析 < 10ms）
-  - [ ] 补全（模板字段、约束名）
-  - [ ] 悬停（约束文档、类型信息）
-  - [ ] 跳转定义
+- [x] **LSP 服务器**
+  - [x] 诊断（全量重编译，精确位置 + 稳定错误码）
+  - [x] 补全（模板字段、约束名、`$` 命名空间）
+  - [x] 悬停（约束文档、编译产物预览、模板骨架）
+  - [x] 跳转定义（模板 / `!from` / `$` 引用，含跨文件）
+  - [x] 文档符号
+  - [x] 语义令牌（高亮）
   - [ ] Code Actions（Quick Fix）
   - [ ] 格式化
-  - [ ] 文档符号
+  - [ ] 重命名
 - [ ] **VS Code 扩展**
-  - [ ] 语法高亮（TextMate grammar）
-  - [ ] LSP 客户端配置
-  - [ ] 图标 / 文件关联
-- [ ] **错误信息优化**
-  - [ ] 中文错误信息
-  - [ ] 约束违反时展示约束链
-  - [ ] Source location 精确到字符
+  - [x] 语法高亮（经 LSP semanticTokens，无需 TextMate grammar）
+  - [x] LSP 客户端配置（经 `lspConfig`，见 README）
+  - [ ] 独立扩展发布 / 图标 / 文件关联
+- [x] **错误信息优化**
+  - [x] 中文错误信息（默认语言，可切换）
+  - [x] 稳定错误码 + 结构化参数 + 精确 SourceRange
+  - [ ] 约束违反时展示分层约束链（当前诊断携带约束表达式与位置）
 
 ### 9.6 Phase 5: 模板市场 + 推广
 
@@ -761,19 +841,17 @@ Phase 5: 模板市场 + 推广 (持续)
   - [ ] 2 分钟演示视频
   - [ ] 真实案例（K8s 部署 + AWS 基础设施）
 
-### 9.7 优先级矩阵
+### 9.7 后续优先级
 
 ```
-                    高影响              低影响
-              ┌──────────────────┬──────────────────┐
-  高紧急      │ 补测试            │ 模板市场          │
-              │ 修复约束引擎      │                   │
-              │ 消除静默错误      │                   │
-              ├──────────────────┼──────────────────┤
-  低紧急      │ CLI + sandbox    │ LSP               │
-              │ Git 模板管理      │ 文档              │
-              │ JSON Schema 互转  │ 社区建设          │
-              └──────────────────┴──────────────────┘
+当前（v3.3.0）：Phase 1–2 完成；Phase 3–4 部分完成（infd-cov / infd-lsp）；
+Phase 5 未开始。
+
+下一步（建议顺序）：
+  1. JSON Schema 双向转换（M5）——生态桥接的关键
+  2. 统一 infd CLI（build / check / fmt / lint）
+  3. LSP Code Actions / 格式化 / 重命名
+  4. Git 模板生态（infd template *）
 ```
 
-Phase 1 的每一项都是阻塞性的——不做这些，后续工作都在沙上建塔。
+Phase 1–2 的完成是后续工作的基础；剩余项按「生态桥接 → 工具链 → 编辑体验」推进。

@@ -1,12 +1,12 @@
-# InfinityData 实现设计笔记
+# 实现内部记忆
 
-> 记录编译器实现中**隐含的设计决策、取舍与假设**。它们散落在代码注释与讨论中，
-> 不整理容易在后续重构时被误解或丢失。
+> **类型**：项目记忆（实现取舍）
+> **范围**：编译器实现层隐含的设计决策、取舍与假设（面向当前代码）。
+> **语言规范**：[docs/zh-CN/language/](../../../docs/zh-CN/language/index.md)（对外文档）
+> **决策记忆**：[decisions.md](./decisions.md)
+> **历史记录**：[history.md](./history.md) · [semantic_pipeline.md](./semantic_pipeline.md)
 >
-> 文档体系：
-> - [neo_desg.md](./neo_desg.md) —— 语言基础设计（语法/类型/模板/约束）
-> - [extra_desg.md](./extra_desg.md) —— 库 API / CLI / 生态设计（面向未来）
-> - **本文件** —— 编译器实现层的取舍（面向当前代码）
+> 这些内容散落在代码注释与讨论中，不整理容易在后续重构时被误解或丢失。
 
 ---
 
@@ -139,6 +139,11 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
 
 - 沙盒异常**只在语义分析内部流转**；`pipeline._compile` 捕获 `SandboxError`，
   转为 ERROR 诊断并返回**空 `StdDocument`**。
+- **`strict` 覆盖「白名单内但目标不存在」**：`mediator._open` 在授权通过后追加
+  `path.is_file()` 校验，缺失抛 `FileMissingError`（`sandbox.file_missing`）——`!file` /
+  `!from` 是配置显式声明的依赖，缺失属于部署错误，不该退化成可用配置（值变 noexist、
+  故障推迟到运行时）。非 `strict` 模式保持软失败：语义层产出 `import.file_missing`
+  警告、值退化为 noexist，供扫描 / 容错场景使用。
 - 因此 `load` / `safe_load` **不抛出**（空文档即"失败"信号）；`check` 是纯转发
   （`load(...).diagnostics`）；`compile_document` 违规时返回空文档。
 - 库默认零信任（`deny_all`）；`env` 三态模型（注入 / `allow_env` 白名单实时读 /
