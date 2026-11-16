@@ -42,6 +42,26 @@ ignore = [
 
 ---
 
+## 诊断模型
+
+所有阶段的诊断都是**声明式类型化数据**，核心约定：
+
+- 每个诊断 = 一个 `@dataclass(frozen=True)` 类，继承 `DiagnosticDeclaration`
+- `code` / `severity` / `templates` 为 `ClassVar`；其余字段是渲染参数
+- `@registry.register` 装饰器在导入期完成注册与校验：`code` 唯一、`en-US` 模板必存、
+  占位符必须来自字段或保留上下文、禁止 `Any` / `object`、禁止保留字段名
+- `Diagnostic` 持有声明实例 + 源码位置 + 语言；`render()` 产出人类可读消息，
+  `to_dict()` 产出结构化报告
+- 语言回退链：请求语言 → `en-US` → `zh-CN`；环境探测优先级为
+  `LANGUAGE` > `LC_ALL` > `LC_MESSAGES` > `LANG`（C/POSIX 禁用翻译 → `en-US`）；
+  不支持的环境 locale 直接回落 `en-US`，避免默认落到中文
+- 词法 / 语法 / 语义阶段共用一个 `DiagnosticCollector`；收集器按
+  `code + 参数 + 位置 + 级别 + 语言` 去重，定义期已报的静态错误不会在实例化处重复
+- 多错误场景（如顶层 schema 校验）由 `SandboxError.diagnostics` 携带完整列表，
+  `messages` 逐条渲染，`str(e)` 按行拼接；`code` / 摘要声明只做兜底
+
+---
+
 ## 文档覆盖
 
 使用 [interrogate](https://github.com/econchick/interrogate) 检查公开 API 的 docstring
@@ -49,9 +69,9 @@ ignore = [
 
 | 指标 | 数值 |
 | - | - |
-| 公开 API docstring 覆盖 | **78.6%** |
+| 公开 API docstring 覆盖 | **85.5%** |
 | 最低阈值 | 60% |
-| 语言文档 | 6 篇 Markdown（`docs/zh-CN/`） |
+| 语言文档 | 5 篇 Markdown（`docs/zh-CN/language/`） |
 
 ---
 
@@ -60,8 +80,8 @@ ignore = [
 ### 基线
 
 ```text
-839 passed · 1.4s
-覆盖率: 91%（5487 statements / 490 missed）
+857 passed · 1.7s
+覆盖率: 93%（6876 statements / 473 missed）
 ```
 
 ### 架构
@@ -155,16 +175,17 @@ std_to_python（忠实） / emit（有损投影）
 | 指标 | 数值 |
 | - | - |
 | 生产文件 | 63 个 `.py` |
-| 生产代码 | ~12.3k 行 |
-| 测试文件 | 70 个 `.py`（~9.1k 行） |
-| 最大单文件 | `parser/parser.py` ~1404 行 |
-| 次大文件 | `semantic/builder/builder.py` ~1062 行、`tools/lsp/language.py` ~1045 行 |
+| 生产代码 | ~15.0k 行 |
+| 测试文件 | 71 个 `.py`（~10.3k 行） |
+| 最大单文件 | `semantic/diagnostics.py` ~1623 行 |
+| 次大文件 | `parser/parser.py` ~1434 行、`tools/lsp/language.py` ~1063 行 |
 
 核心约束：
 
 - **单一诊断收集器**：词法 → 语法 → 语义全程复用 `DiagnosticCollector`
-- **单一选项载体**：`CompileOptions`（env / sandbox / registry / schema）
-- **诊断分层词汇表**：每层一个 `diagnostics.py`，导入即注册
+- **诊断声明化**：每层一个 `diagnostics.py`，`@registry.register` 导入即注册并校验；
+  声明字段是类型化参数，`code` / `severity` / `templates` 为 `ClassVar`
+- **单一选项载体**：`CompileOptions`（env / sandbox / registry / schema / lang）
 - **公共 API 薄包装**：统一走 `pipeline._compile`
 
 ---
@@ -203,6 +224,21 @@ uv run agent-kit update --check  # 漂移检查（CI / pre-commit）
 
 - **SemVer**：`MAJOR.MINOR.PATCH`
 - Git tag `v*` 触发 PyPI 发布
+
+### 4.0 迁移提示
+
+- `Diagnostic.message` → `Diagnostic.render()`
+- `Diagnostic.params` → `Diagnostic.declaration.parameters()`
+- `Diagnostic.severity` 现返回实际级别；覆盖值改名为 `severity_override`
+- `<...?> = noexist` → `<...?!>` 或 `<...!>`（`?` 只接受 null）
+- 校验器要求完整形状：可选字段缺失会报 `template.missing_optional` /
+  `schema.missing_optional`，默认值不注入给定值
+- 自定义约束的 `fail_result(code, params)` → `fail_result(declaration)`
+- `parse.invalid_json_path` 拆分为 `parse.json_path_*`；关键字期望改为
+  `parse.expected_keyword`
+- `schema.failed` 不再聚合所有错误：具体错误以 `schema.missing_*` /
+  `schema.extra_fields` / `constraint.*` 逐条返回，`SchemaError.diagnostics`
+  携带完整列表
 
 ---
 

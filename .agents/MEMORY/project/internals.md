@@ -72,9 +72,9 @@ EofToken 后 `peek()` 仍会返回 `NoNextType`，相关守卫只是从"兜底"�
   - `semantic/diagnostics.py` → `template.*` / `constraint.*` / `value.*` 等
   - `sandbox/errors.py` → `sandbox.*` / `schema.*`（异常携带声明实例 + source）
 - 消息由声明模板按语言渲染：精确 `zh-CN` / `en-US`；回退链
-  请求语言 → `I18N_LANGS_FALLBACK`（zh-CN、en-US），回退标记写入消息正文；
+  请求语言 → `I18N_LANGS_FALLBACK`（en-US、zh-CN），回退标记写入消息正文；
   `DEFAULT_LANG='en-US'`，每次编译由 `DiagnosticCollector` 构造时探测
-  （LC_ALL > LC_MESSAGES > LANG > LANGUAGE > en-US）。
+  （LANGUAGE > LC_ALL > LC_MESSAGES > LANG；C/POSIX 禁用翻译 → en-US）。
   语义/约束层**不手工拼字符串**，也不再用 code + params 映射。
 
 ### 取舍：值位置错误的归属在 parser
@@ -201,17 +201,18 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   `ConstraintExecutor.validate_templates` 静态校验；执行器是唯一同时持有注册表
   与模板表（含真名映射）的组件，Phase 2a 设计上零注册表依赖。
 - **只校验顶层约束声明**：`has(x)` / `field(x, c)` 的参数是名字而非约束，
-  静态层无法区分；嵌套约束仍在执行时校验。被实例化的模板会在定义点与调用点
-  各报一次（两个位置都指向真实错误）。
+  静态层无法区分；嵌套约束仍在执行时校验。定义期已报非法签名的约束会记录到
+  `_invalid_constraint_sources`，实例化 / 默认值 / schema 不再重复执行。
 - **参数个数规则单一实现**：`ConstraintEntry.arity_error()`，执行期 `apply`
   与定义期静态校验共用，避免两处漂移。
-- **默认值与 `!var` 值也做定义期校验**：Phase 2a 产出
-  `StdDocument.template_defaults`（定义点 scope 求值）与 `var_values`
-  （jsonpath 投影**前**的完整值）；Phase 2b `validate_template_defaults` /
-  `validate_var_values` 即使模板从未实例化、`!var` 未被 root 引用也会报错。
+- **默认值与 `!var` 值也做定义期校验**：Phase 2a 返回 `BuildArtifacts`——
+  `document` 是可下发的纯 `StdDocument`，`template_defaults`（定义点 scope
+  求值）与 `var_values`（jsonpath 投影**前**的完整值）仅用于 Phase 2b
+  `validate_template_defaults` / `validate_var_values`；即使模板从未实例化、
+  `!var` 未被 root 引用也会报错。
   - 默认值路径 `Template.field`；`!var` 路径 `$别名`
   - 递归默认值环上的字段跳过（`template.recursive_default` 根因优先）
-  - 已知噪音：非法约束签名可能在约束声明 / 默认值 / 实例值三处各报一次
+  - 同源重复诊断由 `DiagnosticCollector` 按 code/参数/位置/级别/语言去重
 
 ---
 
@@ -240,8 +241,8 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   提供 `effective_severity`、`render(lang, include_location)`、`to_dict()`。
   沙盒异常同样持有声明实例，不再用 code + params 映射。
 - **语言**：`DEFAULT_LANG='en-US'`；每次编译由 `DiagnosticCollector` 构造时探测
-  （`LC_ALL > LC_MESSAGES > LANG > LANGUAGE > en-US`）。回退链固定为
-  请求语言 → `zh-CN` → `en-US`，不扫描任意模板键；回退标记
+  （`LANGUAGE > LC_ALL > LC_MESSAGES > LANG`；C/POSIX 禁用翻译 → en-US）。
+  回退链固定为请求语言 → `en-US` → `zh-CN`，不扫描任意模板键；回退标记
   `[fallback: lang]` 写入消息正文（有意可见），渲染异常返回固定错误文案。
 - **已删除兼容层**：`Diagnostic.message` / `.params`、`DiagnosticDefine`、
   `render_message`、`diagnostic_define`、`register_diagnostic_define`、
@@ -267,3 +268,16 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
 - **错误节点容错**：`_structure_value(ErrorValue)` 与 `_constraint_text(ErrorConstraint)`
   返回 `<错误>` 占位；未知节点回退 `…`，悬停对畸形文档任意位置不抛异常。
 - 相关测试：`tests/lsp/language_test.py` 预览段（完整语义 + 错误节点）。
+
+---
+
+## 12. 文件读取缓存与编译内快照
+
+- `DiskFile` 用 `cached_property` 按实例缓存文本；`MemFile` 内容本就在内存中，
+  不引入额外缓存状态。`content_hash()` 复用已缓存文本，不再二次读盘。
+- `Sandbox` 在一次编译生命周期内按**解析后路径**复用 `DiskFile`：
+  `resolve` 与后续 `import_identities` 共享同一实例，避免 `!file` 内容被重复读取。
+- 语义是**编译内快照**：编译过程中磁盘文件变化不会反映到已缓存实例；
+  需要观察新内容时重新构造 `DiskFile` / `Sandbox` 或重新编译。
+- 回归测试：`tests/infra/file_test.py`（实例缓存 + Sandbox 复用）、
+  `tests/semantic/resolver/imports_test.py`（resolve 后 identity 只读一次）。
