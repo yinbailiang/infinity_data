@@ -366,6 +366,71 @@ def test_hover_template_def_field() -> None:
     assert '80' in h['contents']['value']
 
 
+# ── 预览：emit 完整转化语义 + 错误节点容错 ──────────────────
+
+
+def test_hover_path_value_full_semantics() -> None:
+    """path 值预览走 emit 完整语义：自描述标记而非裸字符串。"""
+    text = 'p = p"/tmp/x"\n'
+    h = language.hover(text, 'test.infd', {'line': 0, 'character': 0})
+    assert h is not None
+    value = h['contents']['value']
+    assert '"__type__": "path"' in value
+    assert '"/tmp/x"' in value
+
+
+def test_hover_float_value_full_semantics() -> None:
+    """float 值预览保留 Decimal 精度（emit decimal 标记）。"""
+    text = 'f = 1.234567890123456789\n'
+    h = language.hover(text, 'test.infd', {'line': 0, 'character': 0})
+    assert h is not None
+    value = h['contents']['value']
+    assert '"__type__": "decimal"' in value
+    assert '1.234567890123456789' in value
+
+
+def test_hover_noexist_value_full_semantics() -> None:
+    """noexist 值预览保留三态标记（不再退化为占位字符串）。"""
+    text = 'x = noexist\n'
+    h = language.hover(text, 'test.infd', {'line': 0, 'character': 0})
+    assert h is not None
+    assert '"__type__": "noexist"' in h['contents']['value']
+
+
+def test_hover_template_path_default_no_crash() -> None:
+    """模板默认值为 path：预览用 emit 标记，不再 JSON 序列化崩溃。"""
+    text = '~T {\n  p: path = p"/t"\n}\nt = T()\n'
+    h = language.hover(text, 'test.infd', {'line': 1, 'character': 3})
+    assert h is not None
+    value = h['contents']['value']
+    assert '模板字段' in value
+    assert '"__type__": "path"' in value
+
+
+def test_hover_template_skeleton_path_default_no_crash() -> None:
+    """模板骨架预览含 path 默认值：不崩溃，保留 path 标记。"""
+    text = '~T {\n  p: path = p"/t"\n  mode: str = "x"\n}\n'
+    h = language.hover(text, 'test.infd', {'line': 0, 'character': 2})  # ~T
+    assert h is not None
+    assert '"__type__": "path"' in h['contents']['value']
+
+
+def test_hover_error_value_tolerated() -> None:
+    """解析失败节点（ErrorValue）→ <错误> 占位，悬停不中断。"""
+    text = '~T {\n  x: int = ???\n}\n'
+    h = language.hover(text, 'test.infd', {'line': 1, 'character': 3})
+    assert h is not None
+    assert '<错误>' in h['contents']['value']
+
+
+def test_hover_error_nodes_do_not_crash() -> None:
+    """含错误节点的文档：任意位置悬停不抛异常。"""
+    text = '~T {\n  x: list = [1, ???, 2]\n  y int\n}\nx = {\n  a = 1,\n  b = \n}\n'
+    for line in range(len(text.splitlines())):
+        for ch in range(0, 10):
+            language.hover(text, 'test.infd', {'line': line, 'character': ch})
+
+
 # ═══════════════════════════════════════════════════════════
 # 文档大纲
 # ═══════════════════════════════════════════════════════════

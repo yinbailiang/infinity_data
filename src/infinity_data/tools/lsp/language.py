@@ -2,7 +2,8 @@
 
 - ``analyze``：编译并转出 LSP 诊断（publishDiagnostics）
 - ``completion_items``：模板名 + 内置约束名 + 语言关键字 + 模板字段补全
-- ``hover``：约束描述 / 顶层字段编译产物投影（jsonpath + std_to_python/project_output）/ 模板结构骨架
+- ``hover``：约束描述 / 编译产物预览（emit 完整转化语义：decimal / path / noexist
+  自描述标记）/ 模板结构骨架
 - ``document_symbols``：文档大纲（模板定义 + 顶层字段）
 - ``definition``：跳转到定义（模板 / ``!from`` 导入 / ``$`` 引用）
 - ``semantic_tokens``：基于 RawTokenizer 的语法高亮
@@ -18,8 +19,6 @@ UTF-16 单元**（见 :mod:`infinity_data.tools.lsp.positions`）；``SourceRang
 
 from __future__ import annotations
 
-import decimal
-import json
 import os
 import re
 from collections.abc import Callable
@@ -28,7 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from infinity_data import SandboxConfig, Severity, compile_source
-from infinity_data.emit import project_output
+from infinity_data.emit import dump_to_json
+from infinity_data.emit.config import EmitConfig
 from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
@@ -41,6 +41,8 @@ from infinity_data.parser import (
     DictValue,
     DollarValue,
     EnvImportStmt,
+    ErrorConstraint,
+    ErrorValue,
     Field,
     FileImportStmt,
     LiteralValue,
@@ -60,7 +62,6 @@ from infinity_data.semantic.std import (
     StdLiteral,
     StdObject,
     StdValue,
-    std_to_python,
 )
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
 from infinity_data.tokenizer.models.tokens import NoexistToken, NullToken
@@ -484,7 +485,7 @@ def _pos_index(text: str, position: dict[str, Any]) -> int:
 
 
 def _constraint_text(c: Any) -> str:
-    """约束 → 文本（如 int / range(1, 10) / ?）。"""
+    """约束 → 文本（如 int / range(1, 10) / ?）；解析失败节点→ ``<错误>``。"""
     if isinstance(c, ConstraintIdent):
         return c.name
     if isinstance(c, ConstraintCall):
@@ -497,6 +498,8 @@ def _constraint_text(c: Any) -> str:
         if isinstance(tok, NullToken):
             return 'null'
         return str(tok.value)
+    if isinstance(c, ErrorConstraint):
+        return '<错误>'
     return '?'
 
 
@@ -613,16 +616,20 @@ def document_symbols(text: str, file_path: str) -> list[dict[str, Any]]:
 _NOEXIST = object()
 """noexist 哨兵：结构骨架预览中跳过（键不出现）。"""
 
+_PREVIEW_EMIT = EmitConfig(full_float=True, full_path=True, keep_noexist=True)
+"""预览 JSON 配置：保留完整转化语义。
 
-def _dump_json(obj: Any) -> str:
-    """预览用的 JSON 序列化：浮点为 Decimal（上游无限精度），转 float 展示。"""
-    return json.dumps(obj, ensure_ascii=False, indent=2, default=_json_default)
+``full_float`` / ``full_path`` / ``keep_noexist`` 让 Decimal / PurePosixPath /
+noexist 以 ``{"__type__": ...}`` 自描述标记输出，而不是退化为 float / 字符串 /
+静默丢弃——预览与编译器真实产物一致。"""
 
 
-def _json_default(o: Any) -> Any:
-    if isinstance(o, decimal.Decimal):
-        return float(o)
-    raise TypeError(f'无法 JSON 序列化: {type(o).__name__}')
+def _preview_json(value: Any) -> str:
+    """预览 JSON 文本：走 emit 层（含 std 输入），保留完整转化语义。
+
+    ``value`` 可为 StdValue（编译产物）或已投影的 Python 值（结构骨架）。
+    """
+    return dump_to_json(value, config=_PREVIEW_EMIT)
 
 
 def _template_preview(tpl: TemplateDef) -> str:
@@ -632,6 +639,7 @@ def _template_preview(tpl: TemplateDef) -> str:
     - ``noexist`` 默认字段跳过（键不出现）
     - 嵌套模板调用只显示 ``Name(…)``、``$`` 引用保留、解包用 ``…`` 占位
       （要看真实结果请悬停到实例化字段上，见 ``_field_preview``）
+    - 字面量取值的类型语义由 emit 保留（Decimal / path 自描述标记）
     """
     obj: dict[str, Any] = {}
     for f in tpl.fields:
@@ -642,13 +650,18 @@ def _template_preview(tpl: TemplateDef) -> str:
         if rv is _NOEXIST:
             continue
         obj[f.name] = rv
-    return _dump_json(obj)
+    return _preview_json(obj)
 
 
 def _structure_value(v: Any) -> Any:
-    """AST 值 → 结构骨架（模板预览用）：不实例化模板调用、不求值 ``$``、不解包。"""
+    """AST 值 → 结构骨架（模板预览用）：不实例化模板调用、不求值 ``$``、不解包。
+
+    容错：解析失败节点（``ErrorValue``）→ ``<错误>`` 占位，不中断预览。
+    """
     if v is None:
         return None
+    if isinstance(v, ErrorValue):
+        return '<错误>'
     if isinstance(v, LiteralValue):
         tok = v.value
         if isinstance(tok, NullToken):
@@ -810,10 +823,8 @@ def _template_field_at(doc: Any, cursor: int) -> tuple[TemplateDef | None, Templ
 
 
 def _std_preview(value: Any) -> str:
-    """StdValue → 预览 JSON 文本（noexist → 占位）。"""
-    if isinstance(value, StdLiteral) and value.kind == 'noexist':
-        return '<noexist>'
-    return _dump_json(project_output(std_to_python(value, keep_noexist=False)))
+    """StdValue → 预览 JSON（emit 完整语义：decimal / path / noexist 自描述标记）。"""
+    return _preview_json(value)
 
 
 def _value_hover(word: str, title: str, value: Any) -> dict[str, Any]:
@@ -914,7 +925,7 @@ def hover(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any]
         if tf.default_value is not None:
             md.append('- 默认值:')
             md.append('```json')
-            md.append(_dump_json(_structure_value(tf.default_value)))
+            md.append(_preview_json(_structure_value(tf.default_value)))
             md.append('```')
         return {'contents': {'kind': 'markdown', 'value': '\n'.join(md)}}
 

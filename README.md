@@ -92,7 +92,7 @@ python -m infinity_data.tools.lsp
 |---|---|
 | 诊断 | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`（精确位置 + 稳定错误码 + 中文消息；UTF-16 对齐） |
 | 补全 | 命名空间（`$` 触发）+ 内置约束名 + 当前文件可见模板名 + 模板字段（含必填/可选）+ 语言关键字 |
-| 悬停 | 约束描述、**编译产物预览**（字段/子字段/模板参数，jsonpath 投影）、**被实例化的模板**（模板骨架提示在前 + 实例预览在后）、**`$` 变量值**（定义点与调用点）、模板结构骨架（必填/可选 + description 元数据） |
+| 悬停 | 约束描述、**编译产物预览**（字段/子字段/模板参数；emit 完整转化语义：decimal / path / noexist 自描述标记）、**被实例化的模板**（模板骨架提示在前 + 实例预览在后）、**`$` 变量值**（定义点与调用点）、模板结构骨架（必填/可选 + description 元数据） |
 | 文档大纲 | `documentSymbol`：模板定义（Class）+ 顶层字段（Property） |
 | 跳转定义 | `definition`：模板调用 / `!from` 导入 / `$` 引用（含跨文件） |
 | 语义令牌 | `semanticTokens`：直接用 `RawTokenizer` 分词（UTF-16 单元对齐；跨行多行字符串按行拆分） |
