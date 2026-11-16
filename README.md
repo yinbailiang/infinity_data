@@ -27,7 +27,7 @@ from infinity_data import load, safe_load, SandboxConfig, Schema
 result = load('app.infd')              # 默认零信任
 if result.has_errors:
     for d in result.diagnostics:
-        print(d.location, d.code, d.message)
+        print(d.location, d.code, d.render())
 else:
     print(result.value)                # 降维后的 dict
 ```
@@ -90,7 +90,7 @@ python -m infinity_data.tools.lsp
 
 | 能力 | 说明 |
 |---|---|
-| 诊断 | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`（精确位置 + 稳定错误码 + 中文消息；UTF-16 对齐） |
+| 诊断 | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`（精确位置 + 稳定错误码 + 多语言消息 zh-CN / en-US；UTF-16 对齐） |
 | 补全 | 命名空间（`$` 触发）+ 内置约束名 + 当前文件可见模板名 + 模板字段（含必填/可选）+ 语言关键字 |
 | 悬停 | 约束描述、**编译产物预览**（字段/子字段/模板参数；emit 完整转化语义：decimal / path / noexist 自描述标记）、**被实例化的模板**（模板骨架提示在前 + 实例预览在后）、**`$` 变量值**（定义点与调用点）、模板结构骨架（必填/可选 + description 元数据） |
 | 文档大纲 | `documentSymbol`：模板定义（Class）+ 顶层字段（Property） |

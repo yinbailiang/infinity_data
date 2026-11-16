@@ -10,16 +10,23 @@ from __future__ import annotations
 from typing import Any
 
 from infinity_data.semantic.builder.models import StdObject
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.diagnostics import (
+    ConstraintFieldMissing,
+    ConstraintFieldNeed,
+    ConstraintFieldOnly,
+    ConstraintHasMissing,
+    ConstraintHasOnly,
+)
+from infinity_data.semantic.registry.core import (
     ConstraintResult,
     Executor,
     fail_result,
     ok_result,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_spec as _as_spec,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     spec_name as _spec_name,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -35,14 +42,14 @@ def _check_has(
     executor: Executor,
 ) -> ConstraintResult:
     if not isinstance(val, StdObject):
-        return fail_result('constraint.has_only', {}, source, path)
+        return fail_result(ConstraintHasOnly(), source, path)
     key = _spec_name(args[0])
     f = val.get(key)
     # noexist 字段在 StdObject 中仍以非 None 哨兵存在（渲染时才过滤），
     # 但按三态语义「键不出现」应视为不存在（回归：one(has(a), has(b)) 误判 both）。
     if f is not None and not f.is_noexist:
         return ok_result()
-    return fail_result('constraint.has_missing', {'key': key}, source, path)
+    return fail_result(ConstraintHasMissing(key=key), source, path)
 
 
 def _check_field(
@@ -53,15 +60,15 @@ def _check_field(
     executor: Executor,
 ) -> ConstraintResult:
     if not isinstance(val, StdObject):
-        return fail_result('constraint.field_only', {}, source, path)
+        return fail_result(ConstraintFieldOnly(), source, path)
     name = _spec_name(args[0])
     spec = _as_spec(args[1])
     if spec is None:
-        return fail_result('constraint.field_need', {}, source, path)
+        return fail_result(ConstraintFieldNeed(), source, path)
     f = val.get(name)
     # noexist = 键不出现 → 视为字段缺失（与 has 同理）
     if f is None or f.is_noexist:
-        return fail_result('constraint.field_missing', {'field': name}, source, path)
+        return fail_result(ConstraintFieldMissing(field=name), source, path)
     # 诊断指向被检查的字段值本身（无来源时回退字段位置）
     f_src = f.value.source if f.value is not None else f.source
     return executor(spec, f.value, f_src or source, f'{path}.{name}')

@@ -12,7 +12,8 @@
 from __future__ import annotations
 
 from infinity_data.semantic.builder.models import ResolvedConstraint, StdValue
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.diagnostics import ConstraintArgCount, ConstraintUnknown
+from infinity_data.semantic.registry.core import (
     ConstraintEntry,
     ConstraintFn,
     ConstraintResult,
@@ -124,13 +125,11 @@ class ConstraintRegistry:
         """按名称执行约束（含参数个数校验）。"""
         entry = self._entries.get(constraint.name)
         if entry is None:
-            return fail_result('constraint.unknown', {'name': constraint.name}, source, path)
+            return fail_result(ConstraintUnknown(name=constraint.name), source, path)
         n = len(constraint.args)
         expected = entry.arity_error(n)
         if expected is not None:
-            return fail_result(
-                'constraint.arg_count', {'name': constraint.name, 'expected': expected, 'given': n}, source, path
-            )
+            return fail_result(ConstraintArgCount(name=constraint.name, expected=expected, given=n), source, path)
         return entry.fn(value, source, path, constraint.args, executor)
 
     def _register_builtins(self) -> None:

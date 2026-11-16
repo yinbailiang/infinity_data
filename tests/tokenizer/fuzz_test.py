@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
-from infinity_data.infra.diagnostics import DiagnosticCollector, render_message
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
 from infinity_data.infra.location import SourceRange
 from infinity_data.parser.parser import Parser
@@ -147,9 +147,9 @@ def _check_invariants(src: str) -> None:
     raw_tokens = list(RawTokenizer(file=file, error_collector=col))
     assert raw_tokens and raw_tokens[-1].type is RawTokenType.EOF, f'非 EOF 终止: {src!r}'
 
-    # 诊断均可渲染（code 已注册 + params 齐全）
+    # 诊断均可渲染（声明已注册 + 参数齐全）
     for d in col:
-        render_message(d.code, d.params, location='x:1:1')
+        assert d.render(lang='zh-CN')
 
     # raw 结构合法
     for t in raw_tokens:

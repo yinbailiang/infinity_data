@@ -10,7 +10,7 @@
     result = safe_load("app.infd")
     if result.has_errors:
         for d in result.diagnostics:
-            print(d.location, d.message)
+            print(d.location, d.render())
     else:
         print(result.value)
 """

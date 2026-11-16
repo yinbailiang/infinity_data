@@ -7,7 +7,7 @@ from infinity_data import CompilationResult, Severity, compile_source
 
 
 def errors_of(result: CompilationResult) -> list[str]:
-    return [d.message for d in result.diagnostics if d.severity is Severity.ERROR]
+    return [d.render() for d in result.diagnostics if d.effective_severity is Severity.ERROR]
 
 
 def compile_ok(source: str) -> dict[str, Any]:
@@ -350,7 +350,7 @@ def test_nullable_self_referential_template() -> None:
     """自引用模板的可空引用：Node? 嵌套展开应通过。"""
     src = '~Node {\n    child: <Node?> = null\n}\nn = Node(child = Node())\n'
     result = compile_source(src)
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'n': {'child': {'child': None}}}
 
 
@@ -384,7 +384,7 @@ def test_recursive_default_unused_still_detected() -> None:
 def test_nullable_recursive_default_is_legal() -> None:
     """可空递归 + 默认 null：默认值为字面量，不构成引用环，合法。"""
     result = compile_source('~Node {\n    child: <Node?> = null\n}\nn = Node()\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
 # ═══════════════════════════════════════════════════════

@@ -82,7 +82,7 @@ def test_dollar_cast_int(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!env import PORT\nport = $PORT as int\n')
     result = load(f, env={'PORT': '8080'})
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'port': 8080}
 
 
@@ -91,7 +91,7 @@ def test_dollar_cast_bool(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!env import A\n!env import B\n!env import C\na = $A as bool\nb = $B as bool\nc = $C as bool\n')
     result = load(f, env={'A': 'True', 'B': '0', 'C': 'yes'})
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a': True, 'b': False, 'c': False}
 
 
@@ -99,7 +99,7 @@ def test_dollar_cast_float(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!env import R\nr = $R as float\n')
     result = load(f, env={'R': '1.5'})
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'r': Decimal('1.5')}
 
 
@@ -108,7 +108,7 @@ def test_dollar_cast_str_and_plain(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!env import NAME\ns = $NAME as str\nplain = $NAME\n')
     result = load(f, env={'NAME': 'demo'})
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'s': 'demo', 'plain': 'demo'}
 
 
@@ -131,7 +131,7 @@ def test_dollar_cast_bool_valid_strings(tmp_path: Path) -> None:
         'a = $A as bool\nb = $B as bool\nc = $C as bool\nd = $D as bool\n',
     )
     result = load(f, env={'A': 'TRUE', 'B': '1', 'C': 'false', 'D': '0'})
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a': True, 'b': True, 'c': False, 'd': False}
 
 
@@ -153,7 +153,7 @@ def test_env_import_multi(tmp_path: Path) -> None:
         '!env import USER as u, HOME, PORT as p\nuser = $u\nhome = $HOME\nport = $p as int\n',
     )
     result = load(f, env={'USER': 'alice', 'HOME': '/home/alice', 'PORT': '8080'})
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'user': 'alice', 'home': '/home/alice', 'port': 8080}
 
 
@@ -180,7 +180,7 @@ def test_dollar_cast_any_import_string(tmp_path: Path) -> None:
         's = $n as str\n',
     )
     result = load(f, sandbox=SandboxConfig(allow_files=['./num.txt', './data.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {
         'a': 8080,
         'b': 443,
@@ -203,7 +203,7 @@ def test_dollar_cast_structured_value_errors_and_keeps(tmp_path: Path) -> None:
     )
     result = load(f)
     assert result.has_errors
-    assert [(d.severity, d.code) for d in result.diagnostics] == [
+    assert [(d.effective_severity, d.code) for d in result.diagnostics] == [
         (Severity.ERROR, 'dollar.convert_unsupported'),
         (Severity.ERROR, 'dollar.convert_unsupported'),
     ]
@@ -239,7 +239,7 @@ def test_dollar_cast_str_any_literal(tmp_path: Path) -> None:
         's_ni = $ni as str\n',
     )
     result = load(f)
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {
         's_i': '42',
         's_fl': '1.5',
@@ -267,7 +267,7 @@ def test_dollar_cast_null_noexist_propagates(tmp_path: Path) -> None:
         'e = $nx as int\n',
     )
     result = load(f)
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a': None, 'b': None, 'c': None, 'd': None}
     # e 为 noexist → 键不出现在输出
 
@@ -278,7 +278,7 @@ def test_env_authorized_read_from_os(tmp_path: Path, monkeypatch: pytest.MonkeyP
     f = tmp_path / 'app.infd'
     _write(f, '!env import INF_DEMO_KEY\nv = $INF_DEMO_KEY\n')
     result = load(f, sandbox=SandboxConfig(allow_env=['INF_DEMO_KEY']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': 'from-os'}
 
 
@@ -299,7 +299,7 @@ def test_env_injection_takes_precedence(tmp_path: Path, monkeypatch: pytest.Monk
     f = tmp_path / 'app.infd'
     _write(f, '!env import INF_DUP\nv = $INF_DUP\n')
     result = load(f, sandbox=SandboxConfig(env={'INF_DUP': 'injected'}, allow_env=['INF_DUP']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': 'injected'}
 
 
@@ -309,7 +309,7 @@ def test_full_access_reads_live_os_env(tmp_path: Path, monkeypatch: pytest.Monke
     f = tmp_path / 'app.infd'
     _write(f, '!env import INF_LIVE\nv = $INF_LIVE\n')
     result = load(f, sandbox=SandboxConfig.full_access())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': 'live-value'}
 
 
@@ -354,7 +354,7 @@ def test_file_import_whole_file(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.json" as json import . as all\nv = $all\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': {'host': 'example.com', 'port': 443}}
 
 
@@ -365,7 +365,7 @@ def test_file_import_first_segment_as_key(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.json" as json import ."as" as v\nx = $v\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'x': {'v': 1}}
 
 
@@ -387,7 +387,7 @@ def test_file_import_raw_explicit(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"note.txt" as raw import . as note\ncontent = $note\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./note.txt']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'content': 'line one\nline two\n  \n'}
 
 
@@ -398,7 +398,7 @@ def test_file_import_raw_suffix_detection(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"README.md" import . as readme\ncontent = $readme\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./README.md']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'content': '# Title\n\nbody text\n'}
 
 
@@ -422,7 +422,7 @@ def test_file_import_raw_multi_bind(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"seed.txt" as raw import . as a, . as b\na1 = $a\nb1 = $b\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./seed.txt']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a1': 'AB\nCD\n', 'b1': 'AB\nCD\n'}
 
 
@@ -438,7 +438,7 @@ def test_glob_double_star_matches_nested(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"configs/dev/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['**/*.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'value': 42}
 
 
@@ -449,7 +449,7 @@ def test_glob_double_star_matches_root_level(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['**/*.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'value': 7}
 
 
@@ -460,7 +460,7 @@ def test_glob_dir_double_star_matches_nested(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"configs/dev/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['configs/**']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'value': 1}
 
 
@@ -483,7 +483,7 @@ def test_glob_single_star_matches_one_level(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"configs/data.json" import .key as k\nvalue = $k\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['configs/*.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'value': 5}
 
 
@@ -492,7 +492,7 @@ def test_check_does_not_raise(tmp_path: Path) -> None:
     _write(f, '!env import USER\nuser = $USER\n')
     diagnostics = check(f)  # 默认零信任 → 违规转 ERROR 诊断
     assert diagnostics
-    assert all(d.severity is Severity.ERROR for d in diagnostics)
+    assert all(d.effective_severity is Severity.ERROR for d in diagnostics)
 
 
 # ═══════════════════════════════════════════════════════
@@ -506,7 +506,7 @@ def test_template_import_from_inft(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/extra.inft" import Extra\nval = Extra(name="y")\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'val': {'name': 'y'}}
 
 
@@ -576,7 +576,7 @@ def test_template_import_with_alias(tmp_path: Path) -> None:
         '!from p"templates/extra.inft" import Extra as Ex\na = Ex(name="y")\n',
     )
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a': {'name': 'y'}}
 
     # 原名不可见（按需导入语义）
@@ -593,7 +593,7 @@ def test_template_import_multiple_with_mixed_alias(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"extra.inft" import A as A1, B\nv = A1()\nw = B()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': {'x': 1}, 'w': {'y': 'b'}}
 
 
@@ -630,7 +630,7 @@ def test_template_import_nested(tmp_path: Path) -> None:
     # Base 对主文件不可见，参数值按调用点可见性解析 → 用 dict 字面量（模板即约束校验）
     _write(f, '!from p"templates/mid.inft" import Mid\nm = Mid(base={ id = 7 })\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'m': {'base': {'id': 7}}}
 
 
@@ -640,7 +640,7 @@ def test_inft_data_import_var_in_place(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'s': {'port': 8080}}
 
 
@@ -653,7 +653,7 @@ def test_inft_data_import_env_in_place(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft'], env={'PORT': '8080'}))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'s': {'port': 8080}}
 
 
@@ -667,7 +667,7 @@ def test_inft_data_import_file_in_place(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'s': {'port': 8080}}
 
 
@@ -677,7 +677,7 @@ def test_inft_dollar_isolated_across_files(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\n!var 8080 import . as port\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert any(d.code == 'dollar.undefined' for d in result.diagnostics)
     assert result.value == {'s': {'port': None}}
 
@@ -689,7 +689,7 @@ def test_inft_same_alias_isolated_between_files(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"a.inft" import A\n!from p"b.inft" import B\na = A()\nb = B()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a': {'v': 1}, 'b': {'v': 2}}
 
 
@@ -701,7 +701,7 @@ def test_inft_var_forward_reference_in_place(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'s': {'v': 1}}
 
 
@@ -729,7 +729,7 @@ def test_inft_file_denied_warns_and_undefined(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig(allow_templates=['./templates/*.inft'], strict=False))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     codes = [d.code for d in result.diagnostics]
     assert 'import.file_denied' in codes
     assert 'dollar.undefined' in codes
@@ -775,7 +775,7 @@ def test_inft_file_missing_lenient_warns(tmp_path: Path) -> None:
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     sandbox = SandboxConfig(allow_env=None, allow_files=['**/*'], allow_templates=['**/*'], strict=False)
     result = load(f, sandbox=sandbox)
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert any(d.code == 'import.file_missing' for d in result.diagnostics)
     assert result.value == {'s': {'port': None}}
 
@@ -805,7 +805,7 @@ def test_inft_file_path_failed_warns(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert any(d.code == 'import.path_failed' for d in result.diagnostics)
     assert result.value == {'s': {'port': None}}
 
@@ -820,7 +820,7 @@ def test_inft_file_unsupported_format_warns(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"templates/svc.inft" import S\ns = S()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert any(d.code == 'import.unsupported_format' for d in result.diagnostics)
 
 
@@ -886,7 +886,7 @@ def test_file_import_toml(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.toml" as toml import .port as port, .name as name\np = $port\nn = $name\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.toml']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'p': 8080, 'n': 'api'}
 
 
@@ -897,7 +897,7 @@ def test_file_import_yaml(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.yaml" as yaml import .port as port, .name as name\np = $port\nn = $name\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.yaml']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'p': 8080, 'n': 'api'}
 
 
@@ -940,7 +940,7 @@ def test_template_import_cyclic_is_safe(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!from p"a.inft" import A\nx = A()\n')
     result = load(f, sandbox=SandboxConfig.development())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'x': {'b': {'a': None}}}
 
 
@@ -999,7 +999,7 @@ def test_schema_missing_optional_field(tmp_path: Path) -> None:
     result = load(f, schema=Schema(template='AppConfig'))
     assert result.has_errors
     assert [d.code for d in result.diagnostics] == ['schema.failed']
-    assert 'port' in result.diagnostics[0].message
+    assert 'port' in result.diagnostics[0].render()
 
 
 def test_schema_absent_suffix_allows_missing(tmp_path: Path) -> None:
@@ -1007,7 +1007,7 @@ def test_schema_absent_suffix_allows_missing(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str\n    port: int! = 8080\n}\nname = "demo"\n')
     result = load(f, schema=Schema(template='AppConfig'))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'name': 'demo'}
 
 
@@ -1025,7 +1025,7 @@ def test_schema_lenient_extra_field_warns(tmp_path: Path) -> None:
     _write(f, '~AppConfig {\n    name: str = "x"\n}\nname = "x"\nextra = 1\n')
     result = load(f, schema=Schema(template='AppConfig', mode='lenient'))
     assert not result.has_errors
-    assert any(d.severity is Severity.WARNING for d in result.diagnostics)
+    assert any(d.effective_severity is Severity.WARNING for d in result.diagnostics)
     assert result.value == {'name': 'x', 'extra': 1}
 
 
@@ -1047,7 +1047,7 @@ def test_schema_from_file(tmp_path: Path) -> None:
         sandbox=SandboxConfig(allow_templates=['./templates/*.inft']),
         schema=Schema(template='AppConfig', from_file='templates/AppConfig.inft'),
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'name': 'demo'}
 
 
@@ -1099,5 +1099,5 @@ def test_full_access_sandbox(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.json" import .key as k\nv = $k\n')
     result = load(f, sandbox=SandboxConfig.full_access())
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': 1}

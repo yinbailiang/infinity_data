@@ -15,7 +15,12 @@ from collections.abc import Iterable, Iterator
 from pathlib import PurePosixPath
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
-from infinity_data.tokenizer.diagnostics import diag
+from infinity_data.tokenizer.diagnostics import (
+    TokenizeInvalidEscape,
+    TokenizeInvalidFloat,
+    TokenizeInvalidNumber,
+    TokenizeInvalidPath,
+)
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
@@ -240,7 +245,7 @@ class FinalTokenizer:
         try:
             value = json.loads(raw.raw)
         except json.JSONDecodeError:
-            self._errors.add(diag('tokenize.invalid_escape', {'raw': raw.raw}, raw.source))
+            self._errors.add(TokenizeInvalidEscape(raw=raw.raw), raw.source)
             value = raw.raw[1:-1] if len(raw.raw) >= 2 else raw.raw
         return SinglelineStringToken(raw=raw, value=value)
 
@@ -260,14 +265,14 @@ class FinalTokenizer:
         try:
             value = json.loads(inner)
         except json.JSONDecodeError:
-            self._errors.add(diag('tokenize.invalid_escape', {'raw': raw.raw}, raw.source))
+            self._errors.add(TokenizeInvalidEscape(raw=raw.raw), raw.source)
             value = inner[1:-1] if len(inner) >= 2 else inner
         try:
             if not value:
                 raise ValueError('empty path')
             path = PurePosixPath(value)
         except ValueError:
-            self._errors.add(diag('tokenize.invalid_path', {'raw': raw.raw}, raw.source))
+            self._errors.add(TokenizeInvalidPath(raw=raw.raw), raw.source)
             path = PurePosixPath('.')
         return PathToken(raw=raw, value=path)
 
@@ -276,7 +281,7 @@ class FinalTokenizer:
         try:
             value = int(raw.raw)
         except ValueError:
-            self._errors.add(diag('tokenize.invalid_number', {'raw': raw.raw}, raw.source))
+            self._errors.add(TokenizeInvalidNumber(raw=raw.raw), raw.source)
             value = 0
         return IntegerToken(raw=raw, value=value)
 
@@ -297,7 +302,7 @@ class FinalTokenizer:
                 try:
                     value = decimal.Decimal(s)
                 except decimal.InvalidOperation:
-                    self._errors.add(diag('tokenize.invalid_float', {'raw': raw.raw}, raw.source))
+                    self._errors.add(TokenizeInvalidFloat(raw=raw.raw), raw.source)
                     value = decimal.Decimal(0)
         return FloatToken(raw=raw, value=value)
 

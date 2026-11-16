@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from infinity_data.infra.diagnostics import Diagnostic, Severity
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticDeclaration, Severity
 from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
     StdArray,
@@ -91,23 +91,20 @@ def ok_result() -> ConstraintResult:
 
 
 def fail_result(
-    code: str,
-    params: Mapping[str, Any],
+    declaration: DiagnosticDeclaration,
     source: SourceRange | None,
     path: str,
     *,
-    severity: Severity = Severity.ERROR,
+    severity: Severity | None = None,
 ) -> ConstraintResult:
-    """构造结构化失败结果（code + params，message 由注册表渲染）。
+    """构造结构化失败结果（声明实例携带类型化参数）。
 
-    ``severity``：默认 ERROR；沙盒越界等「软失败」可传 WARNING（仍 ``ok=False``，
-    约束不满足，但诊断级别为警告）。
+    ``severity``：``None`` = 声明级别；沙盒越界等「软失败」可传 ``WARNING``
+    （仍 ``ok=False``，约束不满足，但诊断级别为警告）。
     """
     return ConstraintResult(
         ok=False,
-        diagnostics=[
-            Diagnostic(severity=severity, code=code, params=dict(params), source=source, path=path),
-        ],
+        diagnostics=[Diagnostic(declaration=declaration, source=source, path=path, severity=severity)],
     )
 
 

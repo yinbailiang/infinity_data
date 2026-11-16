@@ -125,7 +125,7 @@ def test_resolve_imported_template_scope(tmp_path: Path) -> None:
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['./templates/*.inft']))
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
-    assert not list(collector), [d.message for d in collector]
+    assert not list(collector), [d.render() for d in collector]
     # 可见名 Extra → 导入模板的 TemplateKey
     assert 'Extra' in ctx.root_scope.visible
     key = ctx.root_scope.visible['Extra']
@@ -144,7 +144,7 @@ def test_resolve_circular_import_guard(tmp_path: Path) -> None:
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']))
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
-    assert not list(collector), [d.message for d in collector]
+    assert not list(collector), [d.render() for d in collector]
     assert 'A' in ctx.root_scope.visible
     assert {'A', 'B'} <= {k.name for k in ctx.templates}
 
@@ -159,7 +159,7 @@ def test_resolve_nested_import_mapping(tmp_path: Path) -> None:
     resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['**/*']))
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
-    assert not list(collector), [d.message for d in collector]
+    assert not list(collector), [d.render() for d in collector]
     assert {'Mid', 'Base'} <= {k.name for k in ctx.templates}
 
 

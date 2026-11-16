@@ -36,7 +36,7 @@ def test_detect_bom_reports_and_skips() -> None:
     stream = CharStream('\ufeffa')
     col = DiagnosticCollector()
     RawTokenizer._detect_bom(stream, col, file)
-    assert any(d.code == 'tokenize.bom' and d.severity.value == 'warning' for d in col)
+    assert any(d.code == 'tokenize.bom' and d.effective_severity.value == 'warning' for d in col)
     assert stream.peek() == 'a'
 
 
@@ -446,7 +446,7 @@ def test_read_multiline_string_unterminated() -> None:
     RawTokenizer._read_multiline_string(stream, col, file)
     diags = [d for d in col if d.code == 'tokenize.unterminated_multiline_string']
     assert diags
-    assert diags[0].params == {'flag': '`'}  # 期望单个反引号结束标记
+    assert diags[0].declaration.parameters() == {'flag': '`'}  # 期望单个反引号结束标记
 
 
 def test_read_multiline_string_unterminated_reports_expected_flag() -> None:
@@ -457,7 +457,7 @@ def test_read_multiline_string_unterminated_reports_expected_flag() -> None:
     RawTokenizer._read_multiline_string(stream, col, file)
     diags = [d for d in col if d.code == 'tokenize.unterminated_multiline_string']
     assert diags
-    assert diags[0].params == {'flag': '``'}
+    assert diags[0].declaration.parameters() == {'flag': '``'}
 
 
 # ── 数字 / 特殊浮点 ─────────────────────────────────

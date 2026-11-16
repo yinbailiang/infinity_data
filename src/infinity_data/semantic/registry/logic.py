@@ -6,13 +6,22 @@ from typing import Any
 
 from infinity_data.infra.diagnostics import Diagnostic, Severity
 from infinity_data.semantic.builder.models import StdValue
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.diagnostics import (
+    ConstraintAllFail,
+    ConstraintAnyFail,
+    ConstraintNotFail,
+    ConstraintNotNeed,
+    ConstraintOneMany,
+    ConstraintOneNone,
+    ConstraintWhenNeed,
+)
+from infinity_data.semantic.registry.core import (
     ConstraintResult,
     Executor,
     fail_result,
     ok_result,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_spec as _as_spec,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -29,11 +38,11 @@ def _check_not(
 ) -> ConstraintResult:
     spec = _as_spec(args[0])
     if spec is None:
-        return fail_result('constraint.not_need', {}, source, path)
+        return fail_result(ConstraintNotNeed(), source, path)
     inner = executor(spec, val, source, path)
     if not inner.ok:
         return ok_result()  # 内部不满足 → not 满足
-    return fail_result('constraint.not_fail', {}, source, path)
+    return fail_result(ConstraintNotFail(), source, path)
 
 
 def _summary_severity(diags: list[Diagnostic]) -> Severity:
@@ -42,7 +51,7 @@ def _summary_severity(diags: list[Diagnostic]) -> Severity:
     使「越出沙盒 → 警告 + 失败」（constraint.path_denied 为 WARNING）在
     ``all`` / ``any`` / ``one`` 组合下保持软失败（不产生硬编译错误）。
     """
-    if all(d.severity is not Severity.ERROR for d in diags):
+    if all(d.effective_severity is not Severity.ERROR for d in diags):
         return Severity.WARNING
     return Severity.ERROR
 
@@ -66,7 +75,7 @@ def _check_any(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(_summary_severity(diags), 'constraint.any_fail', {}, source, path),
+            Diagnostic(ConstraintAnyFail(), source, path, severity=_summary_severity(diags)),
             *diags,
         ],
     )
@@ -96,11 +105,11 @@ def _check_one(
         return ConstraintResult(
             ok=False,
             diagnostics=[
-                Diagnostic(_summary_severity(diags), 'constraint.one_none', {}, source, path),
+                Diagnostic(ConstraintOneNone(), source, path, severity=_summary_severity(diags)),
                 *diags,
             ],
         )
-    return fail_result('constraint.one_many', {'count': len(satisfied), 'names': satisfied}, source, path)
+    return fail_result(ConstraintOneMany(count=len(satisfied), names=satisfied), source, path)
 
 
 def _check_all(
@@ -123,7 +132,7 @@ def _check_all(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(_summary_severity(diags), 'constraint.all_fail', {}, source, path),
+            Diagnostic(ConstraintAllFail(), source, path, severity=_summary_severity(diags)),
             *diags,
         ],
     )
@@ -139,7 +148,7 @@ def _check_when(
     cond = _as_spec(args[0])
     req = _as_spec(args[1])
     if cond is None or req is None:
-        return fail_result('constraint.when_need', {}, source, path)
+        return fail_result(ConstraintWhenNeed(), source, path)
     if not executor(cond, val, source, path).ok:
         return ok_result()  # 条件不满足 → 约束满足
     return executor(req, val, source, path)

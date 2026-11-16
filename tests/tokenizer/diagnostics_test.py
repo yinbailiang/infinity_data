@@ -1,19 +1,30 @@
-"""tokenizer/diagnostics.py 单元测试：tokenize.* 词汇表注册（导入即注册）。"""
+"""tokenizer/diagnostics.py 单元测试：tokenize.* 声明注册与渲染（导入即注册）。"""
 
-from infinity_data.infra.diagnostics import render_message
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticDeclaration
+from infinity_data.tokenizer.diagnostics import (
+    TokenizeBangCorrected,
+    TokenizeBom,
+    TokenizeMismatchedBracket,
+    TokenizeSignedNan,
+    TokenizeUnexpectedCloseBracket,
+    TokenizeUnknownChar,
+    TokenizeUnterminatedBracket,
+    TokenizeUnterminatedMultilineString,
+    TokenizeUnterminatedString,
+)
+
+
+def _msg(declaration: DiagnosticDeclaration) -> str:
+    return Diagnostic(declaration, lang='zh-CN').render(include_location=False)
 
 
 def test_vocab_registered() -> None:
-    assert '未知字符' in render_message('tokenize.unknown_char', {'char': '@'}, location='x:1:1')
-    assert '括号未闭合' in render_message('tokenize.unterminated_bracket', {'bracket': '['}, location='x:1:1')
-    assert '不匹配' in render_message('tokenize.mismatched_bracket', {'open': '[', 'close': ')'}, location='x:1:1')
-    assert '多余' in render_message('tokenize.unexpected_close_bracket', {'bracket': ')'}, location='x:1:1')
-    assert '纠正' in render_message(
-        'tokenize.bang_corrected', {'actual': 'envv', 'suggestion': 'env'}, location='x:1:1'
-    )
-    assert '带符号' in render_message('tokenize.signed_nan', {'raw': '+nan'}, location='x:1:1')
-    assert 'BOM' in render_message('tokenize.bom', {}, location='x:1:1')
-    assert '未闭合' in render_message('tokenize.unterminated_string', {}, location='x:1:1')
-    assert '多行字符串未闭合' in render_message(
-        'tokenize.unterminated_multiline_string', {'flag': '``'}, location='x:1:1'
-    )
+    assert '未知字符' in _msg(TokenizeUnknownChar(char='@'))
+    assert '括号未闭合' in _msg(TokenizeUnterminatedBracket(bracket='['))
+    assert '不匹配' in _msg(TokenizeMismatchedBracket(open='[', close=')'))
+    assert '多余' in _msg(TokenizeUnexpectedCloseBracket(bracket=')'))
+    assert '纠正' in _msg(TokenizeBangCorrected(actual='envv', suggestion='env'))
+    assert '带符号' in _msg(TokenizeSignedNan(raw='+nan'))
+    assert 'BOM' in _msg(TokenizeBom())
+    assert '未闭合' in _msg(TokenizeUnterminatedString())
+    assert '多行字符串未闭合' in _msg(TokenizeUnterminatedMultilineString(flag='``'))

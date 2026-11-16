@@ -1,19 +1,29 @@
-"""semantic/diagnostics.py 单元测试：semantic.* 词汇表注册（导入即注册）。"""
+"""semantic/diagnostics.py 单元测试：semantic.* 声明注册与渲染（导入即注册）。"""
 
-from infinity_data.infra.diagnostics import render_message
+from infinity_data.infra.diagnostics import Diagnostic
+from infinity_data.semantic.diagnostics import (
+    ConstraintAllFail,
+    DollarUndefined,
+    TemplateUndefined,
+    ValueNestingDepth,
+)
 
 
 def test_template_vocab_registered() -> None:
-    assert '未定义' in render_message('template.undefined', {'template': 'X'}, location='x:1:1')
+    msg = Diagnostic(TemplateUndefined(template='X'), lang='zh-CN').render(include_location=False)
+    assert '未定义' in msg
 
 
 def test_constraint_vocab_registered() -> None:
-    assert '约束失败' in render_message('constraint.all_fail', {}, location='x:1:1')
+    msg = Diagnostic(ConstraintAllFail(), lang='zh-CN').render(include_location=False)
+    assert '约束失败' in msg
 
 
 def test_dollar_vocab_registered() -> None:
-    assert '未找到导入变量' in render_message('dollar.undefined', {'name': 'A'}, location='x:1:1')
+    msg = Diagnostic(DollarUndefined(name='A'), lang='zh-CN').render(include_location=False)
+    assert '未找到导入变量' in msg
 
 
 def test_value_vocab_registered() -> None:
-    assert '嵌套层级' in render_message('value.nesting_depth', {'max': 200}, location='x:1:1')
+    msg = Diagnostic(ValueNestingDepth(max=200), lang='zh-CN').render(include_location=False)
+    assert '嵌套层级' in msg

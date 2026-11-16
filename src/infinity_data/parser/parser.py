@@ -5,7 +5,32 @@ from typing import Any, TypeVar
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.ll1_stream import NoNextType
-from infinity_data.parser.diagnostics import diag, warn
+from infinity_data.parser.diagnostics import (
+    ParseEmptyTokenList,
+    ParseEmptyTypeAnnotation,
+    ParseExpandOutsideCall,
+    ParseExpandSuffixOrder,
+    ParseFieldRequiresEquals,
+    ParseImportMissingComma,
+    ParseImportPathRequired,
+    ParseImportRequiresNewline,
+    ParseInvalidCast,
+    ParseInvalidJsonPath,
+    ParseMissingSeparator,
+    ParseNestingTooDeep,
+    ParsePostfixOrder,
+    ParseTemplateArgOrder,
+    ParseTemplateConfigType,
+    ParseTemplateConfigUnknown,
+    ParseTemplateConfigValue,
+    ParseTemplateFieldNoConstraint,
+    ParseUnexpectedToken,
+    ParseUnrecognizedConstraint,
+    ParseUnrecognizedStatement,
+    ParseUnrecognizedValue,
+    ParseValueField,
+    TemplateDupArgument,
+)
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
@@ -134,7 +159,7 @@ class Parser:
         # 仅物理耗尽（迭代器无任何 token，含 EOF 哨兵）才视为空列表；
         # 空源码经 FinalTokenizer 总产出 EofToken 哨兵，属合法空配置（非错误）。
         if isinstance(first_tok, NoNextType):
-            self._collector.add(diag('parse.empty_token_list', {}, SourceRange.empty()))
+            self._collector.add(ParseEmptyTokenList(), SourceRange.empty())
             return Document(source=SourceRange.empty())
         doc = Document(source=first_tok.raw.source)
         while True:
@@ -180,7 +205,7 @@ class Parser:
                 return UnpackValue(source=stream.span_from(tok), value=val, double=True)
             case _:
                 bad_tok = stream.advance()
-                collector.add(diag('parse.unrecognized_statement', {'name': bad_tok.raw.type.name}, bad_tok.raw.source))
+                collector.add(ParseUnrecognizedStatement(name=bad_tok.raw.type.name), bad_tok.raw.source)
                 return ErrorStatement(
                     source=bad_tok.raw.source,
                     message=f'无法识别的顶层 token: {bad_tok.raw.type.name}',
@@ -225,18 +250,11 @@ class Parser:
         tok = stream.peek()
         if isinstance(tok, NoNextType):
             collector.add(
-                diag(
-                    'parse.unexpected_token',
-                    {'expected': f'关键字 {name!r}', 'actual': 'EOF'},
-                    stream.span_from(None),
-                )
+                ParseUnexpectedToken(expected=f'关键字 {name!r}', actual='EOF'),
+                stream.span_from(None),
             )
             return
-        collector.add(
-            diag(
-                'parse.unexpected_token', {'expected': f'关键字 {name!r}', 'actual': tok.raw.type.name}, tok.raw.source
-            )
-        )
+        collector.add(ParseUnexpectedToken(expected=f'关键字 {name!r}', actual=tok.raw.type.name), tok.raw.source)
         stream.advance()
 
     @staticmethod
@@ -260,11 +278,8 @@ class Parser:
         tok = stream.peek()
         if not isinstance(tok, NoNextType) and not (stream.eof() or isinstance(tok, NewlineToken)):
             collector.add(
-                diag(
-                    'parse.import_requires_newline',
-                    {'actual': tok.raw.type.name},
-                    stream.single_span(tok),
-                )
+                ParseImportRequiresNewline(actual=tok.raw.type.name),
+                stream.single_span(tok),
             )
 
         return VarStmt(
@@ -290,7 +305,7 @@ class Parser:
                 items.append(Parser._parse_env_import_item(stream, collector))
             elif isinstance(tok, IdentifierToken):
                 # 同一行内空格分隔（无逗号/换行）→ 报缺失逗号，容错继续（漏逗号）
-                collector.add(diag('parse.import_missing_comma', {}, tok.raw.source))
+                collector.add(ParseImportMissingComma(), tok.raw.source)
                 items.append(Parser._parse_env_import_item(stream, collector))
             else:
                 # 换行/EOF 等 → 导入列表结束（换行后是新的顶层语句，不是导入项）
@@ -304,11 +319,8 @@ class Parser:
         # 否则 tok 仍为 Token | NoNextType，访问 tok.raw 会触发类型错误。
         if not isinstance(tok, NoNextType) and not (stream.eof() or isinstance(tok, NewlineToken)):
             collector.add(
-                diag(
-                    'parse.import_requires_newline',
-                    {'actual': tok.raw.type.name},
-                    stream.single_span(tok),
-                )
+                ParseImportRequiresNewline(actual=tok.raw.type.name),
+                stream.single_span(tok),
             )
 
         # 注意：不在此消费尾部换行——语句间分隔由 _parse_statement 开头统一处理，
@@ -346,7 +358,7 @@ class Parser:
         if isinstance(tok, PathToken):
             return stream.expect(PathToken)
         if isinstance(tok, SinglelineStringToken):
-            collector.add(diag('parse.import_path_required', {}, tok.raw.source))
+            collector.add(ParseImportPathRequired(), tok.raw.source)
             return stream.expect(SinglelineStringToken)
         return stream.expect(PathToken)
 
@@ -387,18 +399,18 @@ class Parser:
                 stream.skip_newlines()
                 nxt = stream.peek()
                 if isinstance(nxt, DotToken):
-                    collector.add(diag('parse.import_missing_comma', {}, nxt.raw.source))
+                    collector.add(ParseImportMissingComma(), nxt.raw.source)
                     items.append(Parser._parse_file_import_item(stream, collector))
                 else:
                     break
             elif isinstance(tok, DotToken):
                 # 同一行空格分隔后跟 . → 报缺失逗号，容错继续
-                collector.add(diag('parse.import_missing_comma', {}, tok.raw.source))
+                collector.add(ParseImportMissingComma(), tok.raw.source)
                 items.append(Parser._parse_file_import_item(stream, collector))
             else:
                 # 同一行残留 token（非分隔符/下一导入项）→ 标识符则报缺失逗号（不静默）
                 if isinstance(tok, IdentifierToken):
-                    collector.add(diag('parse.import_missing_comma', {}, tok.raw.source))
+                    collector.add(ParseImportMissingComma(), tok.raw.source)
                 break
 
         # 注意：不在此消费尾部换行（语句间分隔由 _parse_statement 统一处理）
@@ -427,7 +439,7 @@ class Parser:
             else:
                 detail = '：路径必须以 . 起始'
             if not isinstance(tok, NoNextType):
-                collector.add(diag('parse.invalid_json_path', {'detail': detail}, tok.raw.source))
+                collector.add(ParseInvalidJsonPath(detail=detail), tok.raw.source)
             Parser._skip_to_import_boundary(stream)
             return FileImportItem(
                 source=stream.span_from(first),
@@ -539,7 +551,7 @@ class Parser:
         tok = stream.peek()
         if isinstance(tok, NoNextType):
             return
-        collector.add(diag('parse.invalid_json_path', {'detail': detail}, tok.raw.source))
+        collector.add(ParseInvalidJsonPath(detail=detail), tok.raw.source)
 
     @staticmethod
     def _parse_template_import(
@@ -560,7 +572,7 @@ class Parser:
                 items.append(Parser._parse_template_import_item(stream, collector))
             elif isinstance(tok, IdentifierToken):
                 # 同一行内空格分隔（无逗号/换行）→ 报缺失逗号，容错继续（漏逗号）
-                collector.add(diag('parse.import_missing_comma', {}, tok.raw.source))
+                collector.add(ParseImportMissingComma(), tok.raw.source)
                 items.append(Parser._parse_template_import_item(stream, collector))
             else:
                 # 换行/EOF 等 → 导入列表结束（换行后是新的顶层语句，不是导入项）
@@ -699,7 +711,7 @@ class Parser:
         """
         key = key_tok.name
         if not isinstance(value, LiteralValue):
-            collector.add(diag('parse.template_config_value', {'key': key}, value.source))
+            collector.add(ParseTemplateConfigValue(key=key), value.source)
             return
         py = Parser._literal_config_value(value)
         if key in _CONFIG_BOOL_KEYS:
@@ -707,30 +719,21 @@ class Parser:
                 setattr(config, key, py)
             else:
                 collector.add(
-                    diag(
-                        'parse.template_config_type',
-                        {'key': key, 'expected': 'bool', 'actual': _py_describe(py)},
-                        key_tok.raw.source,
-                    )
+                    ParseTemplateConfigType(key=key, expected='bool', actual=_py_describe(py)),
+                    key_tok.raw.source,
                 )
         elif key in _CONFIG_STR_KEYS:
             if isinstance(py, str):
                 setattr(config, key, py)
             else:
                 collector.add(
-                    diag(
-                        'parse.template_config_type',
-                        {'key': key, 'expected': 'str', 'actual': _py_describe(py)},
-                        key_tok.raw.source,
-                    )
+                    ParseTemplateConfigType(key=key, expected='str', actual=_py_describe(py)),
+                    key_tok.raw.source,
                 )
         else:
             collector.add(
-                diag(
-                    'parse.template_config_unknown',
-                    {'key': key, 'valid': _TEMPLATE_CONFIG_VALID},
-                    key_tok.raw.source,
-                )
+                ParseTemplateConfigUnknown(key=key, valid=_TEMPLATE_CONFIG_VALID),
+                key_tok.raw.source,
             )
 
     @staticmethod
@@ -760,19 +763,13 @@ class Parser:
             constraints = Parser._parse_constraints(stream, collector)
             if not constraints.constraints:
                 collector.add(
-                    diag(
-                        'parse.template_field_no_constraint',
-                        {'field': name_tok.name},
-                        stream.single_span(name_tok),
-                    )
+                    ParseTemplateFieldNoConstraint(field=name_tok.name),
+                    stream.single_span(name_tok),
                 )
         else:
             collector.add(
-                diag(
-                    'parse.template_field_no_constraint',
-                    {'field': name_tok.name},
-                    stream.single_span(name_tok),
-                )
+                ParseTemplateFieldNoConstraint(field=name_tok.name),
+                stream.single_span(name_tok),
             )
             Parser._skip_to_field_boundary(stream)
             return TemplateField(
@@ -792,7 +789,7 @@ class Parser:
             default_value = Parser._parse_value(stream, collector)
         elif Parser._starts_value(stream.peek()):
             # 字面量 / $ 引用省略等号 → 报错但仍解析（lint 式，尽力恢复）
-            collector.add(diag('parse.field_requires_equals', {'name': name_tok.name}, stream.single_span(name_tok)))
+            collector.add(ParseFieldRequiresEquals(name=name_tok.name), stream.single_span(name_tok))
             default_value = Parser._parse_value(stream, collector)
 
         return TemplateField(
@@ -828,9 +825,7 @@ class Parser:
             constraints = Parser._parse_constraints(stream, collector)
             if not constraints.constraints:
                 # 类型标注为空（a: 后无约束）→ 报错（与模板字段 template_field_no_constraint 对齐）
-                collector.add(
-                    diag('parse.empty_type_annotation', {'field': name_tok.name}, stream.single_span(name_tok))
-                )
+                collector.add(ParseEmptyTypeAnnotation(field=name_tok.name), stream.single_span(name_tok))
 
         # 值：有 = 时直接解析；省略等号仅限复合值（dict/array）与模板调用
         value: Value | None = None
@@ -842,7 +837,7 @@ class Parser:
             value = Parser._parse_value(stream, collector)
         elif Parser._starts_value(tok):
             # 字面量 / $ 引用省略等号 → 报错但仍解析（lint 式，尽力恢复）
-            collector.add(diag('parse.field_requires_equals', {'name': name_tok.name}, stream.single_span(name_tok)))
+            collector.add(ParseFieldRequiresEquals(name=name_tok.name), stream.single_span(name_tok))
             value = Parser._parse_value(stream, collector)
 
         return Field(
@@ -919,7 +914,7 @@ class Parser:
             return
         tok = stream.peek()
         if not isinstance(tok, NoNextType):
-            collector.add(diag('parse.missing_separator', {}, tok.raw.source))
+            collector.add(ParseMissingSeparator(), tok.raw.source)
         reported[0] = True
 
     @staticmethod
@@ -971,7 +966,7 @@ class Parser:
                     # 避免逐层诊断爆炸与多余 > 泄漏到顶层语句
                     tok = stream.peek()
                     if isinstance(tok, LangleToken):
-                        collector.add(diag('parse.unrecognized_constraint', {'name': 'LANGLE'}, tok.raw.source))
+                        collector.add(ParseUnrecognizedConstraint(name='LANGLE'), tok.raw.source)
                         Parser._skip_to_container_close(stream)
                         continue
                     constraints.append(Parser._parse_constraint(stream, collector))
@@ -1014,9 +1009,7 @@ class Parser:
                 tok = stream.peek()
                 if not isinstance(tok, (NoNextType, EofToken, RangleToken, RbraceToken, RparenToken)):
                     bad_tok = stream.advance()
-                    collector.add(
-                        diag('parse.unrecognized_constraint', {'name': bad_tok.raw.type.name}, bad_tok.raw.source)
-                    )
+                    collector.add(ParseUnrecognizedConstraint(name=bad_tok.raw.type.name), bad_tok.raw.source)
                 return Constraints(source=stream.span_from(first))
 
     @staticmethod
@@ -1046,7 +1039,7 @@ class Parser:
             return base
         if '!?' in ''.join(marks):
             assert first is not None
-            collector.add(warn('parse.postfix_order', {}, first.raw.source))
+            collector.add(ParsePostfixOrder(), first.raw.source)
         ordered = [m for m in ('?', '!') if m in marks]
         return ConstraintCall(
             source=base.source,
@@ -1059,7 +1052,7 @@ class Parser:
         """解析单个约束（含嵌套深度保护）。"""
         depth = stream.enter_nested()
         if depth > _MAX_NESTING:
-            collector.add(diag('parse.nesting_too_deep', {'limit': _MAX_NESTING}, stream.span_from(stream.peek())))
+            collector.add(ParseNestingTooDeep(limit=_MAX_NESTING), stream.span_from(stream.peek()))
             Parser._skip_to_container_close(stream)
             stream.exit_nested()
             return ErrorConstraint(source=stream.span_from(None), message=f'嵌套层级过深（> {_MAX_NESTING}）')
@@ -1094,9 +1087,7 @@ class Parser:
                 if isinstance(tok, (NoNextType, EofToken)):
                     return ErrorConstraint(source=SourceRange.empty(), message='无法解析的约束: EOF')
                 bad_tok = stream.advance()
-                collector.add(
-                    diag('parse.unrecognized_constraint', {'name': bad_tok.raw.type.name}, bad_tok.raw.source)
-                )
+                collector.add(ParseUnrecognizedConstraint(name=bad_tok.raw.type.name), bad_tok.raw.source)
                 return ErrorConstraint(
                     source=stream.single_span(bad_tok),
                     message=f'无法解析的约束: {bad_tok.raw.type.name}',
@@ -1149,7 +1140,7 @@ class Parser:
         """解析任意值（含嵌套深度保护）。"""
         depth = stream.enter_nested()
         if depth > _MAX_NESTING:
-            collector.add(diag('parse.nesting_too_deep', {'limit': _MAX_NESTING}, stream.span_from(stream.peek())))
+            collector.add(ParseNestingTooDeep(limit=_MAX_NESTING), stream.span_from(stream.peek()))
             Parser._skip_to_container_close(stream)
             stream.exit_nested()
             return ErrorValue(source=stream.span_from(None), message=f'嵌套层级过深（> {_MAX_NESTING}）')
@@ -1193,14 +1184,14 @@ class Parser:
                 # 避免把后续行误解析为模板调用（消除 template.undefined 级联）。
                 nxt = stream.peek()
                 if isinstance(nxt, (EqualsToken, ColonToken)):
-                    collector.add(diag('parse.value_field', {'name': ident.name}, stream.single_span(ident)))
+                    collector.add(ParseValueField(name=ident.name), stream.single_span(ident))
                     return ErrorValue(source=stream.single_span(ident), message=f'值位置出现字段定义: {ident.name}')
                 return Parser._parse_template_call(stream, collector, ident)
 
             case EllipsisToken() as el_tok:
                 # ... 只在模板调用参数上下文合法（§2.8 展开轴 / 展开传播）
                 stream.advance()
-                collector.add(diag('parse.expand_outside_call', {}, stream.single_span(el_tok)))
+                collector.add(ParseExpandOutsideCall(), stream.single_span(el_tok))
                 return ErrorValue(source=stream.single_span(el_tok), message='... 只能在模板调用参数上下文使用')
 
             case tok:
@@ -1208,7 +1199,7 @@ class Parser:
                 source = SourceRange.empty() if isinstance(tok, NoNextType) else tok.raw.source
                 if not isinstance(tok, NoNextType):
                     stream.advance()
-                collector.add(diag('parse.unrecognized_value', {'name': name}, source))
+                collector.add(ParseUnrecognizedValue(name=name), source)
                 return ErrorValue(source=source, message=f'无法解析的值: {name}')
 
     @staticmethod
@@ -1232,7 +1223,7 @@ class Parser:
                 if name in ('int', 'float', 'bool', 'str', 'path'):
                     type_cast = name
                 else:
-                    collector.add(diag('parse.invalid_cast', {'type': name}, cast_tok.raw.source))
+                    collector.add(ParseInvalidCast(type=name), cast_tok.raw.source)
                 stream.advance()
 
         return DollarValue(
@@ -1355,11 +1346,8 @@ class Parser:
                     stream.advance()  # 消费 =
                     if ident.name in {s.name for s in named if isinstance(s, NamedArg)}:
                         collector.add(
-                            diag(
-                                'template.dup_argument',
-                                {'template': name_tok.name, 'arg': ident.name},
-                                stream.single_span(ident),
-                            )
+                            TemplateDupArgument(template=name_tok.name, arg=ident.name),
+                            stream.single_span(ident),
                         )
                     named.append(
                         NamedArg(
@@ -1379,7 +1367,7 @@ class Parser:
             else:
                 # 分支 2：其他 token → 一定是位置参数
                 if saw_named:
-                    collector.add(diag('parse.template_arg_order', {}, stream.single_span(name_tok)))
+                    collector.add(ParseTemplateArgOrder(), stream.single_span(name_tok))
                 positional.append(Parser._parse_value(stream, collector))
                 if Parser._consume_ellipsis(stream):
                     axis_positional.add(len(positional) - 1)
@@ -1410,7 +1398,7 @@ class Parser:
             propagate = True
             caret = stream.peek()
             if isinstance(caret, CaretToken):
-                collector.add(diag('parse.expand_suffix_order', {}, stream.single_span(caret)))
+                collector.add(ParseExpandSuffixOrder(), stream.single_span(caret))
                 stream.advance()
         return TemplateCallValue(
             source=stream.span_from(name_tok),

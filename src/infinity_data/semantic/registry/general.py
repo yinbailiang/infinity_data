@@ -10,32 +10,60 @@ from urllib.parse import urlparse
 
 from infinity_data.infra.diagnostics import Diagnostic
 from infinity_data.semantic.builder.models import StdArray, StdLiteral, StdObject, StdValue
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.diagnostics import (
+    ConstraintEachNeed,
+    ConstraintEachOnly,
+    ConstraintEqMismatch,
+    ConstraintInNotIn,
+    ConstraintInvalidValue,
+    ConstraintNanNotAllowed,
+    ConstraintNegativeFail,
+    ConstraintNonnegativeFail,
+    ConstraintNumericOnly,
+    ConstraintPositionIndex,
+    ConstraintPositionNeed,
+    ConstraintPositionOnly,
+    ConstraintPositionOut,
+    ConstraintPositiveFail,
+    ConstraintRangeAbove,
+    ConstraintRangeArg,
+    ConstraintRangeBelow,
+    ConstraintRegexInvalid,
+    ConstraintRegexNoMatch,
+    ConstraintSizeArg,
+    ConstraintSizeOnly,
+    ConstraintSizeOut,
+    ConstraintStringOnly,
+    ConstraintUniqueDup,
+    ConstraintUniqueOnly,
+    Scalar,
+)
+from infinity_data.semantic.registry.core import (
     ConstraintResult,
     Executor,
     describe,
     fail_result,
     ok_result,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_decimal_arg as _as_decimal_arg,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_number as _as_number,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_spec as _as_spec,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_std_value as _as_std_value,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     as_str as _as_str,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     path_str as _path_str,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     std_equal as _std_equal,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -71,19 +99,19 @@ def _check_range(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result('constraint.numeric_only', {'constraint': 'range', 'actual': describe(val)}, source, path)
+        return fail_result(ConstraintNumericOnly(constraint='range', actual=describe(val)), source, path)
     if num.is_nan():
-        return fail_result('constraint.nan_not_allowed', {'constraint': 'range'}, source, path)
+        return fail_result(ConstraintNanNotAllowed(constraint='range'), source, path)
     lo = _as_decimal_arg(args[0]) if args[0] is not None else None
     hi = _as_decimal_arg(args[1]) if len(args) > 1 and args[1] is not None else None
     if args[0] is not None and lo is None:
-        return fail_result('constraint.range_arg', {'value': args[0]}, source, path)
+        return fail_result(ConstraintRangeArg(value=cast(Scalar, args[0])), source, path)
     if len(args) > 1 and args[1] is not None and hi is None:
-        return fail_result('constraint.range_arg', {'value': args[1]}, source, path)
+        return fail_result(ConstraintRangeArg(value=cast(Scalar, args[1])), source, path)
     if lo is not None and num < lo:
-        return fail_result('constraint.range_below', {'value': num, 'lo': lo}, source, path)
+        return fail_result(ConstraintRangeBelow(value=num, lo=lo), source, path)
     if hi is not None and num > hi:
-        return fail_result('constraint.range_above', {'value': num, 'hi': hi}, source, path)
+        return fail_result(ConstraintRangeAbove(value=num, hi=hi), source, path)
     return ok_result()
 
 
@@ -104,13 +132,13 @@ def _check_size(
     elif isinstance(val, StdObject):
         size_val = len(val.fields)
     if size_val is None:
-        return fail_result('constraint.size_only', {'actual': describe(val)}, source, path)
+        return fail_result(ConstraintSizeOnly(actual=describe(val)), source, path)
     lo = _as_decimal_arg(args[0])
     hi = _as_decimal_arg(args[1]) if len(args) > 1 else None
     if lo is None or (len(args) > 1 and hi is None):
-        return fail_result('constraint.size_arg', {}, source, path)
+        return fail_result(ConstraintSizeArg(), source, path)
     if size_val < lo or (hi is not None and size_val > hi):
-        return fail_result('constraint.size_out', {'size': size_val, 'lo': lo, 'hi': hi}, source, path)
+        return fail_result(ConstraintSizeOut(size=size_val, lo=lo, hi=hi), source, path)
     return ok_result()
 
 
@@ -124,7 +152,7 @@ def _check_each(
     """each 约束的实现"""
     spec = _as_spec(args[0])
     if spec is None:
-        return fail_result('constraint.each_need', {}, source, path)
+        return fail_result(ConstraintEachNeed(), source, path)
     diags: list[Diagnostic] = []
     if isinstance(val, StdArray):
         for i, elem in enumerate(val.elements):
@@ -140,7 +168,7 @@ def _check_each(
             if not r.ok:
                 diags.extend(r.diagnostics)
     else:
-        return fail_result('constraint.each_only', {'actual': describe(val)}, source, path)
+        return fail_result(ConstraintEachOnly(actual=describe(val)), source, path)
     if diags:
         return ConstraintResult(ok=False, diagnostics=diags)
     return ok_result()
@@ -161,15 +189,15 @@ def _check_position(
     - 否则递归执行 constraint 于该元素
     """
     if not isinstance(val, StdArray):
-        return fail_result('constraint.position_only', {'actual': describe(val)}, source, path)
+        return fail_result(ConstraintPositionOnly(actual=describe(val)), source, path)
     idx = args[0]
     if isinstance(idx, bool) or not isinstance(idx, int):
-        return fail_result('constraint.position_index', {'value': idx}, source, path)
+        return fail_result(ConstraintPositionIndex(value=cast(Scalar | None, idx)), source, path)
     spec = _as_spec(args[1])
     if spec is None:
-        return fail_result('constraint.position_need', {}, source, path)
+        return fail_result(ConstraintPositionNeed(), source, path)
     if idx < 0 or idx >= len(val.elements):
-        return fail_result('constraint.position_out', {'index': idx, 'size': len(val.elements)}, source, path)
+        return fail_result(ConstraintPositionOut(index=idx, size=len(val.elements)), source, path)
     # 诊断指向被检查的元素本身（无来源时回退容器位置）
     elem = val.elements[idx]
     return executor(spec, elem, elem.source or source, f'{path}[{idx}]')
@@ -186,7 +214,7 @@ def _check_in(
     choices: list[Any] = cast(list[Any], args[0]) if len(args) == 1 and isinstance(args[0], list) else args
     if any(_std_equal(val, _as_std_value(c)) for c in choices):
         return ok_result()
-    return fail_result('constraint.in_not_in', {'value': describe(val), 'choices': choices}, source, path)
+    return fail_result(ConstraintInNotIn(value=describe(val), choices=cast(list[Scalar], choices)), source, path)
 
 
 def _check_ip(
@@ -199,12 +227,12 @@ def _check_ip(
     """ip 约束的实现"""
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'ip'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='ip'), source, path)
     try:
         ipaddress.ip_address(s)
         return ok_result()
     except ValueError:
-        return fail_result('constraint.invalid_value', {'what': 'IP 地址', 'value': s}, source, path)
+        return fail_result(ConstraintInvalidValue(what='IP 地址', value=s), source, path)
 
 
 def _check_ip4(
@@ -217,12 +245,12 @@ def _check_ip4(
     """ip4 约束的实现"""
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'ip4'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='ip4'), source, path)
     try:
         ipaddress.IPv4Address(s)
         return ok_result()
     except ValueError:
-        return fail_result('constraint.invalid_value', {'what': 'IPv4 地址', 'value': s}, source, path)
+        return fail_result(ConstraintInvalidValue(what='IPv4 地址', value=s), source, path)
 
 
 def _check_ip6(
@@ -235,12 +263,12 @@ def _check_ip6(
     """ip6 约束的实现"""
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'ip6'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='ip6'), source, path)
     try:
         ipaddress.IPv6Address(s)
         return ok_result()
     except ValueError:
-        return fail_result('constraint.invalid_value', {'what': 'IPv6 地址', 'value': s}, source, path)
+        return fail_result(ConstraintInvalidValue(what='IPv6 地址', value=s), source, path)
 
 
 def _check_regex(
@@ -257,14 +285,14 @@ def _check_regex(
     if s is None:
         s = _path_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'regex'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='regex'), source, path)
     pattern = str(args[0])
     try:
         if re.fullmatch(pattern, s):
             return ok_result()
-        return fail_result('constraint.regex_no_match', {'value': s, 'pattern': pattern}, source, path)
+        return fail_result(ConstraintRegexNoMatch(value=s, pattern=pattern), source, path)
     except re.error as e:
-        return fail_result('constraint.regex_invalid', {'pattern': pattern, 'error': e}, source, path)
+        return fail_result(ConstraintRegexInvalid(pattern=pattern, error=str(e)), source, path)
 
 
 def _check_email(
@@ -277,10 +305,10 @@ def _check_email(
     """email 约束的实现"""
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'email'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='email'), source, path)
     if re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', s):
         return ok_result()
-    return fail_result('constraint.invalid_value', {'what': '邮箱地址', 'value': s}, source, path)
+    return fail_result(ConstraintInvalidValue(what='邮箱地址', value=s), source, path)
 
 
 def _check_url(
@@ -292,11 +320,11 @@ def _check_url(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'url'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='url'), source, path)
     p = urlparse(s)
     if p.scheme and p.netloc:
         return ok_result()
-    return fail_result('constraint.invalid_value', {'what': 'URL', 'value': s}, source, path)
+    return fail_result(ConstraintInvalidValue(what='URL', value=s), source, path)
 
 
 def _check_uuid(
@@ -309,12 +337,12 @@ def _check_uuid(
     """uuid 约束的实现"""
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'uuid'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='uuid'), source, path)
     try:
         uuid.UUID(s)
         return ok_result()
     except ValueError:
-        return fail_result('constraint.invalid_value', {'what': 'UUID', 'value': s}, source, path)
+        return fail_result(ConstraintInvalidValue(what='UUID', value=s), source, path)
 
 
 _HOSTNAME_RE = re.compile(
@@ -332,10 +360,10 @@ def _check_hostname(
 ) -> ConstraintResult:
     s = _as_str(val)
     if s is None:
-        return fail_result('constraint.string_only', {'constraint': 'hostname'}, source, path)
+        return fail_result(ConstraintStringOnly(constraint='hostname'), source, path)
     if _HOSTNAME_RE.fullmatch(s):
         return ok_result()
-    return fail_result('constraint.invalid_value', {'what': '主机名', 'value': s}, source, path)
+    return fail_result(ConstraintInvalidValue(what='主机名', value=s), source, path)
 
 
 def _check_positive(
@@ -347,10 +375,10 @@ def _check_positive(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result('constraint.numeric_only', {'constraint': 'positive'}, source, path)
+        return fail_result(ConstraintNumericOnly(constraint='positive', actual=describe(val)), source, path)
     if num.is_nan():
-        return fail_result('constraint.nan_not_allowed', {'constraint': 'positive'}, source, path)
-    return ok_result() if num > 0 else fail_result('constraint.positive_fail', {'value': num}, source, path)
+        return fail_result(ConstraintNanNotAllowed(constraint='positive'), source, path)
+    return ok_result() if num > 0 else fail_result(ConstraintPositiveFail(value=num), source, path)
 
 
 def _check_negative(
@@ -362,10 +390,10 @@ def _check_negative(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result('constraint.numeric_only', {'constraint': 'negative'}, source, path)
+        return fail_result(ConstraintNumericOnly(constraint='negative', actual=describe(val)), source, path)
     if num.is_nan():
-        return fail_result('constraint.nan_not_allowed', {'constraint': 'negative'}, source, path)
-    return ok_result() if num < 0 else fail_result('constraint.negative_fail', {'value': num}, source, path)
+        return fail_result(ConstraintNanNotAllowed(constraint='negative'), source, path)
+    return ok_result() if num < 0 else fail_result(ConstraintNegativeFail(value=num), source, path)
 
 
 def _check_nonnegative(
@@ -377,10 +405,10 @@ def _check_nonnegative(
 ) -> ConstraintResult:
     num = _as_number(val)
     if num is None:
-        return fail_result('constraint.numeric_only', {'constraint': 'nonnegative'}, source, path)
+        return fail_result(ConstraintNumericOnly(constraint='nonnegative', actual=describe(val)), source, path)
     if num.is_nan():
-        return fail_result('constraint.nan_not_allowed', {'constraint': 'nonnegative'}, source, path)
-    return ok_result() if num >= 0 else fail_result('constraint.nonnegative_fail', {'value': num}, source, path)
+        return fail_result(ConstraintNanNotAllowed(constraint='nonnegative'), source, path)
+    return ok_result() if num >= 0 else fail_result(ConstraintNonnegativeFail(value=num), source, path)
 
 
 def _check_eq(
@@ -392,7 +420,14 @@ def _check_eq(
 ) -> ConstraintResult:
     if _std_equal(val, _as_std_value(args[0])):
         return ok_result()
-    return fail_result('constraint.eq_mismatch', {'value': describe(val), 'expected': args[0]}, source, path)
+    return fail_result(
+        ConstraintEqMismatch(
+            value=describe(val),
+            expected=cast(Scalar | list[Scalar] | dict[str, Scalar], args[0]),
+        ),
+        source,
+        path,
+    )
 
 
 def _check_unique(
@@ -403,9 +438,9 @@ def _check_unique(
     executor: Executor,
 ) -> ConstraintResult:
     if not isinstance(val, StdArray):
-        return fail_result('constraint.unique_only', {}, source, path)
+        return fail_result(ConstraintUniqueOnly(), source, path)
     for i in range(len(val.elements)):
         for j in range(i):
             if _std_equal(val.elements[i], val.elements[j]):
-                return fail_result('constraint.unique_dup', {'value': describe(val.elements[i])}, source, path)
+                return fail_result(ConstraintUniqueDup(value=describe(val.elements[i])), source, path)
     return ok_result()

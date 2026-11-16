@@ -170,7 +170,7 @@ def test_identity_dedup_across_files(tmp_path: Path) -> None:
     resolver = _make_resolver(tmp_path / 'a')
     collector = DiagnosticCollector()
     ctx = resolver.resolve(doc, file, collector)
-    assert not list(collector), [d.message for d in collector]
+    assert not list(collector), [d.render() for d in collector]
     k1 = ctx.root_scope.visible['E1']
     k2 = ctx.root_scope.visible['E2']
     assert k1.name == 'Extra' and k2.name == 'Extra'

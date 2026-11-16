@@ -15,8 +15,8 @@ from infinity_data.semantic import StdObject
 def compile_ok(source: str) -> dict[str, Any]:
     """编译无错误断言，返回降维 dict。"""
     result = compile_source(source)
-    errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
-    assert not errors, [f'{d.location}: {d.message}' for d in errors]
+    errors = [d for d in result.diagnostics if d.effective_severity is Severity.ERROR]
+    assert not errors, [f'{d.location}: {d.render()}' for d in errors]
     assert result.value is not None
     return result.value
 
@@ -30,6 +30,19 @@ def test_empty_source() -> None:
     assert compile_source('').value == {}
     assert compile_source('   \n  \n').value == {}
     assert compile_source('# 只有注释\n#+ 多行注释\n#-\n').value == {}
+
+
+def test_compile_source_lang_option() -> None:
+    """显式 lang 贯穿收集器与诊断渲染（回退链之外不依赖机器环境）。"""
+    en = compile_source('x: int = "a"\n', lang='en-US')
+    en_diag = next(d for d in en.diagnostics if d.code == 'constraint.type_mismatch')
+    assert en_diag.lang == 'en-US'
+    assert 'expected int' in en_diag.render()
+
+    zh = compile_source('x: int = "a"\n', lang='zh-CN')
+    zh_diag = next(d for d in zh.diagnostics if d.code == 'constraint.type_mismatch')
+    assert zh_diag.lang == 'zh-CN'
+    assert '期望 int' in zh_diag.render()
 
 
 def test_mem_file_chars_stream() -> None:
@@ -208,7 +221,10 @@ def test_template_required_field_missing() -> None:
 db Database()
 """)
     assert result.has_errors
-    assert any(d.code == 'template.missing_required' and d.params.get('field') == 'name' for d in result.diagnostics)
+    assert any(
+        d.code == 'template.missing_required' and d.declaration.parameters().get('field') == 'name'
+        for d in result.diagnostics
+    )
 
 
 def test_template_positional_and_named_args() -> None:
@@ -277,7 +293,10 @@ server {
 }
 """)
     assert result.has_errors
-    assert any(d.code == 'constraint.field_missing' and d.params.get('field') == 'tls' for d in result.diagnostics)
+    assert any(
+        d.code == 'constraint.field_missing' and d.declaration.parameters().get('field') == 'tls'
+        for d in result.diagnostics
+    )
 
 
 def test_dict_literal_structure_constraint_pass() -> None:
@@ -304,7 +323,10 @@ def test_dict_literal_structure_constraint_in_template_default() -> None:
 a App()
 """)
     assert result.has_errors
-    assert any(d.code == 'constraint.field_missing' and d.params.get('field') == 'tls' for d in result.diagnostics)
+    assert any(
+        d.code == 'constraint.field_missing' and d.declaration.parameters().get('field') == 'tls'
+        for d in result.diagnostics
+    )
 
 
 def test_top_level_structure_constraint_violation() -> None:
@@ -338,7 +360,10 @@ port = 443
 """)
     assert result.has_errors
     # tls 未定义 → field(tls, eq(true)) 触发 field_missing
-    assert any(d.code == 'constraint.field_missing' and d.params.get('field') == 'tls' for d in result.diagnostics)
+    assert any(
+        d.code == 'constraint.field_missing' and d.declaration.parameters().get('field') == 'tls'
+        for d in result.diagnostics
+    )
 
 
 def test_dict_structure_constraint_with_template_name() -> None:
@@ -439,7 +464,7 @@ x = X(1)
 }
 x = X(a=2)
 """)
-    assert not good.has_errors, [d.message for d in good.diagnostics]
+    assert not good.has_errors, [d.render() for d in good.diagnostics]
     assert good.value == {'x': {'a': 2}}
 
 
@@ -539,7 +564,7 @@ def test_required_order_relaxed_when_positional_disabled() -> None:
 }
 x = X(b=2)
 """)
-    assert not good.has_errors, [d.message for d in good.diagnostics]
+    assert not good.has_errors, [d.render() for d in good.diagnostics]
     assert good.value == {'x': {'a': 1, 'b': 2}}
 
     # 普通模板仍强制必填在前
@@ -677,7 +702,7 @@ def test_template_constraint_static_valid_no_false_positive() -> None:
     w: <range(1, 10)> = 5
 }
 """)
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
 def test_template_constraint_bad_signature_reported_at_definition_and_call() -> None:
@@ -720,7 +745,7 @@ def test_template_valid_default_no_error() -> None:
     s: str? = null
 }
 """)
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
 def test_validator_requires_optional_fields() -> None:
@@ -741,15 +766,15 @@ def test_validator_provided_optional_field_validated() -> None:
 def test_absent_suffix_allows_missing_field() -> None:
     """`!`：约束接受 noexist → 校验器允许字段缺失。"""
     result = compile_source('~T {\n    opt: dict! = {}\n}\na: T {}\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
 def test_absent_nullable_suffix_allows_missing_or_null() -> None:
     """`?!`：字段可缺失、可为 null；两者都通过。"""
     missing = compile_source('~T {\n    opt: dict?! = {}\n}\na: T {}\n')
     null = compile_source('~T {\n    opt: dict?! = {}\n}\na: T { opt = null }\n')
-    assert not missing.has_errors, [d.message for d in missing.diagnostics]
-    assert not null.has_errors, [d.message for d in null.diagnostics]
+    assert not missing.has_errors, [d.render() for d in missing.diagnostics]
+    assert not null.has_errors, [d.render() for d in null.diagnostics]
 
 
 def test_nullable_suffix_does_not_allow_missing() -> None:
@@ -761,7 +786,7 @@ def test_nullable_suffix_does_not_allow_missing() -> None:
 def test_reverse_postfix_order_warns_but_is_equivalent() -> None:
     """`!?` 与 `?!` 等价，但报 parse.postfix_order 警告。"""
     result = compile_source('x: int!? = null\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert any(d.code == 'parse.postfix_order' for d in result.warnings)
     assert result.value == {'x': None}
 
@@ -816,7 +841,7 @@ app {
 """,
         env={'USER': 'alice', 'HOME': '/home/alice'},
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'app': {'user': 'alice', 'home': '/home/alice'}}
 
 
@@ -848,7 +873,7 @@ config {
         path,
         sandbox=SandboxConfig(allow_files=['./test_config.json']),
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {
         'config': {
             'host': 'prod.example.com',
@@ -1131,8 +1156,8 @@ MyApp {
     ]
 }
 """)
-    errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
-    assert not errors, [f'{d.location}: {d.message}' for d in errors]
+    errors = [d for d in result.diagnostics if d.effective_severity is Severity.ERROR]
+    assert not errors, [f'{d.location}: {d.render()}' for d in errors]
 
     app = result.value['MyApp']
     assert app['version'] == '2.0.0'

@@ -19,7 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from infinity_data.frontend import parse_source
-from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import File
 from infinity_data.parser import (
     Document,
@@ -32,6 +32,18 @@ from infinity_data.parser import (
     VarStmt,
 )
 from infinity_data.sandbox import Schema
+from infinity_data.semantic.diagnostics import (
+    DictDuplicateKey,
+    InftNotAllowed,
+    TemplateDuplicate,
+    TemplateImportConflictLocal,
+    TemplateImportDepth,
+    TemplateImportDuplicate,
+    TemplateImportNotFound,
+    TemplateReadFailed,
+    TemplateRequiredOrder,
+    TemplateShadowsBuiltin,
+)
 from infinity_data.semantic.registry import ConstraintRegistry
 from infinity_data.semantic.resolver.identity import compute_identity_map
 from infinity_data.semantic.resolver.imports import ImportResolver
@@ -135,7 +147,7 @@ class TemplateGraphResolver:
         内置约束保持可用。
         """
         if name in self._registry.names:
-            self._collector.add(Diagnostic(Severity.ERROR, 'template.shadows_builtin', {'template': name}, source))
+            self._collector.add(TemplateShadowsBuiltin(template=name), source)
             return True
         return False
 
@@ -152,12 +164,8 @@ class TemplateGraphResolver:
             if tf.default_value is None:
                 if seen_optional:
                     self._collector.add(
-                        Diagnostic(
-                            Severity.ERROR,
-                            'template.required_order',
-                            {'template': stmt.name, 'field': tf.name},
-                            tf.source,
-                        )
+                        TemplateRequiredOrder(template=stmt.name, field=tf.name),
+                        tf.source,
                     )
             else:
                 seen_optional = True
@@ -172,7 +180,7 @@ class TemplateGraphResolver:
         deduped: list[TemplateField] = []
         for tf in stmt.fields:
             if tf.name in seen:
-                self._collector.add(Diagnostic(Severity.ERROR, 'dict.duplicate_key', {'name': tf.name}, tf.source))
+                self._collector.add(DictDuplicateKey(name=tf.name), tf.source)
                 continue
             seen.add(tf.name)
             deduped.append(tf)
@@ -187,9 +195,7 @@ class TemplateGraphResolver:
             rejected = self._check_template_name_conflict(stmt.name, stmt.source)
             key = TemplateKey(identity=root_identity, name=stmt.name)
             if not rejected and key in self._templates:
-                self._collector.add(
-                    Diagnostic(Severity.ERROR, 'template.duplicate', {'template': stmt.name}, stmt.source)
-                )
+                self._collector.add(TemplateDuplicate(template=stmt.name), stmt.source)
                 rejected = True
             # 无论是否被拒绝都校验内部（一次暴露所有错误，避免多轮修复）
             stmt = self._check_duplicate_fields(stmt)
@@ -220,22 +226,16 @@ class TemplateGraphResolver:
         for item in items:
             dep_key = dep_scope.visible.get(item.name)
             if dep_key is None:
-                self._collector.add(
-                    Diagnostic(Severity.ERROR, 'template.import_not_found', {'template': item.name}, item.source)
-                )
+                self._collector.add(TemplateImportNotFound(template=item.name), item.source)
                 continue
             visible = item.alias or item.name
             if self._check_template_name_conflict(visible, item.source):
                 continue
             if visible in scope.visible:
                 if visible in local_names:
-                    self._collector.add(
-                        Diagnostic(Severity.ERROR, 'template.import_conflict_local', {'visible': visible}, item.source)
-                    )
+                    self._collector.add(TemplateImportConflictLocal(visible=visible), item.source)
                 else:
-                    self._collector.add(
-                        Diagnostic(Severity.ERROR, 'template.import_duplicate', {'visible': visible}, item.source)
-                    )
+                    self._collector.add(TemplateImportDuplicate(visible=visible), item.source)
             else:
                 scope.visible[visible] = dep_key
 
@@ -286,11 +286,7 @@ class TemplateGraphResolver:
     ) -> Scope:
         """加载单个模板文件，返回该文件的可见 scope（递归解析嵌套 !from）。"""
         if depth > MAX_IMPORT_DEPTH:
-            self._collector.add(
-                Diagnostic(
-                    Severity.ERROR, 'template.import_depth', {'max': MAX_IMPORT_DEPTH, 'path_src': from_path}, source
-                )
-            )
+            self._collector.add(TemplateImportDepth(max=MAX_IMPORT_DEPTH, path_src=from_path), source)
             return Scope()
 
         file = self._imports.resolve_template_path(
@@ -311,9 +307,7 @@ class TemplateGraphResolver:
         try:
             _ = file.content_hash()  # 触发内容读取；身份不含内容，仍需校验文件可读
         except OSError as e:
-            self._collector.add(
-                Diagnostic(Severity.ERROR, 'template.read_failed', {'file': file.name, 'error': e}, source)
-            )
+            self._collector.add(TemplateReadFailed(file=file.name, error=str(e)), source)
             return Scope()
 
         imported_doc = self._parse_document(file)
@@ -365,7 +359,7 @@ class TemplateGraphResolver:
                     pass  # .inft 允许数据导入（§3.2，绑定本文件 $ 命名空间，就地解析）
                 case _:
                     if file.name.endswith('.inft'):
-                        self._collector.add(Diagnostic(Severity.ERROR, 'inft.not_allowed', {}, s.source))
+                        self._collector.add(InftNotAllowed(), s.source)
 
         return scope
 

@@ -21,7 +21,7 @@ from infinity_data import load
 result = load('app.infd')
 if result.has_errors:
     for d in result.diagnostics:
-        print(d.location, d.code, d.message)
+        print(d.location, d.code, d.render())
 else:
     print(result.value)     # 降维后的 dict
 ```

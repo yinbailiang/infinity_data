@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.ll1_stream import LL1Stream, NoNextType
-from infinity_data.parser.diagnostics import diag
+from infinity_data.parser.diagnostics import ParseUnexpectedToken
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
@@ -135,15 +135,12 @@ class TokenStream(LL1Stream[Token]):
         tok = self.peek()
         if isinstance(tok, NoNextType):
             rng = self._eof_span()
-            self._errors.add(diag('parse.unexpected_token', {'expected': token_cls.__name__, 'actual': 'EOF'}, rng))
+            self._errors.add(ParseUnexpectedToken(expected=token_cls.__name__, actual='EOF'), rng)
             return self._synthetic(token_cls, source=rng)
         if not isinstance(tok, token_cls):
             self._errors.add(
-                diag(
-                    'parse.unexpected_token',
-                    {'expected': token_cls.__name__, 'actual': tok.raw.type.name},
-                    tok.raw.source,
-                )
+                ParseUnexpectedToken(expected=token_cls.__name__, actual=tok.raw.type.name),
+                tok.raw.source,
             )
             self.advance()
             return self._synthetic(token_cls, source=tok.raw.source)

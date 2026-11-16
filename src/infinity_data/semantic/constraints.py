@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from infinity_data.infra.diagnostics import Diagnostic, Severity
+from infinity_data.infra.diagnostics import Diagnostic
 from infinity_data.parser import (
     Constraint,
     ConstraintCall,
@@ -106,11 +106,9 @@ def resolve_constraint(c: Constraint, scope: Scope) -> tuple[ResolvedConstraint,
             )
         case ConstraintLiteral():
             return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source), []
-        case ErrorConstraint(message=m):
-            return (
-                ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source),
-                [Diagnostic(Severity.ERROR, 'error.generic', {'message': m}, c.source)],
-            )
+        case ErrorConstraint():
+            # parser 已报具体 parse.* 码；错误节点仅为恢复载荷，语义层不重复报告
+            return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source), []
     return ResolvedConstraint(name=_INVALID_CONSTRAINT), []
 
 
@@ -132,11 +130,9 @@ def resolve_constraint_arg(c: Constraint, scope: Scope) -> tuple[Any, list[Diagn
             )
         case ConstraintLiteral(value=lit):
             return literal_python_value(lit), []
-        case ErrorConstraint(message=m):
-            return (
-                ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source),
-                [Diagnostic(Severity.ERROR, 'error.generic', {'message': m}, c.source)],
-            )
+        case ErrorConstraint():
+            # parser 已报具体 parse.* 码；错误节点仅为恢复载荷，语义层不重复报告
+            return ResolvedConstraint(name=_INVALID_CONSTRAINT, source=c.source), []
     return ResolvedConstraint(name=_INVALID_CONSTRAINT), []
 
 

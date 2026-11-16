@@ -101,7 +101,7 @@ def test_file_import_accepts_path_literal(infd_file: Callable[[str, str], Path])
     infd_file('data.json', '{"k": 1}')
     path = infd_file('app.infd', '!file p"data.json" import .k as k\nv = $k\n')
     result = load(path, sandbox=SandboxConfig(allow_files=['./data.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'v': 1}
 
 
@@ -118,7 +118,7 @@ def test_from_import_accepts_path_literal(infd_file: Callable[[str, str], Path])
     infd_file('tpl.inft', '~T {\n    x: int = 1\n}\n')
     path = infd_file('app.infd', '!from p"tpl.inft" import T\nt = T()\n')
     result = load(path, sandbox=SandboxConfig(allow_templates=['./tpl.inft']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'t': {'x': 1}}
 
 
@@ -138,13 +138,13 @@ def test_from_import_plain_string_is_error_recovered(infd_file: Callable[[str, s
 def test_path_literal_value_keeps_posix_path() -> None:
     """.value 是忠实 std→python：path 值保持 PurePosixPath（有损投影在 emit 层）。"""
     result = compile_source('cert = p"/etc/certs/a.pem"\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'cert': PurePosixPath('/etc/certs/a.pem')}
 
 
 def test_path_constraint_accepts_path_literal() -> None:
     result = compile_source('cert: path = p"/etc/certs/a.pem"\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
 def test_path_constraint_rejects_str() -> None:
@@ -160,14 +160,14 @@ def test_path_constraint_rejects_non_path() -> None:
 
 def test_path_nullable_sugar() -> None:
     result = compile_source('a: <path?> = null\nb: <path?> = p"/x"\n')
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'a': None, 'b': PurePosixPath('/x')}
 
 
 def test_path_each_in_list() -> None:
     """each(path)：元素须为 path 类型；str 元素被拒绝。"""
     ok = compile_source('paths: <list, each(path)> = [p"/a", p"/b"]\n')
-    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    assert not ok.has_errors, [d.render() for d in ok.diagnostics]
     assert ok.value == {'paths': [PurePosixPath('/a'), PurePosixPath('/b')]}
     bad = compile_source('bad: <list, each(path)> = [p"/a", "/b"]\n')
     assert any(d.code == 'constraint.type_mismatch' for d in bad.diagnostics)
@@ -188,7 +188,7 @@ def test_size_constraint_rejects_path_value() -> None:
 def test_eq_path_no_cross_kind() -> None:
     """eq(p"/x") 只对 path 值成立；等价 str 值不相等（path 与 str 独立）。"""
     a = compile_source('a: <eq(p"/x")> = p"/x"\n')
-    assert not a.has_errors, [d.message for d in a.diagnostics]
+    assert not a.has_errors, [d.render() for d in a.diagnostics]
     b = compile_source('b: <eq(p"/x")> = "/x"\n')
     assert any(d.code == 'constraint.eq_mismatch' for d in b.diagnostics)
     c = compile_source('c: <eq(p"/x")> = "/y"\n')
@@ -198,7 +198,7 @@ def test_eq_path_no_cross_kind() -> None:
 def test_in_choices_with_paths() -> None:
     """in(p"/a", p"/b") 只匹配 path 值；str 不参与（无交叉相等）。"""
     ok = compile_source('x: <in(p"/a", p"/b")> = p"/a"\n')
-    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    assert not ok.has_errors, [d.render() for d in ok.diagnostics]
     bad = compile_source('y: <in(p"/a", p"/b")> = "/a"\n')
     assert any(d.code == 'constraint.in_not_in' for d in bad.diagnostics)
 
@@ -206,7 +206,7 @@ def test_in_choices_with_paths() -> None:
 def test_same_target_constraint() -> None:
     """same_target：词法折叠 ./.. 后同 target（纯语法、可复现）。"""
     ok = compile_source('a: <path, same_target(p"/etc/x")> = p"/etc/../etc/x"\n')
-    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    assert not ok.has_errors, [d.render() for d in ok.diagnostics]
     bad = compile_source('b: <path, same_target(p"/etc/x")> = p"/var/x"\n')
     assert any(d.code == 'constraint.same_target_mismatch' for d in bad.diagnostics)
 
@@ -220,7 +220,7 @@ def test_same_target_rejects_str() -> None:
 def test_same_name_constraint() -> None:
     """same_name(str)：路径 basename 等于指定字符串。"""
     ok = compile_source('a: <path, same_name("pipeline.py")> = p"/etc/pipeline.py"\n')
-    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    assert not ok.has_errors, [d.render() for d in ok.diagnostics]
     bad = compile_source('b: <path, same_name("pipeline.py")> = p"/etc/main.py"\n')
     assert any(d.code == 'constraint.same_name_mismatch' for d in bad.diagnostics)
 
@@ -228,9 +228,9 @@ def test_same_name_constraint() -> None:
 def test_extension_constraint() -> None:
     """extension(ext, ...)：路径扩展名匹配任一（不带前导点）。"""
     ok = compile_source('a: <path, extension("json")> = p"/etc/config.json"\n')
-    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    assert not ok.has_errors, [d.render() for d in ok.diagnostics]
     multi = compile_source('b: <path, extension("json", "yaml")> = p"/etc/config.yaml"\n')
-    assert not multi.has_errors, [d.message for d in multi.diagnostics]
+    assert not multi.has_errors, [d.render() for d in multi.diagnostics]
     bad = compile_source('c: <path, extension("json")> = p"/etc/config.toml"\n')
     assert any(d.code == 'constraint.extension_mismatch' for d in bad.diagnostics)
     noext = compile_source('d: <path, extension("json")> = p"/etc/readme"\n')
@@ -240,7 +240,7 @@ def test_extension_constraint() -> None:
 def test_regex_on_path() -> None:
     """regex 推广到 path：对 POSIX 字符串全匹配（fullmatch，[.] 避免转义）。"""
     ok = compile_source('a: <path, regex(".*[.]pem")> = p"/etc/certs/a.pem"\n')
-    assert not ok.has_errors, [d.message for d in ok.diagnostics]
+    assert not ok.has_errors, [d.render() for d in ok.diagnostics]
     bad = compile_source('b: <path, regex(".*[.]pem")> = p"/etc/certs/a.key"\n')
     assert any(d.code == 'constraint.regex_no_match' for d in bad.diagnostics)
 
@@ -255,7 +255,7 @@ def test_path_in_template_default_and_field() -> None:
 c = Cfg(out = p"/tmp/x")
 """
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'c': {'cert': PurePosixPath('/etc/default.pem'), 'out': PurePosixPath('/tmp/x')}}
 
 
@@ -267,7 +267,7 @@ def test_dollar_as_path_cast() -> None:
 cert: path = $raw as path
 """
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'cert': PurePosixPath('/etc/certs/a.pem')}
 
 
@@ -278,7 +278,7 @@ def test_path_value_in_dict_and_var() -> None:
 cfg = { root = $lib, extra = p"/tmp" }
 """
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'cfg': {'root': PurePosixPath('/var/lib'), 'extra': PurePosixPath('/tmp')}}
 
 
@@ -290,7 +290,7 @@ def test_path_value_as_str_cast() -> None:
 s: str = $p as str
 """
     )
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert result.value == {'s': '/c/foo'}
 
 
@@ -303,7 +303,7 @@ def test_exist_constraint_pass(tmp_path: Path, infd_file: Callable[[str, str], P
     _write(tmp_path / 'data.json', '{}')
     path = infd_file('app.infd', 'f: <path, exist> = p"./data.json"\n')
     result = load(path, sandbox=SandboxConfig(allow_files=['./data.json']))
-    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
 def test_exist_constraint_missing_fails(tmp_path: Path, infd_file: Callable[[str, str], Path]) -> None:
@@ -317,7 +317,7 @@ def test_dir_and_file_constraints(tmp_path: Path, infd_file: Callable[[str, str]
     (tmp_path / 'sub').mkdir()
     ok = infd_file('ok.infd', 'd: <path, dir> = p"./sub"\nf: <path, file> = p"./data.json"\n')
     r = load(ok, sandbox=SandboxConfig(allow_files=['./**']))
-    assert not r.has_errors, [d.message for d in r.diagnostics]
+    assert not r.has_errors, [d.render() for d in r.diagnostics]
 
     bad = infd_file('bad.infd', 'd: <path, dir> = p"./data.json"\n')
     r2 = load(bad, sandbox=SandboxConfig(allow_files=['./**']))
@@ -334,8 +334,8 @@ def test_fs_constraint_denied_is_warning_and_fail(tmp_path: Path, infd_file: Cal
     path = infd_file('app.infd', 'f: <path, exist> = p"./secret.json"\n')
     result = load(path, sandbox=SandboxConfig.deny_all())
     denied = [d for d in result.diagnostics if d.code == 'constraint.path_denied']
-    assert denied, [d.message for d in result.diagnostics]
-    assert denied[0].severity is Severity.WARNING
+    assert denied, [d.render() for d in result.diagnostics]
+    assert denied[0].effective_severity is Severity.WARNING
     assert not result.has_errors  # 警告不构成编译错误
 
 

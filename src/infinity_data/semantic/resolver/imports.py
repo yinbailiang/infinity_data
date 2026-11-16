@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import File
 from infinity_data.parser import (
     Document,
@@ -32,6 +32,16 @@ from infinity_data.parser import (
     walk,
 )
 from infinity_data.sandbox import Sandbox, SandboxConfig
+from infinity_data.semantic.diagnostics import (
+    ImportFileDenied,
+    ImportFileMissing,
+    ImportParseFailed,
+    ImportPathFailed,
+    ImportTemplateDenied,
+    ImportUnsupportedFormat,
+    ImportYamlMissing,
+    NamespaceDuplicate,
+)
 from infinity_data.semantic.jsonpath import apply_json_path
 from infinity_data.semantic.std import StdValue, python_to_std, std_to_python
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -105,7 +115,7 @@ class ImportResolver:
         与模板 scope 一致：``$`` 命名空间内不允许隐式的"后者覆盖前者"。
         """
         if name in namespace:
-            collector.add(Diagnostic(Severity.ERROR, 'namespace.duplicate', {'name': name}, source))
+            collector.add(NamespaceDuplicate(name=name), source)
             return
         namespace[name] = value
 
@@ -137,14 +147,14 @@ class ImportResolver:
         """!file p"path" [as fmt] import .path.to.key as alias, ...（相对路径以 base_dir 解析）"""
         file = self._sandbox.open_file(stmt.file_path, source=stmt.source, base_dir=base_dir)
         if file is None:
-            collector.add(Diagnostic(Severity.WARNING, 'import.file_denied', {'path_src': stmt.file_path}, stmt.source))
+            collector.add(ImportFileDenied(path_src=stmt.file_path), stmt.source)
             return
 
         fmt = stmt.format or _FORMAT_MAP.get(Path(stmt.file_path).suffix.lower(), 'json')
         try:
             text = file.read()
         except OSError:
-            collector.add(Diagnostic(Severity.WARNING, 'import.file_missing', {'name': file.name}, stmt.source))
+            collector.add(ImportFileMissing(name=file.name), stmt.source)
             return
 
         data = self._parse_data(text, fmt, collector, stmt.source)
@@ -157,7 +167,7 @@ class ImportResolver:
             try:
                 value = apply_json_path(root, item.json_path)
             except (KeyError, IndexError, TypeError):
-                collector.add(Diagnostic(Severity.WARNING, 'import.path_failed', {'name': file.name}, item.source))
+                collector.add(ImportPathFailed(name=file.name), item.source)
                 continue
             self._bind(namespace, item.alias, value, collector, item.source)
 
@@ -253,7 +263,7 @@ class ImportResolver:
         """!from 目标：经沙盒授权产出 File（相对路径以导入所在文件目录解析）。"""
         file = self._sandbox.open_template(from_path, base_dir=base_dir, source=source)
         if file is None:
-            collector.add(Diagnostic(Severity.WARNING, 'import.template_denied', {'path_src': from_path}, source))
+            collector.add(ImportTemplateDenied(path_src=from_path), source)
         return file
 
     # ── 辅助 ──────────────────────────────────────────
@@ -276,13 +286,13 @@ class ImportResolver:
                 try:
                     import yaml  # pyright: ignore[reportMissingModuleSource]
                 except ImportError:
-                    collector.add(Diagnostic(Severity.WARNING, 'import.yaml_missing', {}, source))
+                    collector.add(ImportYamlMissing(), source)
                     return None
                 return yaml.safe_load(text)
             if fmt == 'toml':
                 return tomllib.loads(text)
-            collector.add(Diagnostic(Severity.WARNING, 'import.unsupported_format', {'format': fmt}, source))
+            collector.add(ImportUnsupportedFormat(format=fmt), source)
             return None
         except Exception as e:
-            collector.add(Diagnostic(Severity.ERROR, 'import.parse_failed', {'error': e}, source))
+            collector.add(ImportParseFailed(error=str(e)), source)
             return None

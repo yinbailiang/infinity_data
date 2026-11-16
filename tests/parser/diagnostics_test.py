@@ -1,20 +1,29 @@
-"""parser/diagnostics.py 单元测试：parse.* 词汇表注册（导入即注册）。"""
+"""parser/diagnostics.py 单元测试：parse.* 声明注册与渲染（导入即注册）。"""
 
-from infinity_data.infra.diagnostics import render_message
+from infinity_data.infra.diagnostics import Diagnostic
+from infinity_data.parser.diagnostics import (
+    ParseInvalidCast,
+    ParseMissingSeparator,
+    ParseUnexpectedToken,
+    ParseUnrecognizedStatement,
+)
 
 
 def test_separator_vocab_registered() -> None:
-    assert '缺少分隔符' in render_message('parse.missing_separator', {}, location='x:1:1')
+    msg = Diagnostic(ParseMissingSeparator(), lang='zh-CN').render(include_location=False)
+    assert '缺少分隔符' in msg
 
 
 def test_unexpected_token_vocab() -> None:
-    msg = render_message('parse.unexpected_token', {'expected': 'A', 'actual': 'B'}, location='x:1:1')
+    msg = Diagnostic(ParseUnexpectedToken(expected='A', actual='B'), lang='zh-CN').render(include_location=False)
     assert 'A' in msg and 'B' in msg
 
 
 def test_unrecognized_statement_vocab() -> None:
-    assert '无法识别' in render_message('parse.unrecognized_statement', {'name': 'X'}, location='x:1:1')
+    msg = Diagnostic(ParseUnrecognizedStatement(name='X'), lang='zh-CN').render(include_location=False)
+    assert '无法识别' in msg
 
 
 def test_invalid_cast_vocab() -> None:
-    assert '类型转换' in render_message('parse.invalid_cast', {'type': 'foo'}, location='x:1:1')
+    msg = Diagnostic(ParseInvalidCast(type='foo'), lang='zh-CN').render(include_location=False)
+    assert '类型转换' in msg

@@ -23,7 +23,14 @@ from typing import Any, cast
 from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
 from infinity_data.infra.file import DiskFile, File, MemFile
-from infinity_data.sandbox import Sandbox, SandboxConfig, SandboxError, Schema, SchemaError
+from infinity_data.sandbox import (
+    Sandbox,
+    SandboxConfig,
+    SandboxError,
+    Schema,
+    SchemaError,
+    SchemaUndefinedTemplate,
+)
 from infinity_data.semantic.builder import AstBuilder, StdDocument
 from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.registry import ConstraintRegistry
@@ -39,12 +46,14 @@ class CompileOptions:
     - ``sandbox``：沙盒配置；``None`` = 零信任（deny_all，库默认）
     - ``registry``：自定义约束注册表；``None`` = 内置
     - ``schema``：顶层模板约束；``None`` = 不校验
+    - ``lang``：诊断渲染语言（zh-CN / en-US）；``None`` = 按环境探测
     """
 
     env: Mapping[str, str] | None = None
     sandbox: SandboxConfig | None = None
     registry: ConstraintRegistry | None = None
     schema: Schema | None = None
+    lang: str | None = None
 
     def effective_sandbox(self) -> SandboxConfig:
         """env 合并进 sandbox 得实际生效配置；两者均缺省 → deny_all（零信任，库默认）。"""
@@ -80,11 +89,11 @@ class CompilationResult:
 
     @property
     def has_errors(self) -> bool:
-        return any(d.severity is Severity.ERROR for d in self.diagnostics)
+        return any(d.effective_severity is Severity.ERROR for d in self.diagnostics)
 
     @property
     def warnings(self) -> list[Diagnostic]:
-        return [d for d in self.diagnostics if d.severity is Severity.WARNING]
+        return [d for d in self.diagnostics if d.effective_severity is Severity.WARNING]
 
 
 def _sorted_diagnostics(collector: DiagnosticCollector) -> list[Diagnostic]:
@@ -110,7 +119,7 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
         return CompilationResult(document=StdDocument())
 
     # 单一诊断收集器：词法 → 语法 → 语义（Phase 1/2a/2b）全程复用
-    collector = DiagnosticCollector()
+    collector = DiagnosticCollector(lang=options.lang)
     doc, _ = parse_source(file, collector)
 
     sandbox_impl = Sandbox(
@@ -152,13 +161,13 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
             )
             key = scope.visible.get(resolver.schema.template)
             if key is None:
-                raise SchemaError('schema.undefined_template', {'template': resolver.schema.template})
+                raise SchemaError(SchemaUndefinedTemplate(template=resolver.schema.template))
             tpl = std.templates[key]
             root = executor.apply_schema(std.root, resolver.schema, tpl, context.template_scopes[key], collector)
             std = replace(std, root=root)
     except SandboxError as e:
         # 沙盒/schema 违规 → 追加到共享收集器（保留此前已收集的诊断），返回空文档（不抛出）
-        collector.add(Diagnostic(Severity.ERROR, e.code, dict(e.params), e.source))
+        collector.add(e.declaration, e.source)
         return CompilationResult(
             document=StdDocument(),
             diagnostics=_sorted_diagnostics(collector),
@@ -185,6 +194,7 @@ def load(
     sandbox: SandboxConfig | None = None,
     registry: ConstraintRegistry | None = None,
     schema: Schema | None = None,
+    lang: str | None = None,
 ) -> CompilationResult:
     """加载 .infd/.inft 文件并编译。
 
@@ -196,7 +206,7 @@ def load(
     """
     return _compile(
         DiskFile.from_fullpath(path),
-        CompileOptions(env=env, sandbox=sandbox, registry=registry, schema=schema),
+        CompileOptions(env=env, sandbox=sandbox, registry=registry, schema=schema, lang=lang),
     )
 
 
@@ -208,12 +218,13 @@ def compile_source(
     sandbox: SandboxConfig | None = None,
     registry: ConstraintRegistry | None = None,
     schema: Schema | None = None,
+    lang: str | None = None,
 ) -> CompilationResult:
     """编译源码字符串，返回 CompilationResult（选项见 :class:`CompileOptions`）。"""
     file = MemFile(name=file_path, root_path=Path(file_path).parent, content=source)
     return _compile(
         file,
-        CompileOptions(env=env, sandbox=sandbox, registry=registry, schema=schema),
+        CompileOptions(env=env, sandbox=sandbox, registry=registry, schema=schema, lang=lang),
     )
 
 
@@ -222,6 +233,7 @@ def safe_load(
     *,
     registry: ConstraintRegistry | None = None,
     schema: Schema | None = None,
+    lang: str | None = None,
 ) -> CompilationResult:
     """零信任加载：等价于 ``load(path, sandbox=SandboxConfig.deny_all())``。
 
@@ -235,7 +247,7 @@ def safe_load(
     """
     return _compile(
         DiskFile.from_fullpath(path),
-        CompileOptions(sandbox=SandboxConfig.deny_all(), registry=registry, schema=schema),
+        CompileOptions(sandbox=SandboxConfig.deny_all(), registry=registry, schema=schema, lang=lang),
     )
 
 
@@ -246,9 +258,10 @@ def check(
     sandbox: SandboxConfig | None = None,
     registry: ConstraintRegistry | None = None,
     schema: Schema | None = None,
+    lang: str | None = None,
 ) -> list[Diagnostic]:
     """仅校验，不输出。沙盒/schema 违规已由编译核心转为 ERROR 诊断。"""
-    return load(path, env=env, sandbox=sandbox, registry=registry, schema=schema).diagnostics
+    return load(path, env=env, sandbox=sandbox, registry=registry, schema=schema, lang=lang).diagnostics
 
 
 def compile_document(
@@ -258,10 +271,11 @@ def compile_document(
     sandbox: SandboxConfig | None = None,
     registry: ConstraintRegistry | None = None,
     schema: Schema | None = None,
+    lang: str | None = None,
 ) -> StdDocument:
     """编译为 StdDocument（不经过降维）：root / templates / scope（纯数据，不携带诊断）。
 
     沙盒/schema 违规时返回空文档；诊断见 :meth:`load` 结果（``CompilationResult.diagnostics``）。
     """
-    result = load(path, env=env, sandbox=sandbox, registry=registry, schema=schema)
+    result = load(path, env=env, sandbox=sandbox, registry=registry, schema=schema, lang=lang)
     return result.document

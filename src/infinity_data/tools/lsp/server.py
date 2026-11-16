@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 import urllib.parse
-from typing import Any
+from typing import Any, cast
 
 from infinity_data.tools.lsp import language
 from infinity_data.tools.lsp.protocol import read_message, write_message
@@ -36,6 +36,7 @@ class Server:
         self._writer = writer
         self._docs: dict[str, str] = {}
         self._shutdown = False
+        self._lang: str | None = None
 
     # ── 发送辅助 ──────────────────────────────────────────
 
@@ -78,6 +79,9 @@ class Server:
         msg_id = msg.get('id')
 
         if method == 'initialize':
+            options = cast(dict[str, Any], params.get('initializationOptions') or {})
+            lang = options.get('lang')
+            self._lang = lang if isinstance(lang, str) else None
             self._reply(msg_id, self._capabilities())
         elif method == 'initialized':
             pass
@@ -136,7 +140,7 @@ class Server:
         if text is None:
             return
         path = uri_to_path(uri)
-        diags = language.analyze(text, path)
+        diags = language.analyze(text, path, lang=self._lang)
         self._notify('textDocument/publishDiagnostics', {'uri': uri, 'diagnostics': diags})
 
     def _on_open(self, params: dict[str, Any]) -> None:

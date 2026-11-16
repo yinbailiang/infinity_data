@@ -26,7 +26,7 @@ def _build(src: str) -> tuple[StdDocument, DiagnosticCollector]:
 
 
 def _has_errors(collector: DiagnosticCollector) -> bool:
-    return any(d.severity is Severity.ERROR for d in collector)
+    return any(d.effective_severity is Severity.ERROR for d in collector)
 
 
 def _codes(collector: DiagnosticCollector) -> list[str]:

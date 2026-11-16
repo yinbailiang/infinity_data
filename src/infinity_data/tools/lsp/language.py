@@ -324,7 +324,7 @@ def _belongs_to_current_file(d: Any, file_path: str) -> bool:
     return name == file_path
 
 
-def analyze(text: str, file_path: str) -> list[dict[str, Any]]:
+def analyze(text: str, file_path: str, lang: str | None = None) -> list[dict[str, Any]]:
     """编译当前缓冲区，返回 LSP 诊断列表。
 
     用 ``compile_source``（内存源码）统一处理磁盘/脏缓冲区；
@@ -334,7 +334,13 @@ def analyze(text: str, file_path: str) -> list[dict[str, Any]]:
     其他文件的错误）不属于当前 uri，且其位置基于别的文件文本，若一并发布会
     被错误定位到当前文件上，故跳过。
     """
-    result = compile_source(text, file_path=file_path, sandbox=SandboxConfig.full_access(), env=virtual_env(text))
+    result = compile_source(
+        text,
+        file_path=file_path,
+        sandbox=SandboxConfig.full_access(),
+        env=virtual_env(text),
+        lang=lang,
+    )
     lines = text.splitlines()
     diags: list[dict[str, Any]] = []
     for d in result.diagnostics:
@@ -348,10 +354,11 @@ def analyze(text: str, file_path: str) -> list[dict[str, Any]]:
         diags.append(
             {
                 'range': rng,
-                'severity': _SEVERITY_MAP.get(d.severity, 1),
+                'severity': _SEVERITY_MAP.get(d.effective_severity, 1),
                 'code': d.code,
                 'source': 'infd',
-                'message': d.message,
+                'message': d.render(),
+                'data': d.to_dict(),
             }
         )
     return diags

@@ -9,14 +9,29 @@ from typing import Any
 
 from infinity_data.infra.diagnostics import Severity
 from infinity_data.semantic.builder.models import StdArray, StdLiteral, StdObject, StdValue
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.diagnostics import (
+    ConstraintExpectValue,
+    ConstraintExtensionArg,
+    ConstraintExtensionMismatch,
+    ConstraintPathDenied,
+    ConstraintPathNotDir,
+    ConstraintPathNotExist,
+    ConstraintPathNotFile,
+    ConstraintPathNotLink,
+    ConstraintSameNameArg,
+    ConstraintSameNameMismatch,
+    ConstraintSameTargetArg,
+    ConstraintSameTargetMismatch,
+    ConstraintTypeMismatch,
+)
+from infinity_data.semantic.registry.core import (
     ConstraintResult,
     Executor,
     describe,
     fail_result,
     ok_result,
 )
-from infinity_data.semantic.registry._core import (
+from infinity_data.semantic.registry.core import (
     path_str as _path_str,
 )
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
@@ -50,7 +65,7 @@ def _check_object(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'object'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='object'), source, path)
     return ok_result()
 
 
@@ -64,7 +79,7 @@ def _check_nullable(
     """``?``：值只能是 null（键存在、值为 null）。"""
     if isinstance(val, StdLiteral) and val.kind == 'null':
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'null', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='null', actual=describe(val)), source, path)
 
 
 def _check_absent(
@@ -77,7 +92,7 @@ def _check_absent(
     """``!``：值只能是 noexist（键不存在）。"""
     if isinstance(val, StdLiteral) and val.kind == 'noexist':
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'noexist', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='noexist', actual=describe(val)), source, path)
 
 
 def _check_int(
@@ -88,10 +103,10 @@ def _check_int(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'int'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='int'), source, path)
     if isinstance(val, StdLiteral) and val.kind == 'int':
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'int', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='int', actual=describe(val)), source, path)
 
 
 def _check_float(
@@ -102,10 +117,10 @@ def _check_float(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'float'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='float'), source, path)
     if isinstance(val, StdLiteral) and val.kind == 'float':
         return ok_result()  # 含 NaN / ±Infinity
-    return fail_result('constraint.type_mismatch', {'expected': 'float', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='float', actual=describe(val)), source, path)
 
 
 def _check_str(
@@ -116,11 +131,11 @@ def _check_str(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'str'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='str'), source, path)
     # path 与 str 是独立基础类型（§1.4）：字符串约束只认 str
     if isinstance(val, StdLiteral) and val.kind == 'str':
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'str', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='str', actual=describe(val)), source, path)
 
 
 def _check_bool(
@@ -131,10 +146,10 @@ def _check_bool(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'bool'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='bool'), source, path)
     if isinstance(val, StdLiteral) and val.kind == 'bool':
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'bool', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='bool', actual=describe(val)), source, path)
 
 
 def _check_list(
@@ -145,10 +160,10 @@ def _check_list(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'list'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='list'), source, path)
     if isinstance(val, StdArray):
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'list', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='list', actual=describe(val)), source, path)
 
 
 def _check_dict(
@@ -159,10 +174,10 @@ def _check_dict(
     executor: Executor,
 ) -> ConstraintResult:
     if val is None:
-        return fail_result('constraint.expect_value', {'expected': 'dict'}, source, path)
+        return fail_result(ConstraintExpectValue(expected='dict'), source, path)
     if isinstance(val, StdObject):
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'dict', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='dict', actual=describe(val)), source, path)
 
 
 # ── path 约束族 ────────────────────────────────────────
@@ -187,7 +202,15 @@ def _check_path(
     """
     if isinstance(val, StdLiteral) and val.kind == 'path':
         return ok_result()
-    return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+    return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
+
+
+_PATH_NOT_DECLS = {
+    'exist': ConstraintPathNotExist,
+    'dir': ConstraintPathNotDir,
+    'file': ConstraintPathNotFile,
+    'link': ConstraintPathNotLink,
+}
 
 
 def _check_exist(
@@ -249,18 +272,17 @@ def _fs_check(
     """
     s = _path_str(val)
     if s is None:
-        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+        return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     native = executor.sandbox.probe_path(s)
     if native is None:
         return fail_result(
-            'constraint.path_denied',
-            {'constraint': constraint, 'path': s},
+            ConstraintPathDenied(constraint=constraint, path=s),
             source,
             path,
             severity=Severity.WARNING,
         )
     if not pred(native):
-        return fail_result(f'constraint.path_not_{constraint}', {'path': s}, source, path)
+        return fail_result(_PATH_NOT_DECLS[constraint](path=s), source, path)
     return ok_result()
 
 
@@ -281,14 +303,14 @@ def _check_same_target(
     """
     s = _path_str(val)
     if s is None:
-        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+        return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     other = args[0]
     if not isinstance(other, PurePath):
-        return fail_result('constraint.same_target_arg', {'expected': 'path 字面量'}, source, path)
+        return fail_result(ConstraintSameTargetArg(expected='path 字面量'), source, path)
     a = posixpath.normpath(s)
     b = posixpath.normpath(other.as_posix())
     if a != b:
-        return fail_result('constraint.same_target_mismatch', {'value': s, 'expected': other.as_posix()}, source, path)
+        return fail_result(ConstraintSameTargetMismatch(value=s, expected=other.as_posix()), source, path)
     return ok_result()
 
 
@@ -302,13 +324,13 @@ def _check_same_name(
     """same_name(str)：路径的 basename（最后一段）等于指定字符串。"""
     s = _path_str(val)
     if s is None:
-        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+        return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     expected = args[0]
     if not isinstance(expected, str):
-        return fail_result('constraint.same_name_arg', {'expected': '字符串'}, source, path)
+        return fail_result(ConstraintSameNameArg(expected='字符串'), source, path)
     name = PurePosixPath(s).name
     if name != expected:
-        return fail_result('constraint.same_name_mismatch', {'name': name, 'expected': expected}, source, path)
+        return fail_result(ConstraintSameNameMismatch(name=name, expected=expected), source, path)
     return ok_result()
 
 
@@ -322,13 +344,11 @@ def _check_extension(
     """extension(ext, ...)：路径扩展名匹配任一给定扩展名（不带前导点，如 ``"json"``）。"""
     s = _path_str(val)
     if s is None:
-        return fail_result('constraint.type_mismatch', {'expected': 'path', 'actual': describe(val)}, source, path)
+        return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     exts = [a if a.startswith('.') else '.' + a for a in args if isinstance(a, str)]
     if not exts:
-        return fail_result('constraint.extension_arg', {'expected': '扩展名字符串'}, source, path)
+        return fail_result(ConstraintExtensionArg(expected='扩展名字符串'), source, path)
     suffix = PurePosixPath(s).suffix  # '.json' 或 ''（无扩展名）
     if suffix not in exts:
-        return fail_result(
-            'constraint.extension_mismatch', {'suffix': suffix or '(无)', 'expected': args}, source, path
-        )
+        return fail_result(ConstraintExtensionMismatch(suffix=suffix or '(无)', expected=exts), source, path)
     return ok_result()

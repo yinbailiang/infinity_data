@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -74,6 +75,17 @@ def main(argv: list[str] | None = None) -> int:
         action='store_true',
         help='JSON 紧凑输出（不缩进；仅对 json 格式生效）',
     )
+    parser.add_argument(
+        '--lang',
+        default=None,
+        help='诊断消息语言（精确标签，如 zh-CN / en-US；缺省按环境探测）',
+    )
+    parser.add_argument(
+        '--diag-format',
+        choices=('text', 'json'),
+        default='text',
+        help='诊断报告格式：text（默认）或 json（结构化字段，便于工具消费）',
+    )
     args = parser.parse_args(argv)
 
     text, file_path = _load_text(args.input)
@@ -85,16 +97,28 @@ def main(argv: list[str] | None = None) -> int:
         file_path=file_path,
         sandbox=SandboxConfig.full_access(),
         env=virtual_env(text),
+        lang=args.lang,
     )
 
     # 拒绝阈值：达到该级别（含更高）的诊断全部阻止输出
     threshold = None if args.severity == 'none' else _SEVERITY_RANK[Severity(args.severity)]
     blockers = (
-        [] if threshold is None else [d for d in result.diagnostics if _SEVERITY_RANK.get(d.severity, 0) >= threshold]
+        []
+        if threshold is None
+        else [d for d in result.diagnostics if _SEVERITY_RANK.get(d.effective_severity, 0) >= threshold]
     )
     if blockers:
-        for d in blockers:
-            print(f'{d.code}: {d.message} ({format_location(d.source)})', file=sys.stderr)
+        if args.diag_format == 'json':
+            json.dump(
+                [d.to_dict(include_location=True) for d in blockers],
+                sys.stderr,
+                ensure_ascii=False,
+                indent=2,
+            )
+            print(file=sys.stderr)
+        else:
+            for d in blockers:
+                print(f'{d.code}: {d.render()} ({format_location(d.source)})', file=sys.stderr)
         return 1
 
     try:

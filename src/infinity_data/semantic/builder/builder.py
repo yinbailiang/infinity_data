@@ -21,7 +21,7 @@ from itertools import product
 from pathlib import PurePath, PurePosixPath
 from typing import Any, cast
 
-from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
+from infinity_data.infra.diagnostics import DiagnosticCollector, DiagnosticDeclaration
 from infinity_data.parser import (
     ArrayValue,
     ConstraintStmt,
@@ -54,6 +54,32 @@ from infinity_data.semantic.builder.models import (
 from infinity_data.semantic.constraints import (
     resolve_constraint_list,
     resolve_constraints,
+)
+from infinity_data.semantic.diagnostics import (
+    DictDuplicateKey,
+    DollarConvertFailed,
+    DollarConvertUnsupported,
+    DollarUndefined,
+    FieldMissingValue,
+    NamespaceDuplicate,
+    TemplateArgConflict,
+    TemplateExpandLengthMismatch,
+    TemplateExpandNoSource,
+    TemplateExpandNotList,
+    TemplateExpandTooLarge,
+    TemplateMissingRequired,
+    TemplatePositionalDisabled,
+    TemplateRecursiveDefault,
+    TemplateTooManyPositional,
+    TemplateUndefined,
+    TemplateUnknownArgument,
+    TemplateVariadicPositionalConflict,
+    TemplateVariadicTargetMissing,
+    UnpackTypeError,
+    ValueNestingDepth,
+    ValueNoexistInArray,
+    VarCycle,
+    VarPathFailed,
 )
 from infinity_data.semantic.jsonpath import apply_json_path
 from infinity_data.semantic.resolver.models import ResolvedContext, Scope, TemplateKey
@@ -146,7 +172,7 @@ class AstBuilder:
                 case UnpackValue(value=uv, double=d):
                     # 顶层（隐式 dict）**expr 解包：展开为顶层字段（disjoint merge 查重）
                     if not d:
-                        self._err('unpack.type_error', {'want': 'dict'}, stmt.source, '')
+                        self._err(UnpackTypeError(want='dict'), stmt.source, '')
                         continue
                     rv = self._resolve_value(uv, '', self._root_scope)
                     fields = self._unpack_dict(rv, stmt.source, '')
@@ -223,7 +249,7 @@ class AstBuilder:
             if i in visited:
                 return
             if i in on_stack:
-                self._err('var.cycle', {'alias': stmts[i].alias}, stmts[i].source, '')
+                self._err(VarCycle(alias=stmts[i].alias), stmts[i].source, '')
                 return
             on_stack.add(i)
             for d in deps[i]:
@@ -246,10 +272,10 @@ class AstBuilder:
                 try:
                     rv = apply_json_path(rv, s.json_path)
                 except (KeyError, IndexError, TypeError):
-                    self._err('var.path_failed', {'alias': s.alias}, s.source, '')
+                    self._err(VarPathFailed(alias=s.alias), s.source, '')
                     continue
             if s.alias in namespace:
-                self._err('namespace.duplicate', {'name': s.alias}, s.source, '')
+                self._err(NamespaceDuplicate(name=s.alias), s.source, '')
                 continue
             namespace[s.alias] = rv
             self._var_values.append((f'${s.alias}', full))
@@ -336,14 +362,7 @@ class AstBuilder:
         # 报告：定位到环上模板的默认值字段（根因），而非展开深处
         for key in self._recursive_defaults:
             src = next((s for dep, s in sources.get(key, {}).items() if dep in self._recursive_defaults), None)
-            self._collector.add(
-                Diagnostic(
-                    Severity.ERROR,
-                    'template.recursive_default',
-                    {'template': key.name},
-                    src,
-                )
-            )
+            self._err(TemplateRecursiveDefault(template=key.name), src, '')
 
     def _iter_default_refs(
         self,
@@ -373,7 +392,7 @@ class AstBuilder:
         if value is None:
             if not isinstance(field.value, ErrorValue):
                 # 值解析失败已由语法层报告（parse.unrecognized_value 等），不重复报
-                self._err('field.missing_value', {}, field.source, path)
+                self._err(FieldMissingValue(), field.source, path)
             return StdField(name=field.name, value=None, source=field.source)
         specs: list[ResolvedConstraint] = []
         if field.constraints is not None:
@@ -393,7 +412,7 @@ class AstBuilder:
         result: list[StdField] = []
         for f in fields:
             if f.name in seen:
-                self._err('dict.duplicate_key', {'name': f.name}, f.source, f'{path}.{f.name}' if path else f.name)
+                self._err(DictDuplicateKey(name=f.name), f.source, f'{path}.{f.name}' if path else f.name)
             else:
                 seen.add(f.name)
                 result.append(f)
@@ -413,15 +432,13 @@ class AstBuilder:
             for cfg_field in (tpl.config.extra_positional_vars, tpl.config.extra_named_vars):
                 if cfg_field is not None and cfg_field not in declared:
                     self._err(
-                        'template.variadic_target_missing',
-                        {'template': tpl.name, 'field': cfg_field},
+                        TemplateVariadicTargetMissing(template=tpl.name, field=cfg_field),
                         tpl.source,
                         '',
                     )
             if tpl.config.extra_positional_vars is not None and not tpl.config.positional:
                 self._err(
-                    'template.variadic_positional_conflict',
-                    {'template': tpl.name},
+                    TemplateVariadicPositionalConflict(template=tpl.name),
                     tpl.source,
                     '',
                 )
@@ -430,13 +447,9 @@ class AstBuilder:
     # 诊断 / 解包辅助（消除重复构造）
     # ═══════════════════════════════════════════════════════
 
-    def _err(self, code: str, params: dict[str, Any], source: SourceRange | None, path: str) -> None:
-        """ERROR 诊断快捷构造（写入共享收集器）。"""
-        self._collector.add(Diagnostic(Severity.ERROR, code, params, source, path))
-
-    def _warn(self, code: str, params: dict[str, Any], source: SourceRange | None, path: str) -> None:
-        """WARNING 诊断快捷构造（写入共享收集器）。"""
-        self._collector.add(Diagnostic(Severity.WARNING, code, params, source, path))
+    def _err(self, declaration: DiagnosticDeclaration, source: SourceRange | None, path: str) -> None:
+        """诊断快捷构造（级别取自声明；写入共享收集器）。"""
+        self._collector.add(declaration, source, path=path)
 
     def _unpack_dict(self, rv: StdValue | None, source: SourceRange | None, path: str) -> list[StdField] | None:
         """** 解包目标检查 + 展开：rv 为 dict → 返回其字段；None/非 dict → 报错返回 None。"""
@@ -444,7 +457,7 @@ class AstBuilder:
             return rv.fields
         if rv is None:
             return None  # 值解析失败已报告
-        self._err('unpack.type_error', {'want': 'dict'}, source, path)
+        self._err(UnpackTypeError(want='dict'), source, path)
         return None
 
     def _unpack_list(self, rv: StdValue | None, source: SourceRange | None, path: str) -> list[StdValue] | None:
@@ -453,13 +466,13 @@ class AstBuilder:
             return [self._array_noexist(e, source, path) for e in rv.elements]
         if rv is None:
             return None
-        self._err('unpack.type_error', {'want': 'list'}, source, path)
+        self._err(UnpackTypeError(want='list'), source, path)
         return None
 
     def _array_noexist(self, value: StdValue, source: SourceRange | None, path: str) -> StdValue:
         """数组元素 noexist → 报错并按 null（保留位置）。"""
         if isinstance(value, StdLiteral) and value.kind == 'noexist':
-            self._err('value.noexist_in_array', {}, source, path)
+            self._err(ValueNoexistInArray(), source, path)
             return StdLiteral(kind='null', value=None, source=source)
         return value
 
@@ -482,7 +495,7 @@ class AstBuilder:
         self._depth += 1
         try:
             if self._depth > MAX_NESTING_DEPTH:
-                self._err('value.nesting_depth', {'max': MAX_NESTING_DEPTH}, raw.source, path)
+                self._err(ValueNestingDepth(max=MAX_NESTING_DEPTH), raw.source, path)
                 return None
 
             match raw:
@@ -585,7 +598,7 @@ class AstBuilder:
         """
         namespace = scope.namespaces if scope is not None else {}
         if name not in namespace:
-            self._warn('dollar.undefined', {'name': name}, source, path)
+            self._err(DollarUndefined(name=name), source, path)
             return StdLiteral(kind='null', value=None, source=source)
 
         raw = namespace[name]
@@ -596,8 +609,11 @@ class AstBuilder:
             # 结构化值（list / dict）不支持 as 转换：写了 as 就必须转换、不静默忽略——
             # 报错 + 原样返回容错（继续编译）
             self._err(
-                'dollar.convert_unsupported',
-                {'name': name, 'kind': 'list' if isinstance(raw, StdArray) else 'dict', 'type': type_cast},
+                DollarConvertUnsupported(
+                    name=name,
+                    kind='list' if isinstance(raw, StdArray) else 'dict',
+                    type=type_cast,
+                ),
                 source,
                 path,
             )
@@ -620,57 +636,25 @@ class AstBuilder:
                     elif low in ('false', '0'):
                         val = False
                     else:
-                        self._collector.add(
-                            Diagnostic(
-                                Severity.WARNING,
-                                'dollar.convert_failed',
-                                {'name': name, 'raw': raw, 'type': 'bool'},
-                                source,
-                                path,
-                            )
-                        )
+                        self._err(DollarConvertFailed(name=name, raw=raw, type='bool'), source, path)
                         val = False
                 elif isinstance(raw, (int, float)):
                     val = bool(raw)
                 else:
-                    self._collector.add(
-                        Diagnostic(
-                            Severity.WARNING,
-                            'dollar.convert_failed',
-                            {'name': name, 'raw': raw, 'type': 'bool'},
-                            source,
-                            path,
-                        )
-                    )
+                    self._err(DollarConvertFailed(name=name, raw=raw, type='bool'), source, path)
                     val = False
                 return StdLiteral(kind='bool', value=val, source=source)
             case 'int':
                 try:
                     return StdLiteral(kind='int', value=int(cast(Any, raw)), source=source)
                 except (ValueError, TypeError):
-                    self._collector.add(
-                        Diagnostic(
-                            Severity.WARNING,
-                            'dollar.convert_failed',
-                            {'name': name, 'raw': raw, 'type': 'int'},
-                            source,
-                            path,
-                        )
-                    )
+                    self._err(DollarConvertFailed(name=name, raw=raw, type='int'), source, path)
                     return StdLiteral(kind='int', value=0, source=source)
             case 'float':
                 try:
                     return StdLiteral(kind='float', value=decimal.Decimal(str(raw)), source=source)
                 except (ValueError, TypeError, decimal.InvalidOperation):
-                    self._collector.add(
-                        Diagnostic(
-                            Severity.WARNING,
-                            'dollar.convert_failed',
-                            {'name': name, 'raw': raw, 'type': 'float'},
-                            source,
-                            path,
-                        )
-                    )
+                    self._err(DollarConvertFailed(name=name, raw=raw, type='float'), source, path)
                     return StdLiteral(kind='float', value=decimal.Decimal(0), source=source)
             case 'path':
                 # as path：已是路径原样返回；字符串 → 包装为 PurePosixPath（非法 → 警告 + 保留原字符串）
@@ -681,15 +665,7 @@ class AstBuilder:
                         return StdLiteral(kind='path', value=PurePosixPath(raw), source=source)
                     except ValueError:
                         pass
-                self._collector.add(
-                    Diagnostic(
-                        Severity.WARNING,
-                        'dollar.convert_failed',
-                        {'name': name, 'raw': raw, 'type': 'path'},
-                        source,
-                        path,
-                    )
-                )
+                self._err(DollarConvertFailed(name=name, raw=raw, type='path'), source, path)
                 return StdLiteral(kind='str', value=str(raw), source=source)
             case 'str':
                 # as str = 字符串化：任意字面量按**语言字面量风格**转为字符串，
@@ -791,7 +767,7 @@ class AstBuilder:
         if not axes:
             # 调用级 ^ / ... 但无任何展开源（自身无轴、也无内层传播而来）→ 报错
             if propagate or cartesian:
-                self._err('template.expand_no_source', {'template': template_name}, source, path)
+                self._err(TemplateExpandNoSource(template=template_name), source, path)
             return self._instantiate_once(template_name, pos_args, named, path, source, scope)
 
         # 组合：zip（等长配对）或笛卡尔积（全组合，首轴最慢变化）
@@ -801,8 +777,7 @@ class AstBuilder:
                 total *= len(a.elements)
             if total > self.MAX_EXPAND:
                 self._err(
-                    'template.expand_too_large',
-                    {'template': template_name, 'max': self.MAX_EXPAND, 'count': total},
+                    TemplateExpandTooLarge(template=template_name, max=self.MAX_EXPAND, count=total),
                     source,
                     path,
                 )
@@ -812,8 +787,7 @@ class AstBuilder:
             lens = sorted({len(a.elements) for _, a in axes})
             if len(lens) > 1:
                 self._err(
-                    'template.expand_length_mismatch',
-                    {'template': template_name, 'lens': lens},
+                    TemplateExpandLengthMismatch(template=template_name, lens=lens),
                     source,
                     path,
                 )
@@ -821,8 +795,7 @@ class AstBuilder:
             count = lens[0]
             if count > self.MAX_EXPAND:
                 self._err(
-                    'template.expand_too_large',
-                    {'template': template_name, 'max': self.MAX_EXPAND, 'count': count},
+                    TemplateExpandTooLarge(template=template_name, max=self.MAX_EXPAND, count=count),
                     source,
                     path,
                 )
@@ -849,7 +822,7 @@ class AstBuilder:
             return rv
         if rv is None:
             return None
-        self._err('template.expand_not_list', {'template': template_name}, source, path)
+        self._err(TemplateExpandNotList(template=template_name), source, path)
         return None
 
     @staticmethod
@@ -920,9 +893,7 @@ class AstBuilder:
         """
         key = scope.visible.get(template_name)
         if key is None:
-            self._collector.add(
-                Diagnostic(Severity.ERROR, 'template.undefined', {'template': template_name}, source, path)
-            )
+            self._err(TemplateUndefined(template=template_name), source, path)
             return StdObject()
         # 静态环检测已标记：默认值递归引用，禁止展开（根因错误已在定义处报告）
         if key in self._recursive_defaults:
@@ -949,15 +920,7 @@ class AstBuilder:
         # 模板配置 positional=false：位置参数违规报错，但值仍绑定必填字段
         # （放宽必填绑定：只报 positional_disabled 一条，避免 missing_required 级联）
         if not template.config.positional and expanded_positional:
-            self._collector.add(
-                Diagnostic(
-                    Severity.ERROR,
-                    'template.positional_disabled',
-                    {'template': template_name},
-                    source,
-                    path,
-                )
-            )
+            self._err(TemplatePositionalDisabled(template=template_name), source, path)
 
         # ── 命名参数：显式 + **expr 解包（dict → 键值对），保持源码顺序（§2.7）──
         # 解析器把 **expr 解包项与显式命名参数按源码顺序合并存进 named_args：
@@ -976,7 +939,7 @@ class AstBuilder:
             """按名绑定命名参数：已绑定 / 已收集 → 重复键（先到者保留）；否则走声明/收集/放行。"""
             child = f'{path}.{name}' if path else name
             if name in param_values or name in extra_args or name in extra_named:
-                self._err('dict.duplicate_key', {'name': name}, arg_source, child)
+                self._err(DictDuplicateKey(name=name), arg_source, child)
                 return
             if name not in declared:
                 if named_vars is not None:
@@ -986,8 +949,7 @@ class AstBuilder:
                     extra_args[name] = (arg_val, getattr(arg_val, 'source', None))
                 else:
                     self._err(
-                        'template.unknown_argument',
-                        {'template': template_name, 'arg': name},
+                        TemplateUnknownArgument(template=template_name, arg=name),
                         arg_source,
                         child,
                     )
@@ -1026,8 +988,7 @@ class AstBuilder:
                 rf = required[idx]
                 if rf.name in param_values:
                     self._err(
-                        'template.arg_conflict',
-                        {'template': template_name, 'field': rf.name},
+                        TemplateArgConflict(template=template_name, field=rf.name),
                         source,
                         path,
                     )
@@ -1036,9 +997,12 @@ class AstBuilder:
             elif positional_vars is not None:
                 extra_pos.append(pos_val)
             else:
-                self._warn(
-                    'template.too_many_positional',
-                    {'template': template_name, 'count': len(required), 'given': len(expanded_positional)},
+                self._err(
+                    TemplateTooManyPositional(
+                        template=template_name,
+                        count=len(required),
+                        given=len(expanded_positional),
+                    ),
                     source,
                     path,
                 )
@@ -1051,14 +1015,10 @@ class AstBuilder:
         # 必填字段缺失检查
         for rf in required:
             if rf.name not in param_values:
-                self._collector.add(
-                    Diagnostic(
-                        Severity.ERROR,
-                        'template.missing_required',
-                        {'template': template_name, 'field': rf.name},
-                        source,
-                        path,
-                    )
+                self._err(
+                    TemplateMissingRequired(template=template_name, field=rf.name),
+                    source,
+                    path,
                 )
 
         # 展开所有字段（参数覆盖 > 默认值 > 缺失）

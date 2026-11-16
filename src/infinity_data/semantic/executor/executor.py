@@ -20,9 +20,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
+from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector
 from infinity_data.parser import TemplateDef, TemplateField
-from infinity_data.sandbox import Sandbox, SandboxConfig, Schema, SchemaError
+from infinity_data.sandbox import (
+    Sandbox,
+    SandboxConfig,
+    Schema,
+    SchemaError,
+    SchemaExtraFields,
+    SchemaExtraFieldsLenient,
+    SchemaFailed,
+    SchemaMissingOptional,
+    SchemaMissingRequired,
+)
 from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
     StdArray,
@@ -32,6 +42,17 @@ from infinity_data.semantic.builder.models import (
     StdValue,
 )
 from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
+from infinity_data.semantic.diagnostics import (
+    ConstraintArgCount,
+    ConstraintInvalid,
+    ConstraintUnknown,
+    TemplateExpectObject,
+    TemplateExpectValue,
+    TemplateExtraField,
+    TemplateMissingField,
+    TemplateMissingOptional,
+    TemplateNullUseNullable,
+)
 from infinity_data.semantic.registry import (
     ConstraintRegistry,
     ConstraintResult,
@@ -129,17 +150,13 @@ class ConstraintExecutor:
             return
         entry = self._registry.lookup(spec.name)
         if entry is None:
-            collector.add(Diagnostic(Severity.ERROR, 'constraint.unknown', {'name': spec.name}, spec.source))
+            collector.add(ConstraintUnknown(name=spec.name), spec.source)
             return
         expected = entry.arity_error(len(spec.args))
         if expected is not None:
             collector.add(
-                Diagnostic(
-                    Severity.ERROR,
-                    'constraint.arg_count',
-                    {'name': spec.name, 'expected': expected, 'given': len(spec.args)},
-                    spec.source,
-                )
+                ConstraintArgCount(name=spec.name, expected=expected, given=len(spec.args)),
+                spec.source,
             )
 
     def validate_template_defaults(
@@ -197,7 +214,7 @@ class ConstraintExecutor:
         签名与 :class:`Executor` 协议一致（嵌套约束回调复用本方法）。
         """
         if constraint.name == _INVALID_CONSTRAINT:
-            return fail_result('constraint.invalid', {}, source, path)
+            return fail_result(ConstraintInvalid(), source, path)
         key = self._templates_by_name.get(constraint.name)
         if key is not None:
             return self._check_template(key, value, source, path)
@@ -235,13 +252,13 @@ class ConstraintExecutor:
         declared = {tf.name for tf in tpl.fields}
 
         if value is None:
-            return fail_result('template.expect_value', {'template': display}, source, path)
+            return fail_result(TemplateExpectValue(template=display), source, path)
         if isinstance(value, StdLiteral):
             if value.kind == 'null':
-                return fail_result('template.null_use_nullable', {'template': display}, source, path)
-            return fail_result('template.expect_object', {'template': display, 'actual': describe(value)}, source, path)
+                return fail_result(TemplateNullUseNullable(template=display), source, path)
+            return fail_result(TemplateExpectObject(template=display, actual=describe(value)), source, path)
         if not isinstance(value, StdObject):
-            return fail_result('template.expect_object', {'template': display, 'actual': describe(value)}, source, path)
+            return fail_result(TemplateExpectObject(template=display, actual=describe(value)), source, path)
 
         # 标记来源模板：这个手写 dict 被判定为模板 display 的结构（供下游引用）
         if value.template is None:
@@ -257,8 +274,12 @@ class ConstraintExecutor:
             if f is None:
                 if self._accepts_absent(tf, scope):
                     continue  # `!`：字段可缺失
-                code = 'template.missing_field' if tf.default_value is None else 'template.missing_optional'
-                diags.append(Diagnostic(Severity.ERROR, code, {'template': display, 'field': tf.name}, source, child))
+                declaration = (
+                    TemplateMissingField(template=display, field=tf.name)
+                    if tf.default_value is None
+                    else TemplateMissingOptional(template=display, field=tf.name)
+                )
+                diags.append(Diagnostic(declaration, source, child))
                 continue
             if f.value is not None:
                 specs, rdiags = resolve_constraints(tf.constraints, scope)
@@ -278,9 +299,7 @@ class ConstraintExecutor:
                     child = f'{path}.{f.name}' if path else f.name
                     diags.append(
                         Diagnostic(
-                            Severity.ERROR,
-                            'template.extra_field',
-                            {'template': display, 'field': f.name},
+                            TemplateExtraField(template=display, field=f.name),
                             f.source or source,
                             child,
                         )
@@ -324,11 +343,9 @@ class ConstraintExecutor:
         extra_names = [f.name for f in root.fields if f.name not in declared]
         if extra_names:
             if mode == 'strict':
-                diags.append(Diagnostic(Severity.ERROR, 'schema.extra_fields', {'fields': extra_names}, None))
+                diags.append(Diagnostic(SchemaExtraFields(fields=extra_names)))
             elif mode == 'lenient':
-                collector.add(
-                    Diagnostic(Severity.WARNING, 'schema.extra_fields_lenient', {'fields': extra_names}, None)
-                )
+                collector.add(SchemaExtraFieldsLenient(fields=extra_names))
             else:  # strip
                 root = StdObject(fields=[f for f in root.fields if f.name in declared], template=root.template)
 
@@ -337,16 +354,12 @@ class ConstraintExecutor:
             if root.get(tf.name) is None:
                 if self._accepts_absent(tf, scope):
                     continue
-                code = 'schema.missing_required' if tf.default_value is None else 'schema.missing_optional'
-                diags.append(
-                    Diagnostic(
-                        Severity.ERROR,
-                        code,
-                        {'field': tf.name, 'template': tpl.name},
-                        None,
-                        tf.name,
-                    )
+                declaration = (
+                    SchemaMissingRequired(field=tf.name, template=tpl.name)
+                    if tf.default_value is None
+                    else SchemaMissingOptional(field=tf.name, template=tpl.name)
                 )
+                diags.append(Diagnostic(declaration, None, tf.name))
 
         # 字段约束校验
         for tf in tpl.fields:
@@ -370,5 +383,5 @@ class ConstraintExecutor:
                 diags.extend(result.diagnostics)
 
         if diags:
-            raise SchemaError('schema.failed', {'detail': '；'.join(d.message for d in diags)})
+            raise SchemaError(SchemaFailed(detail='；'.join(d.render(lang=collector.lang) for d in diags)))
         return root

@@ -1,10 +1,24 @@
 """词法分析器"""
 
-from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
+from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import File
 from infinity_data.infra.ll1_stream import NoNextType
 from infinity_data.tokenizer.char_stream import CharStream
-from infinity_data.tokenizer.diagnostics import diag
+from infinity_data.tokenizer.diagnostics import (
+    TokenizeBangCorrected,
+    TokenizeBom,
+    TokenizeInvalidBang,
+    TokenizeInvalidEllipsis,
+    TokenizeInvalidNumber,
+    TokenizeMismatchedBracket,
+    TokenizeSignedNan,
+    TokenizeUnexpectedCloseBracket,
+    TokenizeUnknownChar,
+    TokenizeUnterminatedBracket,
+    TokenizeUnterminatedComment,
+    TokenizeUnterminatedMultilineString,
+    TokenizeUnterminatedString,
+)
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
@@ -106,14 +120,7 @@ class RawTokenizer:
     def _detect_bom(stream: CharStream, collector: DiagnosticCollector, file: File) -> None:
         """检测文件 BOM（规范要求 UTF-8 NO BOM）：报 tokenize.bom 警告并跳过。"""
         if not stream.eof() and stream.peek() == '\ufeff':
-            collector.add(
-                Diagnostic(
-                    Severity.WARNING,
-                    'tokenize.bom',
-                    {},
-                    SourceRange.at(file, stream.info()),
-                )
-            )
+            collector.add(TokenizeBom(), SourceRange.at(file, stream.info()))
             stream.advance()
 
     def __iter__(self) -> 'RawTokenizer':
@@ -190,7 +197,7 @@ class RawTokenizer:
                 return self._read_identifier_or_keyword(stream, file)
 
             # ── 无法识别的字符 ────────────────────────
-            collector.add(diag('tokenize.unknown_char', {'char': ch}, SourceRange.at(file, stream.info())))
+            collector.add(TokenizeUnknownChar(char=ch), SourceRange.at(file, stream.info()))
             stream.advance()
 
     @staticmethod
@@ -236,11 +243,8 @@ class RawTokenizer:
         if count >= 2:
             # 2 / >=4 个点：非法点串（只有 1 点 DOT 与 3 点 ELLIPSIS 合法），不静默吞点
             collector.add(
-                diag(
-                    'tokenize.invalid_ellipsis',
-                    {'count': count},
-                    SourceRange(file=file, start=start, end=stream.info()),
-                )
+                TokenizeInvalidEllipsis(count=count),
+                SourceRange(file=file, start=start, end=stream.info()),
             )
         return RawToken(
             type=RawTokenType.DOT,
@@ -308,11 +312,8 @@ class RawTokenizer:
             stream.advance()
             if stream.eof():
                 collector.add(
-                    diag(
-                        'tokenize.unterminated_comment',
-                        {'flag': '#' + '-' * plus_count},
-                        SourceRange.at(file, stream.info()),
-                    )
+                    TokenizeUnterminatedComment(flag='#' + '-' * plus_count),
+                    SourceRange.at(file, stream.info()),
                 )
                 return
             ch = stream.peek()
@@ -349,11 +350,8 @@ class RawTokenizer:
             stream.advance()
 
         collector.add(
-            diag(
-                'tokenize.unterminated_comment',
-                {'flag': '#' + '-' * depth},
-                SourceRange.at(file, stream.info()),
-            )
+            TokenizeUnterminatedComment(flag='#' + '-' * depth),
+            SourceRange.at(file, stream.info()),
         )
 
     # ── 单字符 token ──────────────────────────────────
@@ -384,19 +382,13 @@ class RawTokenizer:
             open_stack.append((ch, tok.source.start))
         elif ch in RawTokenizer._close_to_open:
             if not open_stack:
-                collector.add(diag('tokenize.unexpected_close_bracket', {'bracket': ch}, tok.source))
+                collector.add(TokenizeUnexpectedCloseBracket(bracket=ch), tok.source)
                 return
             open_bracket, _ = open_stack[-1]
             if open_bracket == RawTokenizer._close_to_open[ch]:
                 open_stack.pop()
             else:
-                collector.add(
-                    diag(
-                        'tokenize.mismatched_bracket',
-                        {'open': open_bracket, 'close': ch},
-                        tok.source,
-                    )
-                )
+                collector.add(TokenizeMismatchedBracket(open=open_bracket, close=ch), tok.source)
                 open_stack.pop()
 
     @staticmethod
@@ -407,7 +399,7 @@ class RawTokenizer:
     ) -> None:
         """EOF 时仍开着的括号 → 报 tokenize.unterminated_bracket（按开括号顺序）。"""
         for bracket, start in open_stack:
-            collector.add(diag('tokenize.unterminated_bracket', {'bracket': bracket}, SourceRange.at(file, start)))
+            collector.add(TokenizeUnterminatedBracket(bracket=bracket), SourceRange.at(file, start))
         open_stack.clear()
 
     # ── ! 导入关键字（词法组合，! 无独立语法）──
@@ -498,11 +490,8 @@ class RawTokenizer:
         suggestion = RawTokenizer._nearest_bang_keyword(actual)
         if suggestion is not None:
             collector.add(
-                diag(
-                    'tokenize.bang_corrected',
-                    {'actual': actual, 'suggestion': suggestion},
-                    SourceRange.at(file, start),
-                )
+                TokenizeBangCorrected(actual=actual, suggestion=suggestion),
+                SourceRange.at(file, start),
             )
             return RawTokenizer._make_token(
                 RawTokenizer._BANG_KEYWORD_TO_TYPE[suggestion],
@@ -511,7 +500,7 @@ class RawTokenizer:
                 stream=stream,
                 file=file,
             )
-        collector.add(diag('tokenize.invalid_bang', {'actual': repr(actual)}, SourceRange.at(file, start)))
+        collector.add(TokenizeInvalidBang(actual=actual), SourceRange.at(file, start))
         return None
 
     # ── 单行字符串 / 路径字面量 ─────────────────────────
@@ -548,7 +537,7 @@ class RawTokenizer:
             if ch == '\\':
                 raw_parts.append(stream.advance())  # 消费反斜杠
                 if stream.eof():
-                    collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+                    collector.add(TokenizeUnterminatedString(), SourceRange.at(file, start))
                     close()
                     return RawTokenizer._make_token(
                         token_type, ''.join(raw_parts), start=start, stream=stream, file=file
@@ -557,7 +546,7 @@ class RawTokenizer:
                 assert not isinstance(nxt, NoNextType)
                 if nxt == '\n':
                     # 单行字符串不允许真实换行（规范：json 风格转义）→ 与裸换行分支一致报错恢复
-                    collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+                    collector.add(TokenizeUnterminatedString(), SourceRange.at(file, start))
                     close()
                     return RawTokenizer._make_token(
                         token_type, ''.join(raw_parts), start=start, stream=stream, file=file
@@ -571,14 +560,14 @@ class RawTokenizer:
                 return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
 
             if ch == '\n':
-                collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+                collector.add(TokenizeUnterminatedString(), SourceRange.at(file, start))
                 close()
                 return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
 
             raw_parts.append(ch)
             stream.advance()
 
-        collector.add(diag('tokenize.unterminated_string', {}, SourceRange.at(file, start)))
+        collector.add(TokenizeUnterminatedString(), SourceRange.at(file, start))
         close()
         return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
 
@@ -642,11 +631,8 @@ class RawTokenizer:
             stream.advance()
 
         collector.add(
-            diag(
-                'tokenize.unterminated_multiline_string',
-                {'flag': '`' * backtick_count},
-                SourceRange.at(file, start),
-            )
+            TokenizeUnterminatedMultilineString(flag='`' * backtick_count),
+            SourceRange.at(file, start),
         )
         raw += '`' * backtick_count
         return RawTokenizer._make_token(RawTokenType.MULTILINE_STRING, raw, start=start, stream=stream, file=file)
@@ -671,7 +657,7 @@ class RawTokenizer:
         is_float = False
 
         def invalid(raw: str) -> None:
-            collector.add(diag('tokenize.invalid_number', {'raw': raw}, SourceRange.at(file, start)))
+            collector.add(TokenizeInvalidNumber(raw=raw), SourceRange.at(file, start))
 
         # ── 1. 可选正负号 ──
         ch = _peek_char(stream)
@@ -699,14 +685,7 @@ class RawTokenizer:
                     return RawTokenizer._make_token(RawTokenType.FLOAT, full, start=start, stream=stream, file=file)
                 if full in ('+nan', '-nan'):
                     # 带符号 NaN：合法但警告，归一化为 nan（NaN 无符号）
-                    collector.add(
-                        Diagnostic(
-                            Severity.WARNING,
-                            'tokenize.signed_nan',
-                            {'raw': full},
-                            SourceRange.at(file, start),
-                        )
-                    )
+                    collector.add(TokenizeSignedNan(raw=full), SourceRange.at(file, start))
                     return RawTokenizer._make_token(RawTokenType.FLOAT, 'nan', start=start, stream=stream, file=file)
                 # 非法（如 +foo）：整个序列已消费，跳过，不留非法 token
                 invalid(full)

@@ -73,7 +73,7 @@ def test_invalid_dot_run_reported() -> None:
 def test_bom_reported_as_warning() -> None:
     _, col = _tokenize('\ufeffa = 1\n')
     assert any(d.code == 'tokenize.bom' for d in col)
-    assert all(d.severity.value == 'warning' for d in col)
+    assert all(d.effective_severity.value == 'warning' for d in col)
 
 
 def test_unicode_not_identifier_or_number() -> None:
@@ -159,7 +159,7 @@ def test_invalid_number_reported() -> None:
 def test_signed_nan_accepted_with_warning() -> None:
     toks, col = _tokenize('x = +nan\n')
     assert any(t.type is RawTokenType.FLOAT and t.raw == 'nan' for t in toks)
-    assert any(d.code == 'tokenize.signed_nan' and d.severity.value == 'warning' for d in col)
+    assert any(d.code == 'tokenize.signed_nan' and d.effective_severity.value == 'warning' for d in col)
 
 
 def test_invalid_number_recovers_without_illegal_token() -> None:
