@@ -240,6 +240,23 @@ class VarStmt(AstNode):
 
 
 @dataclass
+class AssertStmt(AstNode):
+    """编译期断言: !assert <值表达式> is <约束>。
+
+    值在构建期按定义文件 scope 求值，约束在 Phase 2b 执行；断言不产生输出。
+    """
+
+    value: Value
+    constraints: Constraints
+
+    def children(self) -> Iterable[AstNode]:
+        return [self.value, self.constraints]
+
+    def canonical(self) -> str:
+        return f'!assert {self.value.canonical()} is {self.constraints.canonical()}'
+
+
+@dataclass
 class TemplateField(AstNode):
     """模板内部字段定义。与普通 Field 不同之处：
     - 必须带有类型约束
@@ -637,6 +654,7 @@ type Statement = (
     | EnvImportStmt
     | FileImportStmt
     | VarStmt
+    | AssertStmt
     | TemplateDef
     | Field
     | ConstraintStmt

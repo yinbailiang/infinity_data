@@ -12,9 +12,9 @@ chars → RawTokenizer → FinalTokenizer → Parser
 - 解析器为 LL(1) 递归下降；错误恢复用合成 token 保证类型安全、始终前进
 - 空源码 → 空配置（非错误）
 
-## 4.2 导入关键字在词法层组合
+## 4.2 Bang 关键字在词法层组合
 
-- `!env` / `!file` / `!from` / `!var` 后紧跟关键字标识符时由词法层组合为单一 token（避免语法层二义）
+- `!env` / `!file` / `!from` / `!var` / `!assert` 后紧跟关键字标识符时由词法层组合为单一 token（避免语法层二义）
 - 其他位置的 `!`（其后不接关键字标识符）是**独立标点**：约束后缀 `!`（可缺失）或独立约束 `!`
 - `!` 后跟非关键字标识符 → 拼写纠正（`tokenize.bang_corrected`）或词法错误（`tokenize.invalid_bang`）
 
@@ -23,7 +23,8 @@ chars → RawTokenizer → FinalTokenizer → Parser
 顶层以**逗号或换行**分隔的语句（二者等价，可混用；导入语句内部仍强制逗号，见 §3.2）:
 - 字段定义（含省略等号形式 `name {...}` / `name [...]`）
 - 模板定义 `~Name {...}`
-- 导入语句 `!env` / `!file` / `!from`
+- 导入语句 `!env` / `!file` / `!from` / `!var`
+- 编译期断言 `!assert <值> is <约束>`
 - 结构级约束 `: <...>`
 
 ## 4.4 JSON path 语法（!file / !var 共用）

@@ -250,7 +250,7 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   `render_message`、`diagnostic_define`、`register_diagnostic_define`、
   `registered_diagnostic_defines`。`ErrorValue` / `ErrorConstraint.message`
   仅为 parser 恢复载荷；`error.generic` 重复报告已删除。
-- 注册声明 160 条（tokenizer / parser / semantic / sandbox 四层词汇表，
+- 注册声明 161 条（tokenizer / parser / semantic / sandbox 四层词汇表，
   全部 zh-CN + en-US）。`CompileOptions.lang` 贯穿公共 API；
   CLI `--lang` / `--diag-format json`；LSP `initializationOptions.lang` +
   `diagnostic.data`。
@@ -283,3 +283,21 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   需要观察新内容时重新构造 `DiskFile` / `Sandbox` 或重新编译。
 - 回归测试：`tests/infra/file_test.py`（实例缓存 + Sandbox 复用）、
   `tests/semantic/resolver/imports_test.py`（resolve 后 identity 只读一次）。
+
+---
+
+## 13. 编译期断言（`!assert`）
+
+- 词法：`!assert` 与 `!env` / `!file` / `!from` / `!var` 同属 bang 组合关键字；
+  拼写纠正列表同步加入 `assert`。
+- 语法：顶层 `AssertStmt(value, constraints)`，`is` 为上下文关键字；
+  `is` 后缺少约束 → `parse.assert_missing_constraint`。
+- 作用域：`Scope.assert_statements` 按文件携带；`_remap_scope` 随命名空间复制。
+  主 `.infd` 与 `.inft` 均可使用；`.inft` 的分支显式放行，不再触发 `inft.not_allowed`。
+- 构建（Phase 2a）：`AstBuilder._resolve_assertion_statements` 按**定义文件 scope**
+  求值 value、解析约束，写入 `BuildArtifacts.assertions`（`Assertion` 数据类）；
+  断言不进入 root、不参与模板身份。
+- 执行（Phase 2b）：`ConstraintExecutor.validate_assertions` 先递归校验 value
+  自身约束（与 `!var` 一致），再逐条执行断言约束；失败复用具体 `constraint.*`
+  码（位置指向断言值），不新增 `assert.failed` 汇总码。
+- 相关测试：tokenizer / parser / executor / pipeline（含 `.inft` 断言与 `$` 引用）。

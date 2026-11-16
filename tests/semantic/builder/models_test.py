@@ -66,3 +66,4 @@ def test_build_artifacts_wraps_validation_data() -> None:
     assert artifacts.document is doc
     assert artifacts.template_defaults == {}
     assert artifacts.var_values == []
+    assert artifacts.assertions == []

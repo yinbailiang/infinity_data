@@ -162,6 +162,13 @@ class VarImportToken(Token):
     pass
 
 
+@dataclass
+class AssertToken(Token):
+    """!assert（编译期断言：值表达式 + 约束）"""
+
+    pass
+
+
 # ── 字符串字面量 ───────────────────────────────────
 
 

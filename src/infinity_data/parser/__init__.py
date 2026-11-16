@@ -12,6 +12,7 @@
 
 from infinity_data.parser.models import (
     ArrayValue,
+    AssertStmt,
     AstNode,
     Constraint,
     ConstraintCall,
@@ -51,6 +52,7 @@ from infinity_data.parser.parser import Parser
 
 __all__ = [
     'ArrayValue',
+    'AssertStmt',
     'AstNode',
     'Constraint',
     'ConstraintCall',

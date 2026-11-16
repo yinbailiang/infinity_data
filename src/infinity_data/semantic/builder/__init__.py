@@ -9,6 +9,7 @@
 
 from infinity_data.semantic.builder.builder import AstBuilder
 from infinity_data.semantic.builder.models import (
+    Assertion,
     BuildArtifacts,
     ResolvedConstraint,
     StdArray,
@@ -22,6 +23,7 @@ from infinity_data.semantic.builder.models import (
 )
 
 __all__ = [
+    'Assertion',
     'AstBuilder',
     'BuildArtifacts',
     'ResolvedConstraint',

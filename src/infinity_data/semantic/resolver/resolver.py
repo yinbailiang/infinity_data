@@ -22,6 +22,7 @@ from infinity_data.frontend import parse_source
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import File
 from infinity_data.parser import (
+    AssertStmt,
     Document,
     EnvImportStmt,
     FileImportStmt,
@@ -357,6 +358,8 @@ class TemplateGraphResolver:
                     pass
                 case EnvImportStmt() | FileImportStmt() | VarStmt():
                     pass  # .inft 允许数据导入（§3.2，绑定本文件 $ 命名空间，就地解析）
+                case AssertStmt():
+                    pass  # .inft 允许编译期断言（不产生输出，随本文件 scope 求值）
                 case _:
                     if file.name.endswith('.inft'):
                         self._collector.add(InftNotAllowed(), s.source)
@@ -376,6 +379,9 @@ class TemplateGraphResolver:
         var_stmts = [s for s in doc.statements if isinstance(s, VarStmt)]
         if var_stmts:
             scope.var_statements = var_stmts
+        assert_stmts = [s for s in doc.statements if isinstance(s, AssertStmt)]
+        if assert_stmts:
+            scope.assert_statements = assert_stmts
         idents = self._imports.import_identities(doc, scope.namespaces, base_dir=base_dir)
         if idents:
             scope.import_identities = idents
@@ -414,6 +420,7 @@ class TemplateGraphResolver:
         new_scope = Scope(visible=dict((visible, key_map.get(key, key)) for visible, key in scope.visible.items()))
         new_scope.namespaces = scope.namespaces
         new_scope.var_statements = scope.var_statements
+        new_scope.assert_statements = scope.assert_statements
         new_scope.import_identities = scope.import_identities
         return new_scope
 

@@ -2,6 +2,7 @@
 
 from infinity_data.infra.diagnostics import Diagnostic
 from infinity_data.parser.diagnostics import (
+    ParseAssertMissingConstraint,
     ParseInvalidCast,
     ParseMissingSeparator,
     ParseUnexpectedToken,
@@ -27,3 +28,8 @@ def test_unrecognized_statement_vocab() -> None:
 def test_invalid_cast_vocab() -> None:
     msg = Diagnostic(ParseInvalidCast(type='foo'), lang='zh-CN').render(include_location=False)
     assert '类型转换' in msg
+
+
+def test_assert_missing_constraint_vocab() -> None:
+    msg = Diagnostic(ParseAssertMissingConstraint(), lang='zh-CN').render(include_location=False)
+    assert '!assert' in msg and '约束' in msg

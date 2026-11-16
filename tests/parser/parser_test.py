@@ -4,7 +4,7 @@ from pathlib import Path
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
-from infinity_data.parser import DictValue, EnvImportStmt, Field, TemplateDef, TemplateField
+from infinity_data.parser import AssertStmt, DictValue, EnvImportStmt, Field, TemplateDef, TemplateField
 from infinity_data.parser.parser import Parser
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.tokenizer import RawTokenizer
@@ -40,6 +40,26 @@ def test_dict_value() -> None:
     field = doc.statements[0]
     assert isinstance(field, Field)
     assert isinstance(field.value, DictValue)
+
+
+def test_assert_statement() -> None:
+    doc, diags = _parse('!assert [1, 3, 4] is <list, each(int)>\n')
+    assert not diags
+    stmt = doc.statements[0]
+    assert isinstance(stmt, AssertStmt)
+    assert stmt.canonical() == '!assert [ 1, 3, 4 ] is <list, each(int)>'
+
+
+def test_assert_requires_constraint() -> None:
+    _, diags = _parse('!assert 1 is\n')
+    assert any(d.code == 'parse.assert_missing_constraint' for d in diags)
+
+
+def test_assert_missing_is_keeps_next_statement() -> None:
+    """缺 is 时不得吞掉换行后的下一条顶层语句。"""
+    doc, diags = _parse('!assert 1\nx = 2\n')
+    assert any(d.code == 'parse.expected_keyword' for d in diags)
+    assert any(isinstance(s, Field) and s.name == 'x' for s in doc.statements)
 
 
 def test_missing_separator_reported() -> None:

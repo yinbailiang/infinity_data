@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from infinity_data.parser import TemplateDef, VarStmt
+from infinity_data.parser import AssertStmt, TemplateDef, VarStmt
 from infinity_data.semantic.std import StdValue
 
 __all__ = ['ResolvedContext', 'Scope', 'TemplateKey']
@@ -45,6 +45,7 @@ class Scope:
     - ``visible``：可见名表（可见名 → 模板真名）
     - ``namespaces``：本文件 `$` 命名空间（!env/!file/!var 统一为 StdValue）
     - ``var_statements``：本文件 ``!var`` 语句（builder 按文件求值）
+    - ``assert_statements``：本文件 ``!assert`` 语句（builder 按文件求值）
     - ``import_identities``：alias → 导入真名（§1.8；模板身份纳入数据依赖）
 
     组合而非继承 dict（可哈希、无循环依赖、语义内聚）；命名空间随 scope 对象
@@ -54,6 +55,7 @@ class Scope:
     visible: dict[str, TemplateKey] = field(default_factory=lambda: {})
     namespaces: dict[str, StdValue] = field(default_factory=lambda: {})
     var_statements: list[VarStmt] = field(default_factory=lambda: [])
+    assert_statements: list[AssertStmt] = field(default_factory=lambda: [])
     import_identities: dict[str, str] = field(default_factory=lambda: {})
 
 

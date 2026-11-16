@@ -832,6 +832,37 @@ def test_var_value_referenced_reports_once() -> None:
     assert len(diags) == 1
 
 
+def test_assert_statements_validate_values_without_output() -> None:
+    """!assert 在编译期校验值，不进入输出；成功静默，失败保留具体约束诊断。"""
+    result = compile_source('!assert [1, 3, 4] is <list, each(int)>\n!assert p"." is path\n')
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
+    assert result.value == {}
+
+    bad = compile_source('!assert [1, "x"] is <list, each(int)>\n')
+    assert any(d.code == 'constraint.type_mismatch' for d in bad.diagnostics)
+    assert bad.value == {}
+
+
+def test_assert_can_use_var_values() -> None:
+    """!assert 可按本文件 $ 命名空间引用 !var 求值结果。"""
+    result = compile_source('!var 1 import . as v\n!assert $v is int\n')
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
+
+
+def test_assert_in_imported_template_file(tmp_path: Path) -> None:
+    """.inft 内的 !assert 按该文件 scope 求值，且不会触发 inft.not_allowed。"""
+    (tmp_path / 'rules.inft').write_text(
+        '~T {\n    x: int\n}\n!assert T(x="bad") is T\n',
+        encoding='utf-8',
+    )
+    app = tmp_path / 'app.infd'
+    app.write_text('!from p"rules.inft" import T\na = T(x=1)\n', encoding='utf-8')
+    result = load(str(app), sandbox=SandboxConfig(allow_templates=['./rules.inft']))
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
+    assert not any(d.code == 'inft.not_allowed' for d in result.diagnostics)
+    assert result.value == {'a': {'x': 1}}
+
+
 def test_absent_suffix_rejects_null() -> None:
     """`!` 仅允许 noexist：null 不满足。"""
     result = compile_source('x: int! = null\n')

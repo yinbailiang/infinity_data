@@ -24,6 +24,7 @@ from typing import Any, cast
 from infinity_data.infra.diagnostics import DiagnosticCollector, DiagnosticDeclaration
 from infinity_data.parser import (
     ArrayValue,
+    AssertStmt,
     ConstraintStmt,
     DictValue,
     Document,
@@ -43,6 +44,7 @@ from infinity_data.parser import (
     walk,
 )
 from infinity_data.semantic.builder.models import (
+    Assertion,
     BuildArtifacts,
     ResolvedConstraint,
     StdArray,
@@ -119,6 +121,7 @@ class AstBuilder:
         self._depth = 0
         self._recursive_defaults: set[TemplateKey] = set()
         self._var_values: list[tuple[str, StdValue]] = []
+        self._assertions: list[Assertion] = []
 
     # ═══════════════════════════════════════════════════════
     # 公开入口
@@ -144,6 +147,7 @@ class AstBuilder:
         self._depth = 0
         self._recursive_defaults = set()
         self._var_values = []
+        self._assertions = []
 
         # Phase 1 产物注入执行期状态（按引用共享，约定只读）
         self._templates = context.templates
@@ -160,6 +164,9 @@ class AstBuilder:
         # !var 求值（§2.10）：root 构建前按文件填充 $ 命名空间（前向引用 + 环检测，就地解析）
         self._resolve_var_statements(context)
 
+        # !assert 求值（编译期断言）：按定义文件 scope 求值，约束交由 Phase 2b 执行
+        self._resolve_assertion_statements(context)
+
         # 模板字段默认值求值（定义期）：仅作为校验器 / 从不实例化的模板也需要校验默认值
         template_defaults = self._build_template_defaults()
 
@@ -168,8 +175,8 @@ class AstBuilder:
         root_constraints: list[ResolvedConstraint] = []
         for stmt in doc.statements:
             match stmt:
-                case TemplateDef() | TemplateImportStmt() | EnvImportStmt() | FileImportStmt():
-                    continue  # 模板定义与导入不产生输出
+                case TemplateDef() | TemplateImportStmt() | EnvImportStmt() | FileImportStmt() | AssertStmt():
+                    continue  # 模板定义 / 导入 / 断言不产生输出
                 case UnpackValue(value=uv, double=d):
                     # 顶层（隐式 dict）**expr 解包：展开为顶层字段（disjoint merge 查重）
                     if not d:
@@ -198,6 +205,7 @@ class AstBuilder:
             ),
             template_defaults=template_defaults,
             var_values=self._var_values,
+            assertions=self._assertions,
         )
 
     # ═══════════════════════════════════════════════════════
@@ -228,6 +236,24 @@ class AstBuilder:
             scopes.append(context.schema_scope)
         scopes.extend(context.template_scopes.values())
         return scopes
+
+    def _resolve_assertion_statements(self, context: ResolvedContext) -> None:
+        """!assert 求值：按文件 scope 求值 value，并解析其约束供 Phase 2b 执行。
+
+        断言不进入输出，也不参与模板身份；值解析失败（语法已报错）时跳过。
+        """
+        seen: set[Scope] = set()
+        for scope in self._iter_scopes(context):
+            if scope in seen:
+                continue
+            seen.add(scope)
+            for stmt in scope.assert_statements:
+                rv = self._resolve_value(stmt.value, '', scope)
+                if rv is None:
+                    continue
+                specs, diags = resolve_constraints(stmt.constraints, scope)
+                self._collector.extend(diags)
+                self._assertions.append(Assertion(value=rv, constraints=specs, source=stmt.source))
 
     def _resolve_var_file(self, scope: Scope, stmts: list[VarStmt]) -> None:
         """单个文件内 !var 求值（用该文件 scope 解析，绑定该文件命名空间）。"""

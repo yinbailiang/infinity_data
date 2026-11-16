@@ -69,7 +69,7 @@ ignore = [
 
 | 指标 | 数值 |
 | - | - |
-| 公开 API docstring 覆盖 | **85.6%** |
+| 公开 API docstring 覆盖 | **85.4%** |
 | 最低阈值 | 80% |
 | 语言文档 | 5 篇 Markdown（`docs/zh-CN/language/`） |
 
@@ -80,8 +80,8 @@ ignore = [
 ### 基线
 
 ```text
-859 passed · 1.7s
-覆盖率: 93%（6875 statements / 472 missed）
+869 passed · 1.7s
+覆盖率: 93%（6954 statements / 475 missed）
 ```
 
 ### 架构

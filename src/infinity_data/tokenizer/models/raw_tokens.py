@@ -54,6 +54,7 @@ class RawTokenType(Enum):
     FILE_IMPORT = '!file'  # !file p"path" import ...
     FROM_IMPORT = '!from'  # !from p"path" import ...
     VAR_IMPORT = '!var'  # !var <值表达式> import path as name（本地 $ 空间注入）
+    ASSERT = '!assert'  # !assert <值表达式> is <约束>（编译期断言）
 
     # ── 换行 / EOF ─────────────────────────────────
     NEWLINE = 'newline'

@@ -35,6 +35,7 @@ from infinity_data.sandbox import (
     SchemaMissingRequired,
 )
 from infinity_data.semantic.builder.models import (
+    Assertion,
     ResolvedConstraint,
     StdArray,
     StdField,
@@ -199,6 +200,20 @@ class ConstraintExecutor:
         """
         for name, value in values:
             self.validate(value, collector, name)
+
+    def validate_assertions(self, assertions: list[Assertion], collector: DiagnosticCollector) -> None:
+        """执行 ``!assert`` 编译期断言（值已由 Phase 2a 求值，约束在此解析后执行）。
+
+        断言失败沿用具体 ``constraint.*`` 诊断，位置指向断言值；不产生独立汇总码。
+        值自身的内部约束同样递归执行（与 ``!var`` 一致），再执行断言约束。
+        """
+        for assertion in assertions:
+            self.validate(assertion.value, collector, '')
+            source = assertion.value.source or assertion.source
+            for spec in assertion.constraints:
+                result = self._exec(spec, assertion.value, source, '')
+                if not result.ok:
+                    collector.extend(result.diagnostics)
 
     def _validate_field(self, field: StdField, collector: DiagnosticCollector, path: str) -> None:
         """字段：先递归值（内部结构约束），再执行字段注解约束（链式短路）。"""

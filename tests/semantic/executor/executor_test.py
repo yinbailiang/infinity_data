@@ -20,7 +20,7 @@ from infinity_data.parser import (
     TemplateField,
 )
 from infinity_data.sandbox import Schema, SchemaError
-from infinity_data.semantic.builder import ResolvedConstraint, StdField, StdLiteral, StdObject
+from infinity_data.semantic.builder import Assertion, ResolvedConstraint, StdField, StdLiteral, StdObject
 from infinity_data.semantic.executor import ConstraintExecutor
 from infinity_data.semantic.registry import ConstraintRegistry
 from infinity_data.semantic.resolver import Scope, TemplateKey
@@ -67,6 +67,31 @@ def test_diagnostic_source_is_checked_value_not_constraint() -> None:
     assert d.code == 'constraint.type_mismatch'
     assert d.source is value_src
     assert d.source is not constraint_src
+
+
+def test_validate_assertions_reports_constraint_failure() -> None:
+    value_source = SourceRange.empty()
+    assertion = Assertion(
+        value=StdLiteral(kind='int', value=3, source=value_source),
+        constraints=[ResolvedConstraint(name='str')],
+        source=SourceRange.empty(),
+    )
+    collector = DiagnosticCollector()
+    _executor().validate_assertions([assertion], collector)
+    diag = next(d for d in collector)
+    assert diag.code == 'constraint.type_mismatch'
+    assert diag.source is value_source
+
+
+def test_validate_assertions_accepts_matching_value() -> None:
+    assertion = Assertion(
+        value=StdLiteral(kind='int', value=3),
+        constraints=[ResolvedConstraint(name='int')],
+        source=SourceRange.empty(),
+    )
+    collector = DiagnosticCollector()
+    _executor().validate_assertions([assertion], collector)
+    assert not collector.has_errors
 
 
 def test_template_constraint_falls_back_to_outer_source() -> None:

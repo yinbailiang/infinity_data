@@ -2,7 +2,7 @@
 
 [![Test](https://github.com/yinbailiang/infinity_data/actions/workflows/test.yml/badge.svg)](https://github.com/yinbailiang/infinity_data/actions/workflows/test.yml)
 [![Docs](https://github.com/yinbailiang/infinity_data/actions/workflows/docs.yml/badge.svg)](https://yinbailiang.github.io/infinity_data/)
-[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)](ENGINEERING.md)
+[![Coverage](https://img.shields.io/badge/coverage-93%25-brightgreen)](ENGINEERING.md)
 [![Pyright](https://img.shields.io/badge/pyright-strict-blue)](ENGINEERING.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE.md)
 [![PyPI](https://img.shields.io/pypi/v/infinity-data)](https://pypi.org/project/infinity-data/)
@@ -12,6 +12,7 @@
 
 - **编译优先**：`.infd` 是源码，JSON/YAML/TOML 是构建产物
 - **模板即约束**：模板定义自动注册为约束校验器
+- **编译期断言**：`!assert <值> is <约束>` 在构建时校验，不进入输出
 - **零信任默认**：库默认 `deny_all` 沙盒，显式开放而非事后限制
 - **结构化错误**：稳定错误码 + 结构化参数 + 多语言渲染
 

@@ -6,6 +6,7 @@ from typing import Any, TypeVar
 from infinity_data.infra.diagnostics import DiagnosticCollector, DiagnosticDeclaration
 from infinity_data.infra.ll1_stream import NoNextType
 from infinity_data.parser.diagnostics import (
+    ParseAssertMissingConstraint,
     ParseEmptyTokenList,
     ParseEmptyTypeAnnotation,
     ParseExpandOutsideCall,
@@ -37,6 +38,7 @@ from infinity_data.parser.diagnostics import (
 )
 from infinity_data.parser.models import (
     ArrayValue,
+    AssertStmt,
     Constraint,
     ConstraintCall,
     ConstraintIdent,
@@ -73,6 +75,7 @@ from infinity_data.parser.models import (
 from infinity_data.parser.token_stream import TokenStream
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceRange
 from infinity_data.tokenizer.models.tokens import (
+    AssertToken,
     BoolToken,
     CaretToken,
     ColonToken,
@@ -196,6 +199,9 @@ class Parser:
         match stream.peek():
             case EnvImportToken() | FileImportToken() | FromImportToken() | VarImportToken():
                 return Parser._parse_import_statement(stream, collector)
+            case AssertToken() as tok:
+                stream.advance()
+                return Parser._parse_assert(stream, collector, tok)
             case TildeToken():
                 return Parser._parse_template_def(stream, collector)
             case IdentifierToken():
@@ -268,6 +274,27 @@ class Parser:
             stream.advance()
             return True
         return False
+
+    @staticmethod
+    def _parse_assert(stream: TokenStream, collector: DiagnosticCollector, kw_tok: AssertToken) -> AssertStmt:
+        """!assert <值表达式> is <约束>（编译期断言）。"""
+        value = Parser._parse_value(stream, collector)
+        if Parser._peek_keyword(stream, 'is'):
+            stream.advance()
+        else:
+            tok = stream.peek()
+            actual = 'EOF' if isinstance(tok, NoNextType) else tok.raw.type.name
+            source = stream.span_from(kw_tok) if isinstance(tok, NoNextType) else tok.raw.source
+            collector.add(ParseExpectedKeyword(keyword='is', actual=actual), source)
+        tok = stream.peek()
+        if isinstance(tok, NoNextType) or stream.eof() or isinstance(tok, (NewlineToken, CommaToken)):
+            collector.add(ParseAssertMissingConstraint(), stream.span_from(kw_tok))
+            constraints = Constraints(source=stream.span_from(kw_tok))
+        else:
+            constraints = Parser._parse_constraints(stream, collector)
+            if not constraints.constraints:
+                collector.add(ParseAssertMissingConstraint(), constraints.source)
+        return AssertStmt(source=stream.span_from(kw_tok), value=value, constraints=constraints)
 
     @staticmethod
     def _parse_var_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: VarImportToken) -> VarStmt:

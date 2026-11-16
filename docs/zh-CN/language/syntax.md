@@ -311,6 +311,7 @@ tags可为空，内容不做约束
 上下文相关关键字（可作普通标识符，仅在特定语法位置被识别）:
 - `import` —— 仅在 `!env` / `!file` / `!from` 之后被识别
 - `as` —— 仅用于导入别名与 `$name as type` 转换
+- `is` —— 仅在 `!assert` 的值与约束之间被识别
 - `inf` 本身是普通标识符；`+inf` / `-inf` 由数字词法识别为浮点字面量
 
 ## 1.8 导入命名空间（$ 引用）
@@ -375,3 +376,24 @@ tags可为空，内容不做约束
 - `as str`: 字符串化——任意字面量按**语言字面量风格**转字符串，可 round-trip 还原：
   `int` / `float` → 十进制（`42`、`1.5`）；`bool` → `true` / `false`；
   `float` 特殊值 → `nan` / `+inf` / `-inf`；path → POSIX 字符串（`/c/foo`）；字符串原样
+
+## 1.9 编译期断言（`!assert`）
+
+语法:
+- `!assert <值表达式> is <约束>`
+
+语义:
+- 值按**所在文件** scope 求值（字面量 / 数组 / 对象 / 模板调用 / `$` 引用）
+- 约束在编译期执行；成功静默，失败报具体 `constraint.*` 诊断，位置指向断言值
+- 约束失败按诊断自身级别处理（ERROR 使编译失败；WARNING 仅警告）
+- 断言**不产生输出字段**，也不参与模板身份
+- 主 `.infd` 与 `.inft` 均可使用；`.inft` 内按该文件 `$` 命名空间就地求值
+- `is` 后缺少约束 → `parse.assert_missing_constraint`
+
+```infd
+!assert [1, 3, 4] is <list, each(int)>
+!assert p"." is path
+
+!var 42 import . as answer
+!assert $answer is int
+```

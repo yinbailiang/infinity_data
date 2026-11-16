@@ -44,6 +44,8 @@ repos:
       - id: interrogate
         args: ["--fail-under=80"]
         files: ^src/
+        # 阈值是项目级指标；增量提交只扫描被改文件会把整体覆盖率拉低
+        pass_filenames: false
 
   - repo: local
     hooks:

@@ -31,11 +31,13 @@ from infinity_data.semantic.std import (
     is_std_value,
     python_to_std,
 )
+from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 if TYPE_CHECKING:
     from infinity_data.semantic.resolver.models import TemplateKey
 
 __all__ = [
+    'Assertion',
     'BuildArtifacts',
     'LiteralKind',
     'ResolvedConstraint',
@@ -78,6 +80,15 @@ class StdDocument:
 
 
 @dataclass
+class Assertion:
+    """已求值的编译期断言：值 + 已解析约束 + 语句位置。"""
+
+    value: StdValue
+    constraints: list[ResolvedConstraint]
+    source: SourceRange
+
+
+@dataclass
 class BuildArtifacts:
     """Phase 2a 产物：公共文档 + 仅用于定义期校验的中间数据。
 
@@ -86,8 +97,10 @@ class BuildArtifacts:
       带约束未执行）——供 Phase 2b 做**定义期**校验（不依赖实例化）
     - ``var_values``：``!var`` 求值结果（jsonpath 投影**前**的完整值，
       路径显示为 ``$别名``）——携带的约束同样在编译期校验
+    - ``assertions``：``!assert`` 求值结果（按定义文件 scope 求值），供 Phase 2b 执行
     """
 
     document: StdDocument
     template_defaults: dict[TemplateKey, list[StdField]] = field(default_factory=lambda: {})
     var_values: list[tuple[str, StdValue]] = field(default_factory=lambda: [])
+    assertions: list[Assertion] = field(default_factory=lambda: [])

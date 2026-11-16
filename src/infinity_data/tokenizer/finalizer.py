@@ -26,6 +26,7 @@ from infinity_data.tokenizer.models.raw_tokens import (
     RawTokenType,
 )
 from infinity_data.tokenizer.models.tokens import (
+    AssertToken,
     BoolToken,
     CaretToken,
     ColonToken,
@@ -93,6 +94,7 @@ _SIMPLE_MAP: dict[RawTokenType, type[Token]] = {
     RawTokenType.FILE_IMPORT: FileImportToken,
     RawTokenType.FROM_IMPORT: FromImportToken,
     RawTokenType.VAR_IMPORT: VarImportToken,
+    RawTokenType.ASSERT: AssertToken,
     RawTokenType.NEWLINE: NewlineToken,
 }
 

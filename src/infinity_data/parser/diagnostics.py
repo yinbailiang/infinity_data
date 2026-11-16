@@ -14,6 +14,7 @@ __all__ = [
     'ParseUnrecognizedImport',
     'ParseUnexpectedToken',
     'ParseExpectedKeyword',
+    'ParseAssertMissingConstraint',
     'ParseExpandOutsideCall',
     'ParseExpandSuffixOrder',
     'ParsePostfixOrder',
@@ -98,6 +99,19 @@ class ParseExpectedKeyword(DiagnosticDeclaration):
     }
     keyword: str
     actual: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseAssertMissingConstraint(DiagnosticDeclaration):
+    """!assert 的 is 后缺少约束。"""
+
+    code: ClassVar[str] = 'parse.assert_missing_constraint'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}!assert 的 is 后缺少约束',
+        'en-US': '{location_prefix}!assert is missing a constraint after is',
+    }
 
 
 @registry.register

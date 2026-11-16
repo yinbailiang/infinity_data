@@ -153,6 +153,8 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
         executor.validate_template_defaults(artifacts.template_defaults, collector)
         # !var 求值结果携带的约束：无论是否被 root 引用都在编译期校验
         executor.validate_var_values(artifacts.var_values, collector)
+        # !assert：编译期断言（值已由 Phase 2a 求值，约束在此执行）
+        executor.validate_assertions(artifacts.assertions, collector)
         executor.validate(std.root, collector)
         if resolver.schema is not None:
             scope = (

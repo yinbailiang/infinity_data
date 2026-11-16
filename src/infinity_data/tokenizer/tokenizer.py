@@ -96,8 +96,9 @@ class RawTokenizer:
     }
     _close_to_open: dict[str, str] = {close: open_ for open_, close in _open_to_close.items()}
 
-    _BANG_KEYWORDS: tuple[str, ...] = ('env', 'file', 'from', 'var')
+    _BANG_KEYWORDS: tuple[str, ...] = ('assert', 'env', 'file', 'from', 'var')
     _BANG_KEYWORD_TO_TYPE: dict[str, RawTokenType] = {
+        'assert': RawTokenType.ASSERT,
         'env': RawTokenType.ENV_IMPORT,
         'file': RawTokenType.FILE_IMPORT,
         'from': RawTokenType.FROM_IMPORT,
@@ -409,6 +410,7 @@ class RawTokenizer:
         """读取 ``!`` 起始的 token。
 
         - ``!env`` / ``!file`` / ``!from`` / ``!var`` → 组合导入关键字 token
+        - ``!assert`` → 编译期断言 token
         - 其后不是标识符（空白 / 分隔符 / EOF 等）→ 独立 ``!``（约束后缀 / 独立标记）
         - 其后是其他标识符 → 拼写纠正或词法错误（保持原行为）
         """
@@ -437,6 +439,8 @@ class RawTokenizer:
                 )
             case 'var':
                 return RawTokenizer._make_token(RawTokenType.VAR_IMPORT, '!var', start=start, stream=stream, file=file)
+            case 'assert':
+                return RawTokenizer._make_token(RawTokenType.ASSERT, '!assert', start=start, stream=stream, file=file)
             case _:
                 return RawTokenizer._recover_bang_typo(ident_tok.raw, start, stream, collector, file)
 

@@ -128,6 +128,12 @@ def test_import_keywords_combined() -> None:
     assert RawTokenType.ENV_IMPORT in [t.type for t in toks]
 
 
+def test_assert_keyword_combined() -> None:
+    toks, col = _tokenize('!assert 1 is int\n')
+    assert RawTokenType.ASSERT in [t.type for t in toks]
+    assert not any(d.code == 'tokenize.invalid_bang' for d in col)
+
+
 def test_invalid_bang_reported() -> None:
     _, col = _tokenize('!bad\n')
     assert any(d.code == 'tokenize.invalid_bang' for d in col)
