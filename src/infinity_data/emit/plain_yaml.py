@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
@@ -21,6 +22,14 @@ __all__ = ['yaml_dump']
 # 可序列化值（reduce 后的配置值；Decimal 为 infd 浮点字面量）。
 # PEP 695 递归别名：容器值也是 YamlValue，isinstance 收窄后无 Unknown。
 type YamlValue = Mapping[str, YamlValue] | list[YamlValue] | str | int | float | bool | Decimal | None
+
+_YAML_NUMBER_RE = re.compile(
+    r'^[+-]?(?:'
+    r'0b[01_]+|0o[0-7_]+|0x[0-9a-fA-F_]+|'
+    r'(?:\d[\d_]*(?:\.[\d_]*)?|\.[\d_]+)(?:[eE][+-]?\d[\d_]*)?'
+    r')$'
+)
+"""数字样式的字符串（YAML 解析会变成 int/float）→ 必须加引号保留字符串。"""
 
 
 def yaml_dump(obj: Any) -> str:
@@ -127,9 +136,12 @@ def _scalar(v: Any) -> str:
 
 
 def _plain(s: str) -> str:
-    """普通字符串；含 YAML 特殊字符/歧义时加单引号。"""
+    """普通字符串；含 YAML 特殊字符/歧义或数字样式时加单引号。"""
     if s == '':
         return "''"
+    # 数字样式字符串（如版本号 '3.12'）→ 必须保留字符串语义
+    if _YAML_NUMBER_RE.match(s):
+        return f"'{s}'"
     # YAML 1.1 歧义字面量 → 引号
     if s in (
         'null',

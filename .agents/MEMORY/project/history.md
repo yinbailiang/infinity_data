@@ -59,3 +59,4 @@
 - **关键字元数据统一（2026-11-17）**：新增 `tokenizer/keywords.py` 作为 Bang / 上下文关键字单一事实源；`BANG_KEYWORD` + `BangKeywordToken(keyword)` 取代五个专用 raw 枚举与 token 类；tokenizer 识别 / 拼写纠正、LSP 补全 / 语义高亮全部从元数据派生；parser 保留显式 `BangKeyword` 分发；新增 `keywords_test.py` 漂移测试；879 测试通过 / 覆盖率 93.18%。
 - **LSP 补全前缀修复（2026-11-17）**：`completion_items` 对 `!ass` 这类 Bang 前缀保留 `!` 过滤（不再被 `_word_at` 去掉 `!` 后清空），并排除 `int!` 约束后缀误判；880 测试通过 / 覆盖率 93.20%。
 - **LSP 悬停 noexist 修复（2026-11-17）**：模板字段默认值为 `noexist` 时，`_structure_value` 返回内部哨兵 `_NOEXIST`；字段悬停现在先判定哨兵并显示 `` `noexist` ``，不再把 `object()` 交给 JSON 序列化导致 `textDocument/hover` -32603；881 测试通过 / 覆盖率 93.22%。
+- **YAML 数字样式字符串修复（2026-11-17）**：`plain_yaml._plain` 增加数字样式检测（整数/浮点/科学计数/十六进制等），确保 `"3.12"` 这类字符串输出为 `'3.12'`，不会被 YAML 解析成数字；882 测试通过 / 覆盖率 93.22%。

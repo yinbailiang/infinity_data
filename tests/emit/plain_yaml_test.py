@@ -40,6 +40,21 @@ def test_string_quoting_ambiguous_literals() -> None:
     assert text == "k: 'true'\nv: 'no'\ne: ''\ny: 'null'"
 
 
+def test_string_quoting_numeric_like_scalars() -> None:
+    """数字样式字符串（版本号/整数/科学计数/十六进制）必须加引号。"""
+    text = yaml_dump(
+        {
+            'version': '3.12',
+            'integer': '42',
+            'exponent': '1e3',
+            'negative': '-1.5',
+            'hex': '0x10',
+            'not_number': 'v1.2',
+        }
+    )
+    assert text == ("version: '3.12'\ninteger: '42'\nexponent: '1e3'\nnegative: '-1.5'\nhex: '0x10'\nnot_number: v1.2")
+
+
 def test_string_quoting_special_chars() -> None:
     """首字符歧义 / 含冒号空格 / 内嵌注释符 → 加单引号；合法普通标量不加。"""
     text = yaml_dump(
