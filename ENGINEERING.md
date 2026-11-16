@@ -69,8 +69,8 @@ ignore = [
 
 | 指标 | 数值 |
 | - | - |
-| 公开 API docstring 覆盖 | **85.5%** |
-| 最低阈值 | 60% |
+| 公开 API docstring 覆盖 | **85.6%** |
+| 最低阈值 | 80% |
 | 语言文档 | 5 篇 Markdown（`docs/zh-CN/language/`） |
 
 ---
@@ -80,8 +80,8 @@ ignore = [
 ### 基线
 
 ```text
-857 passed · 1.7s
-覆盖率: 93%（6876 statements / 473 missed）
+859 passed · 1.7s
+覆盖率: 93%（6875 statements / 472 missed）
 ```
 
 ### 架构
@@ -123,7 +123,7 @@ uv run pytest tests/parser/ -q                                # 单模块
 | `ruff-check` | `src/`、`tests/` | Lint + 自动修复 |
 | `ruff-format` | `src/`、`tests/` | 格式化 |
 | `pyright` | `src/`、`tests/` | 类型检查（`--level error`） |
-| `interrogate` | `src/` | docstring 覆盖 >= 60% |
+| `interrogate` | `src/` | docstring 覆盖 >= 80% |
 | `pytest-cov` | 全量 | 测试 + 覆盖率 >= 90% |
 | `docs-build` | 全量 | `mkdocs build --strict`（导航/链接校验） |
 | `agent-kit-check` | 全量 | 智能体规则漂移检查（`agent-kit update --check`） |
@@ -236,6 +236,9 @@ uv run agent-kit update --check  # 漂移检查（CI / pre-commit）
 - 自定义约束的 `fail_result(code, params)` → `fail_result(declaration)`
 - `parse.invalid_json_path` 拆分为 `parse.json_path_*`；关键字期望改为
   `parse.expected_keyword`
+- `constraint.invalid_value` 拆分为 `constraint.invalid_ip` /
+  `constraint.invalid_email` / `constraint.invalid_url` /
+  `constraint.invalid_uuid` / `constraint.invalid_hostname`
 - `schema.failed` 不再聚合所有错误：具体错误以 `schema.missing_*` /
   `schema.extra_fields` / `constraint.*` 逐条返回，`SchemaError.diagnostics`
   携带完整列表

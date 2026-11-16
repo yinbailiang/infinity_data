@@ -131,8 +131,8 @@ class ConstraintExecutor:
         否则永远不会被发现。仅检查**顶层**约束声明：部分约束参数是名字而非约束
         （``has(x)`` / ``field(x, c)``），静态层无法区分，嵌套约束仍在执行时校验。
 
-        被实例化的模板会再次在调用点报出同一问题（定义点 + 使用点），
-        两个位置都指向真实错误。
+        被实例化的模板不会在调用点重复报告同一非法签名：定义期一次即止，
+        调用点仅保留其它独立错误。
         """
         for key, tpl in self._templates.items():
             scope = self._template_scopes.get(key)

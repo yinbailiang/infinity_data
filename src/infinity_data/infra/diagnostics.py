@@ -425,8 +425,8 @@ class DiagnosticCollector:
     只读查询按 severity 分离：``errors`` / ``warnings`` / ``diagnostics``，
     ``has_errors`` 仅当含 ERROR 级别时成立（warning 不算错误）。
 
-    构造时确定本次编译的渲染语言（``lang``；缺省按环境探测），
-    ``add`` 构造的诊断自动携带该语言。
+    构造时确定本次编译的渲染语言（显式 ``lang`` 优先，含不支持标签——
+    渲染时按固定回退链回退；缺省按环境探测），``add`` 构造的诊断自动携带该语言。
 
     用法::
 
@@ -435,7 +435,7 @@ class DiagnosticCollector:
     """
 
     def __init__(self, lang: str | None = None) -> None:
-        self._lang: str = lang if lang in SUPPORTED_LANGS else detect_lang()
+        self._lang: str = lang or detect_lang()
         self._errors: list[Diagnostic] = []
         self._seen: set[tuple[str, str, str, str, str]] = set()
 

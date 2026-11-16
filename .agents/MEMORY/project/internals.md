@@ -73,8 +73,9 @@ EofToken 后 `peek()` 仍会返回 `NoNextType`，相关守卫只是从"兜底"�
   - `sandbox/errors.py` → `sandbox.*` / `schema.*`（异常携带声明实例 + source）
 - 消息由声明模板按语言渲染：精确 `zh-CN` / `en-US`；回退链
   请求语言 → `I18N_LANGS_FALLBACK`（en-US、zh-CN），回退标记写入消息正文；
-  `DEFAULT_LANG='en-US'`，每次编译由 `DiagnosticCollector` 构造时探测
-  （LANGUAGE > LC_ALL > LC_MESSAGES > LANG；C/POSIX 禁用翻译 → en-US）。
+  `DEFAULT_LANG='en-US'`，每次编译由 `DiagnosticCollector` 构造时确定语言
+  （显式 `lang` 优先；缺省按 LANGUAGE > LC_ALL > LC_MESSAGES > LANG 探测；
+  C/POSIX 禁用翻译 → en-US）。
   语义/约束层**不手工拼字符串**，也不再用 code + params 映射。
 
 ### 取舍：值位置错误的归属在 parser
@@ -237,18 +238,19 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   为 `ClassVar`，字段为真实类型参数）；`@registry.register` 导入即注册并校验：
   dataclass、code 全局唯一、`en-US` 必存、模板非空、占位符 ⊆ 字段 ∪
   保留上下文（`location_prefix` / `path_prefix`）、禁止 `Any` / `object`。
-- `Diagnostic` 持有声明实例 + `source` / `path` / `severity` 覆盖 / `lang`；
-  提供 `effective_severity`、`render(lang, include_location)`、`to_dict()`。
+- `Diagnostic` 持有声明实例 + `source` / `path` / `severity_override` / `lang`；
+  提供实际级别属性 `severity`、`render(lang, include_location)`、`to_dict()`。
   沙盒异常同样持有声明实例，不再用 code + params 映射。
-- **语言**：`DEFAULT_LANG='en-US'`；每次编译由 `DiagnosticCollector` 构造时探测
-  （`LANGUAGE > LC_ALL > LC_MESSAGES > LANG`；C/POSIX 禁用翻译 → en-US）。
+- **语言**：`DEFAULT_LANG='en-US'`；每次编译由 `DiagnosticCollector` 构造时确定
+  （显式 `lang` 优先；缺省按 `LANGUAGE > LC_ALL > LC_MESSAGES > LANG` 探测；
+  C/POSIX 禁用翻译 → en-US）。
   回退链固定为请求语言 → `en-US` → `zh-CN`，不扫描任意模板键；回退标记
   `[fallback: lang]` 写入消息正文（有意可见），渲染异常返回固定错误文案。
 - **已删除兼容层**：`Diagnostic.message` / `.params`、`DiagnosticDefine`、
   `render_message`、`diagnostic_define`、`register_diagnostic_define`、
   `registered_diagnostic_defines`。`ErrorValue` / `ErrorConstraint.message`
   仅为 parser 恢复载荷；`error.generic` 重复报告已删除。
-- 注册声明 151 条（tokenizer / parser / semantic / sandbox 四层词汇表，
+- 注册声明 160 条（tokenizer / parser / semantic / sandbox 四层词汇表，
   全部 zh-CN + en-US）。`CompileOptions.lang` 贯穿公共 API；
   CLI `--lang` / `--diag-format json`；LSP `initializationOptions.lang` +
   `diagnostic.data`。

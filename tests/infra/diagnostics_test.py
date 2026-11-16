@@ -139,6 +139,19 @@ def test_collector_severity_override() -> None:
     assert col.diagnostics[0].severity is Severity.WARNING
 
 
+def test_collector_preserves_explicit_unsupported_lang(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式请求的不支持语言不被环境覆盖；渲染时回退英文。"""
+    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('LANG', 'zh_CN.UTF-8')
+
+    col = DiagnosticCollector(lang='fr-FR')
+    col.add(_Hello(name='x'))
+
+    assert col.lang == 'fr-FR'
+    assert col.diagnostics[0].render() == I18N_FALLBACK_MARKER.format(lang='en-US', message='hello x')
+
+
 def test_collector_extend_fills_lang() -> None:
     col = DiagnosticCollector(lang='zh-CN')
     col.extend([Diagnostic(_Hello(name='x'))])

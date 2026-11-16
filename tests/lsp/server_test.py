@@ -190,6 +190,30 @@ def test_initialize_lang_applied_to_diagnostics() -> None:
     assert diag['data']['lang'] == 'en-US'
 
 
+def test_initialize_unsupported_lang_prefers_english() -> None:
+    """不支持的语言标签不被静默丢弃，而是按固定回退链渲染英文。"""
+    h = _ServerHarness()
+    msgs = h.run(
+        {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'initialize',
+            'params': {
+                'processId': None,
+                'rootUri': None,
+                'capabilities': {},
+                'initializationOptions': {'lang': 'fr-FR'},
+            },
+        },
+        _open_doc('file:///t/app.infd', 'bad: int = "a"\n'),
+    )
+    notif = next(m for m in msgs if m.get('method') == 'textDocument/publishDiagnostics')
+    diag = next(d for d in notif['params']['diagnostics'] if d['code'] == 'constraint.type_mismatch')
+    assert 'expected int' in diag['message']
+    assert diag['data']['lang'] == 'en-US'
+    assert diag['data']['fallback'] is True
+
+
 def test_did_open_publishes_diagnostics() -> None:
     h = _ServerHarness()
     msgs = h.run(_open_doc('file:///t/app.infd', 'bad_port: <int, range(1, 100)> = 200\n'))
