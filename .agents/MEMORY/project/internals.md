@@ -232,7 +232,7 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
 
 ---
 
-## 10. 诊断声明与多语言渲染（v3.3.1）
+## 10. 诊断声明与多语言渲染（v4.0.0）
 
 - **单层定义**：声明类本身即参数 dataclass（`code` / `severity` / `templates`
   为 `ClassVar`，字段为真实类型参数）；`@registry.register` 导入即注册并校验：
