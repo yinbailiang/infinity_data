@@ -438,6 +438,16 @@ def test_hover_template_path_default_no_crash() -> None:
     assert '"__type__": "path"' in value
 
 
+def test_hover_template_noexist_default_no_crash() -> None:
+    """模板默认值为 noexist：悬停显示标记，不把内部哨兵交给 JSON 序列化。"""
+    text = '~T {\n  x: str! = noexist\n}\nt = T()\n'
+    h = language.hover(text, 'test.infd', {'line': 1, 'character': 3})
+    assert h is not None
+    value = h['contents']['value']
+    assert '模板字段' in value
+    assert '`noexist`' in value
+
+
 def test_hover_template_skeleton_path_default_no_crash() -> None:
     """模板骨架预览含 path 默认值：不崩溃，保留 path 标记。"""
     text = '~T {\n  p: path = p"/t"\n  mode: str = "x"\n}\n'

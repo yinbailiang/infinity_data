@@ -80,8 +80,8 @@ ignore = [
 ### 基线
 
 ```text
-880 passed · 1.7s
-覆盖率: 93%（6973 statements / 474 missed）
+881 passed · 1.7s
+覆盖率: 93%（6976 statements / 473 missed）
 ```
 
 ### 架构

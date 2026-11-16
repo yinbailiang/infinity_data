@@ -947,10 +947,14 @@ def hover(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any]
         required = '必填' if tf.default_value is None else '可选'
         md = [f'**`{tf.name}`** — 模板字段（{required}）', '', f'- 类型: `{type_text}`']
         if tf.default_value is not None:
-            md.append('- 默认值:')
-            md.append('```json')
-            md.append(_preview_json(_structure_value(tf.default_value)))
-            md.append('```')
+            rv = _structure_value(tf.default_value)
+            if rv is _NOEXIST:
+                md.append('- 默认值: `noexist`')
+            else:
+                md.append('- 默认值:')
+                md.append('```json')
+                md.append(_preview_json(rv))
+                md.append('```')
         return {'contents': {'kind': 'markdown', 'value': '\n'.join(md)}}
 
     doc = _document(text, file_path, sandbox=SandboxConfig.full_access())
