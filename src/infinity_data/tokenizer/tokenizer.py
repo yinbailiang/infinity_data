@@ -19,6 +19,7 @@ from infinity_data.tokenizer.diagnostics import (
     TokenizeUnterminatedMultilineString,
     TokenizeUnterminatedString,
 )
+from infinity_data.tokenizer.keywords import BANG_BY_NAME
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
@@ -95,15 +96,6 @@ class RawTokenizer:
         '<': '>',
     }
     _close_to_open: dict[str, str] = {close: open_ for open_, close in _open_to_close.items()}
-
-    _BANG_KEYWORDS: tuple[str, ...] = ('assert', 'env', 'file', 'from', 'var')
-    _BANG_KEYWORD_TO_TYPE: dict[str, RawTokenType] = {
-        'assert': RawTokenType.ASSERT,
-        'env': RawTokenType.ENV_IMPORT,
-        'file': RawTokenType.FILE_IMPORT,
-        'from': RawTokenType.FROM_IMPORT,
-        'var': RawTokenType.VAR_IMPORT,
-    }
 
     def __init__(
         self,
@@ -403,14 +395,14 @@ class RawTokenizer:
             collector.add(TokenizeUnterminatedBracket(bracket=bracket), SourceRange.at(file, start))
         open_stack.clear()
 
-    # ── ! 导入关键字（词法组合，! 无独立语法）──
+    # ── Bang 关键字（词法组合，! 无独立语法）──
 
     @staticmethod
     def _read_bang(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken | None:
         """读取 ``!`` 起始的 token。
 
-        - ``!env`` / ``!file`` / ``!from`` / ``!var`` → 组合导入关键字 token
-        - ``!assert`` → 编译期断言 token
+        - 元数据表命中的 ``!env`` / ``!file`` / ``!from`` / ``!var`` / ``!assert``
+          → 通用 ``BANG_KEYWORD`` token（raw 保留完整标签）
         - 其后不是标识符（空白 / 分隔符 / EOF 等）→ 独立 ``!``（约束后缀 / 独立标记）
         - 其后是其他标识符 → 拼写纠正或词法错误（保持原行为）
         """
@@ -426,23 +418,12 @@ class RawTokenizer:
             return RawTokenizer._make_token(RawTokenType.EXCLAMATION, '!', start=start, stream=stream, file=file)
 
         ident_tok = RawTokenizer._read_identifier_or_keyword(stream, file)
-        match ident_tok.raw:
-            case 'env':
-                return RawTokenizer._make_token(RawTokenType.ENV_IMPORT, '!env', start=start, stream=stream, file=file)
-            case 'file':
-                return RawTokenizer._make_token(
-                    RawTokenType.FILE_IMPORT, '!file', start=start, stream=stream, file=file
-                )
-            case 'from':
-                return RawTokenizer._make_token(
-                    RawTokenType.FROM_IMPORT, '!from', start=start, stream=stream, file=file
-                )
-            case 'var':
-                return RawTokenizer._make_token(RawTokenType.VAR_IMPORT, '!var', start=start, stream=stream, file=file)
-            case 'assert':
-                return RawTokenizer._make_token(RawTokenType.ASSERT, '!assert', start=start, stream=stream, file=file)
-            case _:
-                return RawTokenizer._recover_bang_typo(ident_tok.raw, start, stream, collector, file)
+        spec = BANG_BY_NAME.get(ident_tok.raw)
+        if spec is not None:
+            return RawTokenizer._make_token(
+                RawTokenType.BANG_KEYWORD, spec.label, start=start, stream=stream, file=file
+            )
+        return RawTokenizer._recover_bang_typo(ident_tok.raw, start, stream, collector, file)
 
     @staticmethod
     def _edit_distance(a: str, b: str) -> int:
@@ -468,10 +449,10 @@ class RawTokenizer:
 
     @staticmethod
     def _nearest_bang_keyword(actual: str) -> str | None:
-        """返回与 actual 编辑距离 <= 1 的最近导入关键字，否则 None。"""
+        """返回与 actual 编辑距离 <= 1 的最近 Bang 关键字，否则 None。"""
         best: str | None = None
         best_dist = 2  # 阈值：仅接受单字符增/删/改
-        for keyword in RawTokenizer._BANG_KEYWORDS:
+        for keyword in BANG_BY_NAME:
             dist = RawTokenizer._edit_distance(actual, keyword)
             if dist < best_dist:
                 best_dist = dist
@@ -488,7 +469,7 @@ class RawTokenizer:
     ) -> RawToken | None:
         """对 ! 后非关键字标识符做拼写纠正恢复。
 
-        - 与 env/file/from 编辑距离 <= 1 → 报 ``tokenize.bang_corrected`` 并恢复为对应导入关键字；
+        - 与任一 Bang 关键字编辑距离 <= 1 → 报 ``tokenize.bang_corrected`` 并恢复为对应关键字；
         - 否则报 ``tokenize.invalid_bang`` 并返回 None（丢弃）。
         """
         suggestion = RawTokenizer._nearest_bang_keyword(actual)
@@ -498,7 +479,7 @@ class RawTokenizer:
                 SourceRange.at(file, start),
             )
             return RawTokenizer._make_token(
-                RawTokenizer._BANG_KEYWORD_TO_TYPE[suggestion],
+                RawTokenType.BANG_KEYWORD,
                 '!' + suggestion,
                 start=start,
                 stream=stream,

@@ -17,8 +17,5 @@ def test_raw_token_fields() -> None:
     assert tok.source == SourceRange.empty()
 
 
-def test_import_keyword_types() -> None:
-    assert RawTokenType.ENV_IMPORT.value == '!env'
-    assert RawTokenType.FILE_IMPORT.value == '!file'
-    assert RawTokenType.FROM_IMPORT.value == '!from'
-    assert RawTokenType.ASSERT.value == '!assert'
+def test_bang_keyword_type() -> None:
+    assert RawTokenType.BANG_KEYWORD.value == 'bang_keyword'

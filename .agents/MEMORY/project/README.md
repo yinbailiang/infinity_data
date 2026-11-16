@@ -8,7 +8,7 @@
 | 文件 | 内容 |
 | --- | --- |
 | [decisions.md](./decisions.md) | 库 API / 安全模型 / 编译模型 / 工具链 / 生态与路线图决策 |
-| [internals.md](./internals.md) | 编译器实现层取舍（EOF、错误模型、三态与完整形状、定义期校验、编译期断言、模板身份、位置、沙盒边界、诊断多语言、LSP 预览、公共 API） |
+| [internals.md](./internals.md) | 编译器实现层取舍（EOF、错误模型、三态与完整形状、定义期校验、编译期断言、关键字元数据、模板身份、位置、沙盒边界、诊断多语言、LSP 预览、公共 API） |
 | [history.md](./history.md) | 历史开发记录、修复过程与已知坑位 |
 | [semantic_pipeline.md](./semantic_pipeline.md) | 三阶段语义流水线拆分与复杂度收敛记录 |
 

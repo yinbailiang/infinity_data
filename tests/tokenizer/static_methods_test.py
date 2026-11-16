@@ -220,7 +220,7 @@ def test_read_bang_env() -> None:
     stream = CharStream('!env ')
     tok = RawTokenizer._read_bang(stream, DiagnosticCollector(), file)
     assert tok is not None
-    assert tok.type is RawTokenType.ENV_IMPORT
+    assert tok.type is RawTokenType.BANG_KEYWORD
     assert tok.raw == '!env'
     assert stream.peek() == ' '
 
@@ -230,7 +230,7 @@ def test_read_bang_file() -> None:
     stream = CharStream('!file ')
     tok = RawTokenizer._read_bang(stream, DiagnosticCollector(), file)
     assert tok is not None
-    assert tok.type is RawTokenType.FILE_IMPORT
+    assert tok.type is RawTokenType.BANG_KEYWORD
     assert tok.raw == '!file'
     assert stream.peek() == ' '
 
@@ -240,7 +240,7 @@ def test_read_bang_from() -> None:
     stream = CharStream('!from ')
     tok = RawTokenizer._read_bang(stream, DiagnosticCollector(), file)
     assert tok is not None
-    assert tok.type is RawTokenType.FROM_IMPORT
+    assert tok.type is RawTokenType.BANG_KEYWORD
     assert tok.raw == '!from'
     assert stream.peek() == ' '
 
@@ -259,7 +259,7 @@ def test_read_bang_typo_corrected_to_env() -> None:
     col = DiagnosticCollector()
     tok = RawTokenizer._read_bang(stream, col, file)
     assert tok is not None
-    assert tok.type is RawTokenType.ENV_IMPORT
+    assert tok.type is RawTokenType.BANG_KEYWORD
     assert tok.raw == '!env'  # envv → env（删除 v）
     assert stream.peek() == ' '
     assert any(d.code == 'tokenize.bang_corrected' for d in col)
@@ -271,7 +271,7 @@ def test_read_bang_typo_corrected_to_file() -> None:
     col = DiagnosticCollector()
     tok = RawTokenizer._read_bang(stream, col, file)
     assert tok is not None
-    assert tok.type is RawTokenType.FILE_IMPORT
+    assert tok.type is RawTokenType.BANG_KEYWORD
     assert tok.raw == '!file'  # fil → file（插入 e）
     assert any(d.code == 'tokenize.bang_corrected' for d in col)
 
@@ -282,7 +282,7 @@ def test_read_bang_typo_corrected_to_from() -> None:
     col = DiagnosticCollector()
     tok = RawTokenizer._read_bang(stream, col, file)
     assert tok is not None
-    assert tok.type is RawTokenType.FROM_IMPORT
+    assert tok.type is RawTokenType.BANG_KEYWORD
     assert tok.raw == '!from'  # frm → from（替换）
     assert any(d.code == 'tokenize.bang_corrected' for d in col)
 

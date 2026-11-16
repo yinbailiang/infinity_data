@@ -21,12 +21,13 @@ from infinity_data.tokenizer.diagnostics import (
     TokenizeInvalidNumber,
     TokenizeInvalidPath,
 )
+from infinity_data.tokenizer.keywords import BangKeyword
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
     RawTokenType,
 )
 from infinity_data.tokenizer.models.tokens import (
-    AssertToken,
+    BangKeywordToken,
     BoolToken,
     CaretToken,
     ColonToken,
@@ -35,13 +36,10 @@ from infinity_data.tokenizer.models.tokens import (
     DotToken,
     DoubleStarToken,
     EllipsisToken,
-    EnvImportToken,
     EofToken,
     EqualsToken,
     ExclamationToken,
-    FileImportToken,
     FloatToken,
-    FromImportToken,
     IdentifierToken,
     IntegerToken,
     LangleToken,
@@ -62,7 +60,6 @@ from infinity_data.tokenizer.models.tokens import (
     StarToken,
     TildeToken,
     Token,
-    VarImportToken,
 )
 
 # ── 单字符 token 映射 ──────────────────────────────
@@ -90,11 +87,6 @@ _SIMPLE_MAP: dict[RawTokenType, type[Token]] = {
     RawTokenType.CARET: CaretToken,
     RawTokenType.NULL: NullToken,
     RawTokenType.NOEXIST: NoexistToken,
-    RawTokenType.ENV_IMPORT: EnvImportToken,
-    RawTokenType.FILE_IMPORT: FileImportToken,
-    RawTokenType.FROM_IMPORT: FromImportToken,
-    RawTokenType.VAR_IMPORT: VarImportToken,
-    RawTokenType.ASSERT: AssertToken,
     RawTokenType.NEWLINE: NewlineToken,
 }
 
@@ -206,6 +198,10 @@ class FinalTokenizer:
         # EOF
         if token_type == RawTokenType.EOF:
             return EofToken(raw=raw)
+
+        # Bang 关键字：raw 形如 !assert，keyword 由统一元数据解析
+        if token_type == RawTokenType.BANG_KEYWORD:
+            return BangKeywordToken(raw=raw, keyword=BangKeyword(raw.raw.removeprefix('!')))
 
         # 简单映射（无需解析值）
         if token_type in _SIMPLE_MAP:

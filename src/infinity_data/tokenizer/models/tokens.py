@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
+from infinity_data.tokenizer.keywords import BangKeyword
+
 from .raw_tokens import RawToken
 
 
@@ -156,17 +158,10 @@ class CaretToken(Token):
 
 
 @dataclass
-class VarImportToken(Token):
-    """!var（本地 $ 空间注入：值表达式 + JSON path 投影）"""
+class BangKeywordToken(Token):
+    """Bang 组合关键字（!env / !file / !from / !var / !assert）。"""
 
-    pass
-
-
-@dataclass
-class AssertToken(Token):
-    """!assert（编译期断言：值表达式 + 约束）"""
-
-    pass
+    keyword: BangKeyword
 
 
 # ── 字符串字面量 ───────────────────────────────────
@@ -284,30 +279,6 @@ class IdentifierToken(Token):
     """标识符"""
 
     name: str = ''
-
-
-# ── 导入相关 token ─────────────────────────────────
-
-
-@dataclass
-class EnvImportToken(Token):
-    """!env"""
-
-    pass
-
-
-@dataclass
-class FileImportToken(Token):
-    """!file"""
-
-    pass
-
-
-@dataclass
-class FromImportToken(Token):
-    """!from"""
-
-    pass
 
 
 # ── 换行 / EOF ─────────────────────────────────────

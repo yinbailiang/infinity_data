@@ -49,12 +49,8 @@ class RawTokenType(Enum):
     # ── 标识符 / 关键字 ────────────────────────────
     IDENTIFIER = 'identifier'
 
-    # ── 导入关键字（! + 标识符组合，词法阶段识别，避免语法阶段二义）──
-    ENV_IMPORT = '!env'  # !env import NAME
-    FILE_IMPORT = '!file'  # !file p"path" import ...
-    FROM_IMPORT = '!from'  # !from p"path" import ...
-    VAR_IMPORT = '!var'  # !var <值表达式> import path as name（本地 $ 空间注入）
-    ASSERT = '!assert'  # !assert <值表达式> is <约束>（编译期断言）
+    # ── Bang 组合关键字（! + 标识符，词法阶段识别，避免语法阶段二义）──
+    BANG_KEYWORD = 'bang_keyword'  # raw='!env' / '!file' / '!from' / '!var' / '!assert'
 
     # ── 换行 / EOF ─────────────────────────────────
     NEWLINE = 'newline'

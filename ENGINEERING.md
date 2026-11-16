@@ -80,8 +80,8 @@ ignore = [
 ### 基线
 
 ```text
-870 passed · 1.7s
-覆盖率: 93%（6954 statements / 475 missed）
+879 passed · 1.7s
+覆盖率: 93%（6954 statements / 474 missed）
 ```
 
 ### 架构
@@ -174,15 +174,17 @@ std_to_python（忠实） / emit（有损投影）
 
 | 指标 | 数值 |
 | - | - |
-| 生产文件 | 63 个 `.py` |
-| 生产代码 | ~15.0k 行 |
-| 测试文件 | 71 个 `.py`（~10.3k 行） |
+| 生产文件 | 64 个 `.py` |
+| 生产代码 | ~15.1k 行 |
+| 测试文件 | 72 个 `.py`（~10.4k 行） |
 | 最大单文件 | `semantic/diagnostics.py` ~1623 行 |
 | 次大文件 | `parser/parser.py` ~1434 行、`tools/lsp/language.py` ~1063 行 |
 
 核心约束：
 
 - **单一诊断收集器**：词法 → 语法 → 语义全程复用 `DiagnosticCollector`
+- **关键字单一事实源**：Bang / 上下文关键字在 `tokenizer/keywords.py` 统一维护，
+  tokenizer 拼写纠正与 LSP 补全 / 高亮从表派生
 - **诊断声明化**：每层一个 `diagnostics.py`，`@registry.register` 导入即注册并校验；
   声明字段是类型化参数，`code` / `severity` / `templates` 为 `ClassVar`
 - **单一选项载体**：`CompileOptions`（env / sandbox / registry / schema / lang）

@@ -289,7 +289,7 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
 ## 13. 编译期断言（`!assert`）
 
 - 词法：`!assert` 与 `!env` / `!file` / `!from` / `!var` 同属 bang 组合关键字；
-  拼写纠正列表同步加入 `assert`。
+  统一由 `tokenizer/keywords.py` 的 `BANG_KEYWORDS` 元数据驱动（见 §14）。
 - 语法：顶层 `AssertStmt(value, constraints)`，`is` 为上下文关键字；
   `is` 后缺少约束 → `parse.assert_missing_constraint`。
 - 作用域：`Scope.assert_statements` 按文件携带；`_remap_scope` 随命名空间复制。
@@ -301,3 +301,19 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
   自身约束（与 `!var` 一致），再逐条执行断言约束；失败复用具体 `constraint.*`
   码（位置指向断言值），不新增 `assert.failed` 汇总码。
 - 相关测试：tokenizer / parser / executor / pipeline（含 `.inft` 断言与 `$` 引用）。
+
+---
+
+## 14. Bang 关键字元数据（单一事实源）
+
+- `tokenizer/keywords.py` 定义 `BangKeyword`（StrEnum）与 `BangKeywordSpec`
+  （`usage` / `summary`），并导出 `BANG_KEYWORDS` / `BANG_BY_NAME`。
+- `RawTokenType.BANG_KEYWORD` + 通用 `BangKeywordToken(keyword=...)`
+  取代原 `ENV_IMPORT` / `FILE_IMPORT` / `FROM_IMPORT` / `VAR_IMPORT` / `ASSERT`
+  五套 raw 枚举与 token 类；finalizer 从 `raw='!name'` 解析枚举。
+- tokenizer 的识别与拼写纠正、LSP 补全与语义高亮均从该表派生；
+  `CONTEXTUAL_KEYWORDS` / `CONTEXTUAL_NAMES` 同时统一 `import` / `as` / `is`。
+- parser 仍按 `BangKeyword` 显式分发（不在元数据里放 parser 回调，避免词法层
+  反向依赖语法层）；新增关键字只需改元数据 + 对应解析分支。
+- 漂移测试：`tests/tokenizer/keywords_test.py` 参数化验证每个 Bang 关键字
+  组合成单 token 且表项一致；LSP 语义令牌测试覆盖 `!assert` / `is`。

@@ -125,12 +125,14 @@ def test_unterminated_string_reported() -> None:
 
 def test_import_keywords_combined() -> None:
     toks, _ = _tokenize('!env import X\n')
-    assert RawTokenType.ENV_IMPORT in [t.type for t in toks]
+    bang = next(t for t in toks if t.type is RawTokenType.BANG_KEYWORD)
+    assert bang.raw == '!env'
 
 
 def test_assert_keyword_combined() -> None:
     toks, col = _tokenize('!assert 1 is int\n')
-    assert RawTokenType.ASSERT in [t.type for t in toks]
+    bang = next(t for t in toks if t.type is RawTokenType.BANG_KEYWORD)
+    assert bang.raw == '!assert'
     assert not any(d.code == 'tokenize.invalid_bang' for d in col)
 
 
@@ -153,7 +155,8 @@ def test_bang_independent_punctuation() -> None:
 
 def test_import_keyword_typo_corrected() -> None:
     toks, col = _tokenize('!envv import X\n')
-    assert RawTokenType.ENV_IMPORT in [t.type for t in toks]
+    bang = next(t for t in toks if t.type is RawTokenType.BANG_KEYWORD)
+    assert bang.raw == '!env'
     assert any(d.code == 'tokenize.bang_corrected' for d in col)
 
 

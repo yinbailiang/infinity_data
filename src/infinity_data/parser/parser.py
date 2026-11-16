@@ -73,9 +73,10 @@ from infinity_data.parser.models import (
     VarStmt,
 )
 from infinity_data.parser.token_stream import TokenStream
+from infinity_data.tokenizer.keywords import BangKeyword
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceRange
 from infinity_data.tokenizer.models.tokens import (
-    AssertToken,
+    BangKeywordToken,
     BoolToken,
     CaretToken,
     ColonToken,
@@ -84,13 +85,10 @@ from infinity_data.tokenizer.models.tokens import (
     DotToken,
     DoubleStarToken,
     EllipsisToken,
-    EnvImportToken,
     EofToken,
     EqualsToken,
     ExclamationToken,
-    FileImportToken,
     FloatToken,
-    FromImportToken,
     IdentifierToken,
     IntegerToken,
     LangleToken,
@@ -111,7 +109,6 @@ from infinity_data.tokenizer.models.tokens import (
     StringToken,
     TildeToken,
     Token,
-    VarImportToken,
 )
 
 _TToken = TypeVar('_TToken', bound=Token)
@@ -197,11 +194,11 @@ class Parser:
             return None
 
         match stream.peek():
-            case EnvImportToken() | FileImportToken() | FromImportToken() | VarImportToken():
-                return Parser._parse_import_statement(stream, collector)
-            case AssertToken() as tok:
+            case BangKeywordToken(keyword=BangKeyword.ASSERT) as tok:
                 stream.advance()
                 return Parser._parse_assert(stream, collector, tok)
+            case BangKeywordToken():
+                return Parser._parse_import_statement(stream, collector)
             case TildeToken():
                 return Parser._parse_template_def(stream, collector)
             case IdentifierToken():
@@ -227,23 +224,22 @@ class Parser:
 
     @staticmethod
     def _parse_import_statement(stream: TokenStream, collector: DiagnosticCollector) -> Statement:
-        """分发 !env / !file / !from 导入语句"""
-        match stream.peek():
-            case EnvImportToken() as tok:
-                stream.advance()
+        """分发 !env / !file / !from / !var 导入语句。"""
+        tok = stream.peek()
+        if not isinstance(tok, BangKeywordToken):
+            return ErrorStatement(source=stream.span_from(tok), message='无法识别的导入语句')
+        stream.advance()
+        match tok.keyword:
+            case BangKeyword.ENV:
                 return Parser._parse_env_import(stream, collector, tok)
-            case FileImportToken() as tok:
-                stream.advance()
+            case BangKeyword.FILE:
                 return Parser._parse_file_import(stream, collector, tok)
-            case FromImportToken() as tok:
-                stream.advance()
+            case BangKeyword.FROM:
                 return Parser._parse_template_import(stream, collector, tok)
-            case VarImportToken() as tok:
-                stream.advance()
+            case BangKeyword.VAR:
                 return Parser._parse_var_import(stream, collector, tok)
             case _:
-                first = stream.peek()
-                return ErrorStatement(source=stream.span_from(first), message='无法识别的导入语句')
+                return ErrorStatement(source=stream.span_from(tok), message='无法识别的导入语句')
 
     @staticmethod
     def _peek_keyword(stream: TokenStream, name: str) -> bool:
@@ -276,7 +272,7 @@ class Parser:
         return False
 
     @staticmethod
-    def _parse_assert(stream: TokenStream, collector: DiagnosticCollector, kw_tok: AssertToken) -> AssertStmt:
+    def _parse_assert(stream: TokenStream, collector: DiagnosticCollector, kw_tok: BangKeywordToken) -> AssertStmt:
         """!assert <值表达式> is <约束>（编译期断言）。"""
         value = Parser._parse_value(stream, collector)
         if Parser._peek_keyword(stream, 'is'):
@@ -297,7 +293,7 @@ class Parser:
         return AssertStmt(source=stream.span_from(kw_tok), value=value, constraints=constraints)
 
     @staticmethod
-    def _parse_var_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: VarImportToken) -> VarStmt:
+    def _parse_var_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: BangKeywordToken) -> VarStmt:
         """!var <值表达式> import [path] as <alias>（§2.10 本地 $ 空间注入）"""
         value = Parser._parse_value(stream, collector)
         Parser._expect_keyword(stream, collector, 'import')
@@ -321,7 +317,9 @@ class Parser:
         )
 
     @staticmethod
-    def _parse_env_import(stream: TokenStream, collector: DiagnosticCollector, kw_tok: EnvImportToken) -> EnvImportStmt:
+    def _parse_env_import(
+        stream: TokenStream, collector: DiagnosticCollector, kw_tok: BangKeywordToken
+    ) -> EnvImportStmt:
         """!env import NAME1 [as NEW1], NAME2 [as NEW2], ..."""
         Parser._expect_keyword(stream, collector, 'import')
 
@@ -402,7 +400,7 @@ class Parser:
 
     @staticmethod
     def _parse_file_import(
-        stream: TokenStream, collector: DiagnosticCollector, kw_tok: FileImportToken
+        stream: TokenStream, collector: DiagnosticCollector, kw_tok: BangKeywordToken
     ) -> FileImportStmt:
         """!file p"path" [as <format>] import .path.to.key as alias, ..."""
         path_tok = Parser._expect_import_path(stream, collector)
@@ -590,7 +588,7 @@ class Parser:
 
     @staticmethod
     def _parse_template_import(
-        stream: TokenStream, collector: DiagnosticCollector, kw_tok: FromImportToken
+        stream: TokenStream, collector: DiagnosticCollector, kw_tok: BangKeywordToken
     ) -> TemplateImportStmt:
         """!from p"path" import Name1 [as Alias1], Name2, ..."""
         path_tok = Parser._expect_import_path(stream, collector)

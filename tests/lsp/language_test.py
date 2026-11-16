@@ -154,6 +154,13 @@ def test_semantic_tokens_utf16_length() -> None:
 # ═══════════════════════════════════════════════════════════
 
 
+def test_completion_keywords_derive_from_metadata() -> None:
+    """Bang / 上下文关键字补全由统一元数据表派生。"""
+    items = language.completion_items('', 'test.infd', {'line': 0, 'character': 0})
+    labels = {it['label'] for it in items}
+    assert {'!env', '!assert', 'import', 'as', 'is'} <= labels
+
+
 TEMPLATE_TEXT = """
 ~Server {
     name: str

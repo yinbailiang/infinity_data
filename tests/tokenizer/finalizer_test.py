@@ -5,7 +5,9 @@ from pathlib import Path
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
 from infinity_data.tokenizer.finalizer import FinalTokenizer
+from infinity_data.tokenizer.keywords import BangKeyword
 from infinity_data.tokenizer.models.tokens import (
+    BangKeywordToken,
     EofToken,
     FloatToken,
     IdentifierToken,
@@ -40,6 +42,12 @@ def test_string_value() -> None:
 def test_eof_token_present() -> None:
     toks, _ = _final('')
     assert isinstance(toks[-1], EofToken)
+
+
+def test_bang_keyword_token_carries_enum() -> None:
+    toks, _ = _final('!assert 1 is int\n')
+    assert isinstance(toks[0], BangKeywordToken)
+    assert toks[0].keyword is BangKeyword.ASSERT
 
 
 def test_escapes_resolved() -> None:

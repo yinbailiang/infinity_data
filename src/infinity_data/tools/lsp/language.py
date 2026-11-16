@@ -63,6 +63,7 @@ from infinity_data.semantic.std import (
     StdObject,
     StdValue,
 )
+from infinity_data.tokenizer.keywords import BANG_KEYWORDS, CONTEXTUAL_KEYWORDS, CONTEXTUAL_NAMES
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
 from infinity_data.tokenizer.models.tokens import NoexistToken, NullToken
 from infinity_data.tokenizer.tokenizer import RawTokenizer
@@ -83,14 +84,8 @@ _REGISTRY = ConstraintRegistry()
 
 # 语言级关键字 / 字面量（补全候选）
 LANGUAGE_KEYWORDS: list[tuple[str, str]] = [
-    ('!env', '环境变量导入：!env import NAME [as ALIAS]'),
-    ('!file', '现有配置导入：!file p"path" as fmt import .a.b as x'),
-    ('!from', '模板导入：!from p"path" import Tpl [as Alias]'),
-    ('!var', '本地注入：!var <值表达式> import [path] as NAME'),
-    ('!assert', '编译期断言：!assert <值表达式> is <约束>'),
-    ('import', '导入语句关键字'),
-    ('as', '别名关键字（$name as int）'),
-    ('is', '断言关键字：!assert <值表达式> is <约束>'),
+    *((spec.label, f'{spec.summary}：{spec.usage}') for spec in BANG_KEYWORDS),
+    *((spec.name, f'{spec.summary}：{spec.usage}') for spec in CONTEXTUAL_KEYWORDS),
     ('~', '模板定义：~Name { ... }'),
     ('...', '模板展开：参数级 = 展开轴，调用级 = 笛卡尔积'),
     ('^', '笛卡尔积：调用级 ^ 后缀，多轴全组合展开'),
@@ -167,15 +162,11 @@ _TOKEN_MAP: dict[RawTokenType, int] = {
     _RAW.BOOL: 3,
     _RAW.NULL: 3,
     _RAW.NOEXIST: 3,
-    _RAW.ENV_IMPORT: 3,
-    _RAW.FILE_IMPORT: 3,
-    _RAW.FROM_IMPORT: 3,
-    _RAW.VAR_IMPORT: 3,
-    _RAW.ASSERT: 3,
+    _RAW.BANG_KEYWORD: 3,
 }
 
 # 上下文关键字（词法层为普通标识符，语法层才识别）
-_CONTEXTUAL_KEYWORDS = frozenset({'import', 'as', 'is'})
+_CONTEXTUAL_KEYWORDS = CONTEXTUAL_NAMES
 
 
 def semantic_tokens(text: str, file_path: str) -> list[int]:
