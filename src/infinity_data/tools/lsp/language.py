@@ -396,6 +396,26 @@ def _word_at(text: str, position: dict[str, Any]) -> str:
     return _word_span(text, position)[0]
 
 
+def _bang_prefix_at(text: str, position: dict[str, Any]) -> str | None:
+    """光标处形如 ``!ass`` 的 Bang 关键字前缀；不以 ``!`` 起始则 None。"""
+    line_no = int(position.get('line', 0))
+    char = int(position.get('character', 0))
+    lines = text.splitlines()
+    if line_no < 0 or line_no >= len(lines):
+        return None
+    line = lines[line_no]
+    cp = min(utf16_to_cp(line, char), len(line))
+    start = cp
+    while start > 0 and (line[start - 1].isalnum() or line[start - 1] == '_'):
+        start -= 1
+    bang = start - 1
+    if bang >= 0 and line[bang] == '!':
+        # 排除约束后缀 `int!`：`!` 前是标识符字符时不是 Bang 语句起点
+        if bang == 0 or not (line[bang - 1].isalnum() or line[bang - 1] == '_'):
+            return line[bang:cp]
+    return None
+
+
 def _namespace_names(text: str, file_path: str) -> set[str]:
     """收集 !env / !file / !var 导入的可见名（$ 引用补全候选）。"""
     file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
@@ -544,6 +564,7 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
         ]
 
     word = _word_at(text, position)
+    bang_prefix = _bang_prefix_at(text, position)
 
     # 模板调用参数内 → 补全该模板的字段名（最高优先级）
     doc = _document(text, file_path)
@@ -589,7 +610,9 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
             {'label': label, 'kind': 14, 'detail': '关键字', 'documentation': {'kind': 'markdown', 'value': desc}}
         )
 
-    if word:
+    if bang_prefix is not None:
+        items = [it for it in items if it['label'].startswith(bang_prefix)]
+    elif word:
         items = [it for it in items if it['label'].startswith(word)]
     return items
 

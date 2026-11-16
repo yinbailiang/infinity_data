@@ -161,6 +161,12 @@ def test_completion_keywords_derive_from_metadata() -> None:
     assert {'!env', '!assert', 'import', 'as', 'is'} <= labels
 
 
+def test_completion_bang_prefix_keeps_keyword() -> None:
+    """输入 !ass 时不能因词前缀去掉 ! 而过滤掉 !assert。"""
+    items = language.completion_items('!ass', 'test.infd', {'line': 0, 'character': 4})
+    assert [it['label'] for it in items] == ['!assert']
+
+
 TEMPLATE_TEXT = """
 ~Server {
     name: str
