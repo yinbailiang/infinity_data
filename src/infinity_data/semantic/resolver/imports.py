@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +25,15 @@ from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Sev
 from infinity_data.infra.file import File
 from infinity_data.parser import (
     Document,
+    DollarValue,
     EnvImportStmt,
     FileImportStmt,
     VarStmt,
+    walk,
 )
 from infinity_data.sandbox import Sandbox, SandboxConfig
 from infinity_data.semantic.jsonpath import apply_json_path
-from infinity_data.semantic.std import StdValue, python_to_std
+from infinity_data.semantic.std import StdValue, python_to_std, std_to_python
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 _FORMAT_MAP: dict[str, str] = {
@@ -158,21 +161,36 @@ class ImportResolver:
                 continue
             self._bind(namespace, item.alias, value, collector, item.source)
 
-    def import_identities(self, doc: Document, *, base_dir: Path | None = None) -> dict[str, str]:
-        """doc 中每个 $ 绑定的**导入真名**（来源哈希，不含运行时值；§1.8）。
+    def import_identities(
+        self,
+        doc: Document,
+        namespace: Mapping[str, StdValue],
+        *,
+        base_dir: Path | None = None,
+    ) -> dict[str, str]:
+        """doc 中每个 ``$`` 绑定的**导入真名**（来源 + 取值哈希；§1.8）。
 
-        - env: ``SHA256("env" || 变量名)``
+        - env: ``SHA256("env" || 变量名 || 值)`` —— **值参与哈希**，取自 ``namespace``
+          中实际绑定的值（与 ``$`` 解析共享同一份事实）：环境变量在不同机器 / 环境下
+          取值不同 → 真名不同，漂移可见
         - file: ``SHA256(fmt || jsonpath || 文件内容哈希)``（文件被拒/不可读 → 该绑定无真名）
-        - var: ``SHA256(canon(值表达式) || path)``
+        - var: ``SHA256(canon(值表达式) || jsonpath || 依赖绑定真名)`` —— 传递
+          ``!var`` 依赖的 env / file 取值（如 ``!var $PORT import . as p``）
 
-        真名是身份/签名维度：相同来源 → 相同真名，与机器/环境无关
-        （env 的**值**不进哈希，否则身份随环境漂移）。供模板身份纳入数据依赖（§2.5）。
+        同一别名重复绑定（``namespace.duplicate``）保留先到者，与 ``$`` 命名空间一致。
+        供模板身份纳入数据依赖（§2.5）。
         """
-        out: dict[str, str] = {}
+        # (alias, 种类专属 payload, 运行时依赖的 $ 名)：var 依赖 env/file/其他 var 的取值
+        bindings: list[tuple[str, str, tuple[str, ...]]] = []
         for stmt in doc.statements:
             if isinstance(stmt, EnvImportStmt):
                 for item in stmt.items:
-                    out[item.alias or item.name] = _import_hash(f'env:{item.name}')
+                    alias = item.alias or item.name
+                    value = self._env_value(namespace, alias)
+                    if value is None:
+                        continue  # 绑定未建立（解析阶段已报错）
+                    payload = 'env:' + json.dumps([item.name, value], ensure_ascii=False)
+                    bindings.append((alias, payload, ()))
             elif isinstance(stmt, FileImportStmt):
                 file = self._sandbox.open_file(stmt.file_path, source=stmt.source, base_dir=base_dir)
                 if file is None:
@@ -184,11 +202,43 @@ class ImportResolver:
                 fmt = stmt.format or _FORMAT_MAP.get(Path(stmt.file_path).suffix.lower(), 'json')
                 for item in stmt.imports:
                     path = ''.join(seg.canonical() for seg in item.json_path) or '.'
-                    out[item.alias] = _import_hash(f'file:{fmt}|{path}|{content}')
+                    bindings.append((item.alias, f'file:{fmt}|{path}|{content}', ()))
             elif isinstance(stmt, VarStmt):
                 path = ''.join(seg.canonical() for seg in stmt.json_path) or '.'
-                out[stmt.alias] = _import_hash(f'var:{stmt.value.canonical()}|{path}')
-        return out
+                refs = tuple(sorted({node.name for node in walk(stmt.value) if isinstance(node, DollarValue)}))
+                bindings.append((stmt.alias, f'var:{stmt.value.canonical()}|{path}', refs))
+
+        # 同一别名保留先到者（与 _bind / $ 命名空间一致）
+        by_alias: dict[str, tuple[str, tuple[str, ...]]] = {}
+        for alias, payload, refs in bindings:
+            by_alias.setdefault(alias, (payload, refs))
+
+        memo: dict[str, str] = {}
+        stack: set[str] = set()
+
+        def identity_of(alias: str) -> str:
+            if alias in memo:
+                return memo[alias]
+            payload, refs = by_alias[alias]
+            if alias in stack:
+                return _import_hash(payload)  # 环：退化为自身 payload（不递归）
+            stack.add(alias)
+            deps = sorted(identity_of(r) for r in refs if r in by_alias)
+            ident = _import_hash(payload + '|' + ','.join(deps))
+            stack.remove(alias)
+            memo[alias] = ident
+            return ident
+
+        return {alias: identity_of(alias) for alias in by_alias}
+
+    @staticmethod
+    def _env_value(namespace: Mapping[str, StdValue], alias: str) -> str | None:
+        """从 ``$`` 命名空间取 env 绑定值（env 值必为字符串；未绑定 → None）。"""
+        value = namespace.get(alias)
+        if value is None:
+            return None
+        raw = std_to_python(value)
+        return raw if isinstance(raw, str) else None
 
     # ── 模板导入路径解析（!from 由 TemplateGraphResolver 使用）──
 

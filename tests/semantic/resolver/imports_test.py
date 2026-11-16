@@ -121,17 +121,36 @@ def test_sandbox_properties() -> None:
 
 
 def test_import_identities_env_and_var() -> None:
-    """import_identities：env/var 的来源哈希（确定性，与值无关）。"""
+    """import_identities：env/var 真名（确定性；env 值参与哈希）。"""
     file = MemFile(
         name='t.infd', root_path=Path('.'), content='!env import PORT as port\n!var 42 import .timeout as t\n'
     )
     doc, _ = parse_source(file)
-    r = ImportResolver()
-    ids1 = r.import_identities(doc)
-    ids2 = r.import_identities(doc)
+    sb = Sandbox(SandboxConfig(env={'PORT': '8080'}), base_dir=Path('.'))
+    r = ImportResolver(sandbox=sb)
+    collector = DiagnosticCollector()
+    ns = r.resolve(doc, collector)
+    ids1 = r.import_identities(doc, ns)
+    ids2 = r.import_identities(doc, ns)
     assert set(ids1) == {'port', 't'}
     assert ids1 == ids2  # 确定性
-    assert all(v.startswith('h') is False for v in ids1.values())  # 是十六进制哈希串
+    assert len(set(ids1.values())) == 2  # 不同绑定不同真名
+    assert all(len(v) == 64 for v in ids1.values())  # SHA256 十六进制
+
+
+def test_import_identities_env_value_sensitive() -> None:
+    """env 取值不同 → 真名不同；同名同值 → 真名相同。"""
+    file = MemFile(name='t.infd', root_path=Path('.'), content='!env import PORT as port\n')
+    doc, _ = parse_source(file)
+
+    def ident(value: str) -> str:
+        sb = Sandbox(SandboxConfig(env={'PORT': value}), base_dir=Path('.'))
+        r = ImportResolver(sandbox=sb)
+        ns = r.resolve(doc, DiagnosticCollector())
+        return r.import_identities(doc, ns)['port']
+
+    assert ident('1') != ident('2')
+    assert ident('1') == ident('1')
 
 
 def test_import_identities_toml_file(tmp_path: Path) -> None:
@@ -141,9 +160,9 @@ def test_import_identities_toml_file(tmp_path: Path) -> None:
     doc, _ = parse_source(file)
     sb = Sandbox(SandboxConfig(allow_files=['./data.toml']), base_dir=tmp_path)
     r = ImportResolver(sandbox=sb)
-    ids1 = r.import_identities(doc)
+    ids1 = r.import_identities(doc, {})
     (tmp_path / 'data.toml').write_text('port = 2\n', encoding='utf-8')
-    ids2 = r.import_identities(doc)
+    ids2 = r.import_identities(doc, {})
     assert ids1['p'] != ids2['p']
 
 

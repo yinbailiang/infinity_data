@@ -205,22 +205,65 @@ def test_identity_import_unused_does_not_affect() -> None:
     assert _identity_of(c1, 'A') == _identity_of(c2, 'A')
 
 
-def test_identity_env_value_not_in_hash(tmp_path: Path) -> None:
-    """!env 的**值**不进身份哈希：变量名相同、值不同 → 模板身份相同（可复现构建）。"""
+def test_identity_env_value_in_hash(tmp_path: Path) -> None:
+    """!env 的**值**参与身份哈希：变量名相同、值不同 → 模板身份不同（环境漂移可见）。"""
     base = tmp_path
     app = '!env import PORT as port\n~A {\n    v: int = $port as int\n}\n'
 
     def resolve(name: str, port: str) -> ResolvedContext:
-        file = DiskFile.from_fullpath(base / name)
-        _write(Path(file.name), app)
-        doc, _ = parse_source(file)
-        sb = Sandbox(SandboxConfig(env={'PORT': port}), base_dir=base)
-        r = TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb))
-        return r.resolve(doc, file, DiagnosticCollector())
+        return _resolve_with_env(base, name, app, {'PORT': port})
 
     c1 = resolve('app1.infd', '1')
     c2 = resolve('app2.infd', '9999')
+    c3 = resolve('app3.infd', '1')
+    assert _identity_of(c1, 'A') != _identity_of(c2, 'A')
+    assert _identity_of(c1, 'A') == _identity_of(c3, 'A')  # 同值 → 同身份
+
+
+def test_identity_env_value_propagates_through_var(tmp_path: Path) -> None:
+    """!var 引用 env → env 取值变化经 var 真名传播到模板身份。"""
+    base = tmp_path
+    app = '!env import PORT as port\n!var $port import . as p\n~A {\n    v: str = $p\n}\n'
+    c1 = _resolve_with_env(base, 'a.infd', app, {'PORT': '1'})
+    c2 = _resolve_with_env(base, 'b.infd', app, {'PORT': '2'})
+    assert _identity_of(c1, 'A') != _identity_of(c2, 'A')
+
+
+def test_identity_var_chain_propagates_env(tmp_path: Path) -> None:
+    """!var 链（p2 ← p1 ← env）逐级传递 env 取值。"""
+    base = tmp_path
+    app = '!env import PORT as port\n!var $port import . as p1\n!var $p1 import . as p2\n~A {\n    v: str = $p2\n}\n'
+    c1 = _resolve_with_env(base, 'a.infd', app, {'PORT': '1'})
+    c2 = _resolve_with_env(base, 'b.infd', app, {'PORT': '2'})
+    assert _identity_of(c1, 'A') != _identity_of(c2, 'A')
+
+
+def test_identity_file_value_propagates_through_var(tmp_path: Path) -> None:
+    """!var 引用 !file → 文件内容变化经 var 真名传播到模板身份。"""
+    _write(tmp_path / 't1' / 'data.json', '{"port": 1}')
+    _write(tmp_path / 't2' / 'data.json', '{"port": 2}')
+    app = '!file p"data.json" as json import .port as port\n!var $port import . as p\n~A {\n    v: int = $p\n}\n'
+    c1, d1 = _resolve_app_full(tmp_path / 't1', app)
+    c2, d2 = _resolve_app_full(tmp_path / 't2', app)
+    assert not list(d1) and not list(d2)
+    assert _identity_of(c1, 'A') != _identity_of(c2, 'A')
+
+
+def test_identity_var_cycle_terminates(tmp_path: Path) -> None:
+    """!var 相互引用（环）：真名计算终止且可复现（环上退化为自身表达式哈希）。"""
+    app = '!var $b import . as a\n!var $a import . as b\n~A {\n    v: str = $a\n}\n'
+    c1 = _resolve_with_env(tmp_path, 'a.infd', app, {})
+    c2 = _resolve_with_env(tmp_path, 'b.infd', app, {})
     assert _identity_of(c1, 'A') == _identity_of(c2, 'A')
+
+
+def _resolve_with_env(base: Path, name: str, app: str, env: dict[str, str]) -> ResolvedContext:
+    """写文件 + 按注入 env 解析（identity 测试公用）。"""
+    file = DiskFile.from_fullpath(base / name)
+    _write(Path(file.name), app)
+    doc, _ = parse_source(file)
+    sb = Sandbox(SandboxConfig(env=env), base_dir=base)
+    return TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb)).resolve(doc, file, DiagnosticCollector())
 
 
 def _resolve_app_full(base: Path, source: str) -> tuple[ResolvedContext, DiagnosticCollector]:

@@ -375,14 +375,14 @@ class TemplateGraphResolver:
         - ``!env`` / ``!file`` 经 :class:`ImportResolver` 执行 → 本文件命名空间
         - ``!file`` 相对路径按**本文件所在目录**解析（``base_dir``）
         - ``!var`` 语句收集给 builder 按文件求值（依赖图 / 环检测按文件隔离）
-        - 每个绑定算**导入真名**（来源哈希，不含运行时值；供模板身份纳入数据依赖）
+        - 每个绑定算**导入真名**（来源 + 取值哈希：env 的值、!var 依赖的取值；供模板身份纳入数据依赖）
         命名空间 / !var / 导入真名直接挂在 scope 对象上（§1.8，随 remap 复制）。
         """
         scope.namespaces = self._imports.resolve(doc, self._collector, base_dir=base_dir)
         var_stmts = [s for s in doc.statements if isinstance(s, VarStmt)]
         if var_stmts:
             scope.var_statements = var_stmts
-        idents = self._imports.import_identities(doc, base_dir=base_dir)
+        idents = self._imports.import_identities(doc, scope.namespaces, base_dir=base_dir)
         if idents:
             scope.import_identities = idents
 

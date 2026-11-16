@@ -23,9 +23,9 @@ __all__ = ['ResolvedContext', 'Scope', 'TemplateKey']
 class TemplateKey:
     """模板唯一身份：依赖闭包组合哈希 + 模板本地名。
 
-    - ``identity``：依赖闭包组合哈希（§2.5）——内容 + 依赖闭包相同 → 同身份，
-      与机器 / 路径无关（可复现构建、可签名）；计算见
-      :mod:`infinity_data.semantic.resolver.identity`
+    - ``identity``：依赖闭包组合哈希（§2.5）——内容、依赖闭包与 `$` 绑定取值
+      （含 env 值）相同 → 同身份，与路径无关；取值不同 → 不同身份（可审计）。
+      计算见 :mod:`infinity_data.semantic.resolver.identity`
     - ``name``：模板在来源文件中的本地名（诊断显示用）
 
     frozen 保证可哈希，直接作为模板表等映射的键。
