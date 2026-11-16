@@ -20,6 +20,16 @@ def _diag_at(text: str, code: str, file_path: str = 'test.infd') -> dict[str, An
     raise AssertionError(f'未找到诊断 {code}: {_diag_codes(text, file_path)}')
 
 
+def test_analyze_lang_and_structured_data() -> None:
+    """analyze 的 lang 贯穿消息渲染，并附带结构化 diagnostic.data。"""
+    diags = language.analyze('x: int = "a"\n', 'test.infd', lang='en-US')
+    diag = next(d for d in diags if d['code'] == 'constraint.type_mismatch')
+    assert 'expected int' in diag['message']
+    assert diag['message'].count('test.infd') == 0  # 位置由 range 承载，不重复进 message
+    assert diag['data']['lang'] == 'en-US'
+    assert diag['data']['params']['expected'] == 'int'
+
+
 # ═══════════════════════════════════════════════════════════
 # 诊断
 # ═══════════════════════════════════════════════════════════

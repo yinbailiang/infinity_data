@@ -73,6 +73,8 @@ cat a.infd | infd-cov -f json              # stdin → stdout
 - `--format`：`yaml`（默认，零依赖手写 emitter）/ `json` / `toml`
 - `--extract PATH`：点分路径（如 `web.spec.selector`）；空 = 整树
 - `--severity LEVEL`：拒绝阈值（`error`/`warning`/`info`/`debug`/`none`，默认 `error`）
+- `--lang zh-CN|en-US`：诊断消息语言（缺省按环境探测；不支持的语言回退英文）
+- `--diag-format text|json`：诊断报告格式（`json` 输出包含 `code` / `severity` / `params` / `location` 等字段，写入 stderr）
 - `#env: NAME "VALUE"` 声明的变量在当前进程缺失时自动注入虚拟值
 - 演示文件：`examples/app.infd`（干净配置）/ `examples/demo.infd`（含故意错误）
 
@@ -105,11 +107,17 @@ python -m infinity_data.tools.lsp
 ```json
 {
   "lspConfig.servers": [
-    { "language": "infd", "cmd": ["infd-lsp"] },
+    {
+      "language": "infd",
+      "cmd": ["infd-lsp"],
+      "initializationOptions": { "lang": "zh-CN" }
+    },
     { "language": "inft", "cmd": ["infd-lsp"] }
   ]
 }
 ```
+
+`initializationOptions.lang` 支持 `zh-CN` / `en-US`；缺省按环境探测，不支持的语言回退英文。诊断消息还会附带结构化 `diagnostic.data`（`code` / `severity` / `params` / `location`），便于客户端二次消费。
 
 打开 `.infd` / `.inft` 文件即可获得：诊断波浪线 + 语法高亮（semantic tokens）+ 补全 + 悬停 + 大纲 + 跳转定义。
 

@@ -185,3 +185,30 @@ def test_demo_file_compiles(tmp_path: Path, fmt: str) -> None:
     rc, out, err = _run([str(demo), '-f', fmt])
     assert rc == 0, err
     assert out
+
+
+# ═══════════════════════════════════════════════════════════
+# 诊断语言 / 结构化输出
+# ═══════════════════════════════════════════════════════════
+
+
+def test_diag_json_with_explicit_lang(tmp_path: Path) -> None:
+    """--diag-format json + --lang 输出结构化字段（stderr，退出 1）。"""
+    f = _write(tmp_path / 'bad.infd', 'x: int = "a"\n')
+    rc, out, err = _run([str(f), '--lang', 'en-US', '--diag-format', 'json'])
+    assert rc == 1
+    assert out == ''
+    data = json.loads(err)
+    assert data[0]['code'] == 'constraint.type_mismatch'
+    assert data[0]['lang'] == 'en-US'
+    assert data[0]['fallback'] is False
+    assert 'expected int' in data[0]['message']
+    assert data[0]['location'].startswith(str(f))
+
+
+def test_diag_text_prints_location_once(tmp_path: Path) -> None:
+    """文本诊断的位置只出现一次。"""
+    f = _write(tmp_path / 'bad.infd', 'x: int =\n')
+    rc, _, err = _run([str(f), '--lang', 'zh-CN'])
+    assert rc == 1
+    assert err.count(str(f)) == 1

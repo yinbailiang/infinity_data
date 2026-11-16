@@ -167,6 +167,29 @@ def test_initialize_capabilities() -> None:
     assert resp['result']['serverInfo']['name'] == 'infinity-data-lsp'
 
 
+def test_initialize_lang_applied_to_diagnostics() -> None:
+    """initializationOptions.lang 贯穿后续 publishDiagnostics 与 data。"""
+    h = _ServerHarness()
+    msgs = h.run(
+        {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'initialize',
+            'params': {
+                'processId': None,
+                'rootUri': None,
+                'capabilities': {},
+                'initializationOptions': {'lang': 'en-US'},
+            },
+        },
+        _open_doc('file:///t/app.infd', 'bad: int = "a"\n'),
+    )
+    notif = next(m for m in msgs if m.get('method') == 'textDocument/publishDiagnostics')
+    diag = next(d for d in notif['params']['diagnostics'] if d['code'] == 'constraint.type_mismatch')
+    assert 'expected int' in diag['message']
+    assert diag['data']['lang'] == 'en-US'
+
+
 def test_did_open_publishes_diagnostics() -> None:
     h = _ServerHarness()
     msgs = h.run(_open_doc('file:///t/app.infd', 'bad_port: <int, range(1, 100)> = 200\n'))
