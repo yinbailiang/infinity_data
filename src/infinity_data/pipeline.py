@@ -139,6 +139,10 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
         )
         # 定义期静态校验：未实例化模板中的非法约束声明（名字 / 参数个数）
         executor.validate_templates(collector)
+        # 定义期默认值校验：模板默认值不依赖实例化（仅作校验器时也要合法）
+        executor.validate_template_defaults(std.template_defaults, collector)
+        # !var 求值结果携带的约束：无论是否被 root 引用都在编译期校验
+        executor.validate_var_values(std.var_values, collector)
         executor.validate(std.root, collector)
         if resolver.schema is not None:
             scope = (
@@ -165,6 +169,8 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
         root=std.root,
         templates=std.templates,
         scope=std.scope,
+        template_defaults=std.template_defaults,
+        var_values=std.var_values,
     )
     return CompilationResult(
         document=document,

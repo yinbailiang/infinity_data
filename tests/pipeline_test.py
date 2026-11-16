@@ -681,9 +681,85 @@ def test_template_constraint_static_valid_no_false_positive() -> None:
 
 
 def test_template_constraint_bad_signature_reported_at_definition_and_call() -> None:
-    """实例化时定义点与调用点各报一次：两个位置都指向真实错误。"""
+    """同一非法签名在约束声明 / 默认值 / 实例值三处各报一次。"""
     result = compile_source('~T {\n    x: any = 1\n}\nt = T()\n')
-    assert [d.code for d in result.diagnostics].count('constraint.arg_count') == 2
+    diags = [d for d in result.diagnostics if d.code == 'constraint.arg_count']
+    assert len(diags) == 3
+    assert {d.path for d in diags} == {'', 'T.x', 't.x'}
+
+
+# ═══════════════════════════════════════════════════════════
+# 模板默认值 / 完整形状（定义期）
+# ═══════════════════════════════════════════════════════════
+
+
+def test_template_default_validated_at_definition_time() -> None:
+    """默认值不依赖实例化：非法默认值在定义期即报（路径 Template.field）。"""
+    result = compile_source('~T {\n    tmp: dict = 123\n}\n')
+    assert result.has_errors
+    diag = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert diag.path == 'T.tmp'
+
+
+def test_template_default_reported_at_definition_and_instance() -> None:
+    """定义点 + 使用点都报（保留双诊断）。"""
+    result = compile_source('~T {\n    tmp: dict = 123\n}\nx = T()\n')
+    paths = {d.path for d in result.diagnostics if d.code == 'constraint.type_mismatch'}
+    assert paths == {'T.tmp', 'x.tmp'}
+
+
+def test_template_valid_default_no_error() -> None:
+    """合法默认值（含嵌套模板 / 可空字面量）不误报。"""
+    result = compile_source("""
+~Inner {
+    v: dict = {}
+}
+~T {
+    inner: Inner = Inner(),
+    n: int = 1,
+    s: str? = null
+}
+""")
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+
+
+def test_validator_requires_optional_fields() -> None:
+    """校验器要求完整形状：可选字段缺失 → template.missing_optional（不注入默认值）。"""
+    result = compile_source('~T {\n    tmp: dict = {}\n}\na: T {}\n')
+    assert result.has_errors
+    diag = next(d for d in result.diagnostics if d.code == 'template.missing_optional')
+    assert diag.path == 'a.tmp'
+    assert result.value == {'a': {}}
+
+
+def test_validator_provided_optional_field_validated() -> None:
+    """完整形状下，提供的可选字段照常执行约束。"""
+    result = compile_source('~T {\n    tmp: dict = {}\n}\na: T { tmp = 123 }\n')
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
+
+
+def test_imported_template_default_validated(tmp_path: Path) -> None:
+    """导入的 .inft 模板默认值同样在定义期校验。"""
+    (tmp_path / 'extra.inft').write_text('~Extra {\n    v: int = "oops"\n}\n', encoding='utf-8')
+    app = tmp_path / 'app.infd'
+    app.write_text('!from p"extra.inft" import Extra\n', encoding='utf-8')
+    result = load(str(app), sandbox=SandboxConfig(allow_templates=['./extra.inft']))
+    assert result.has_errors
+    assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
+
+
+def test_var_value_constraints_validated() -> None:
+    """!var 求值结果携带的约束在编译期校验（含未被 root 引用的 var）。"""
+    result = compile_source('~V {\n    n: int\n}\n!var V(n = "x") import . as v\n')
+    assert result.has_errors
+    diag = next(d for d in result.diagnostics if d.code == 'constraint.type_mismatch')
+    assert diag.path == '$v.n'
+
+
+def test_var_dict_literal_constraints_validated() -> None:
+    """!var 的 dict 字面量约束同样编译期校验。"""
+    result = compile_source('!var { n: int = "x" } import . as v\n')
+    assert any(d.code == 'constraint.type_mismatch' and d.path == '$v.n' for d in result.diagnostics)
 
 
 # ═══════════════════════════════════════════════════════════

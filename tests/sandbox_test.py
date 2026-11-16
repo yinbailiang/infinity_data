@@ -992,6 +992,16 @@ def test_schema_strict_missing_required(tmp_path: Path) -> None:
     assert result.value == {}
 
 
+def test_schema_missing_optional_field(tmp_path: Path) -> None:
+    """schema 校验器要求完整形状：可选字段缺失 → schema.failed。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '~AppConfig {\n    name: str\n    port: int = 8080\n}\nname = "demo"\n')
+    result = load(f, schema=Schema(template='AppConfig'))
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert 'port' in result.diagnostics[0].message
+
+
 def test_schema_strict_extra_field_fails(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str = "x"\n}\nname = "x"\nextra = 1\n')

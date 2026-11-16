@@ -336,3 +336,37 @@ def test_validate_templates_checks_template_level_constraints() -> None:
     collector = DiagnosticCollector()
     _executor({TemplateKey(identity='i', name='T'): tpl}).validate_templates(collector)
     assert [d.code for d in collector] == ['constraint.arg_count']
+
+
+def test_validate_template_defaults_path() -> None:
+    """模板默认值校验：诊断路径为 Template.field。"""
+    key = TemplateKey(identity='i', name='T')
+    tpl = TemplateDef(name='T', fields=[], constraints=[], config=TemplateConfig(), source=_SRC)
+    field = StdField(
+        name='x',
+        value=StdLiteral(kind='int', value=1),
+        constraints=[ResolvedConstraint(name='str')],
+    )
+    collector = DiagnosticCollector()
+    _executor({key: tpl}).validate_template_defaults({key: [field]}, collector)
+    diag = next(iter(collector))
+    assert diag.code == 'constraint.type_mismatch'
+    assert diag.path == 'T.x'
+
+
+def test_validate_var_values_path() -> None:
+    """!var 值校验：诊断路径为 $别名.field。"""
+    value = StdObject(
+        fields=[
+            StdField(
+                name='n',
+                value=StdLiteral(kind='str', value='x'),
+                constraints=[ResolvedConstraint(name='int')],
+            )
+        ]
+    )
+    collector = DiagnosticCollector()
+    _executor().validate_var_values([('$v', value)], collector)
+    diag = next(iter(collector))
+    assert diag.code == 'constraint.type_mismatch'
+    assert diag.path == '$v.n'

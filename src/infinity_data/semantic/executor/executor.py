@@ -142,6 +142,32 @@ class ConstraintExecutor:
                 )
             )
 
+    def validate_template_defaults(
+        self,
+        defaults: dict[TemplateKey, list[StdField]],
+        collector: DiagnosticCollector,
+    ) -> None:
+        """校验模板字段默认值（定义期，不依赖实例化）。
+
+        默认值只在模板实例化时才会被求值/执行约束：仅作为校验器使用或从未
+        实例化的模板，非法默认值（类型不符 / 嵌套模板缺参等）否则永远静默。
+        默认值由 Phase 2a 按定义点 scope 求值（:class:`AstBuilder`），本层只执行。
+        诊断路径为 ``Template.field``。
+        """
+        for key, fields in defaults.items():
+            for field in fields:
+                self._validate_field(field, collector, key.name)
+
+    def validate_var_values(self, values: list[tuple[str, StdValue]], collector: DiagnosticCollector) -> None:
+        """校验 ``!var`` 求值结果携带的约束（编译期，不依赖是否被引用）。
+
+        ``!var`` 值（模板展开 / dict 字面量）挂载的约束原本只随 root 遍历执行，
+        var 值不进入 root 时永远静默。诊断路径显示为 ``$别名``（按定义文件
+        就地命名空间），位置指向求值表达式。
+        """
+        for name, value in values:
+            self.validate(value, collector, name)
+
     def _validate_field(self, field: StdField, collector: DiagnosticCollector, path: str) -> None:
         """字段：先递归值（内部结构约束），再执行字段注解约束（链式短路）。"""
         child = f'{path}.{field.name}' if path else field.name
@@ -209,21 +235,14 @@ class ConstraintExecutor:
         diags: list[Diagnostic] = []
         field_map = {f.name: f for f in value.fields}
 
-        # 逐字段校验（模板定义约束）
+        # 逐字段校验（模板定义约束）；校验器要求完整形状：可选字段也不可缺
         for tf in tpl.fields:
             child = f'{path}.{tf.name}' if path else tf.name
             f = field_map.get(tf.name)
             if f is None:
-                if tf.default_value is None:
-                    diags.append(
-                        Diagnostic(
-                            Severity.ERROR,
-                            'template.missing_field',
-                            {'template': display, 'field': tf.name},
-                            source,
-                            child,
-                        )
-                    )
+                # 默认值只在实例化时填充；作为校验器时给定值必须声明全部字段
+                code = 'template.missing_field' if tf.default_value is None else 'template.missing_optional'
+                diags.append(Diagnostic(Severity.ERROR, code, {'template': display, 'field': tf.name}, source, child))
                 continue
             if f.value is not None:
                 specs, rdiags = resolve_constraints(tf.constraints, scope)
@@ -277,8 +296,9 @@ class ConstraintExecutor:
     ) -> StdObject:
         """按模板校验顶层对象（strict/lenient/strip），返回校验后的 root。
 
+        校验器要求完整形状：字段缺失（含可选字段）一律失败；
         - lenient 的额外字段 WARNING 写入 ``collector``（非致命）
-        - strict / 必填缺失 / 字段 / 模板级约束失败聚合为 :class:`SchemaError` 抛出
+        - strict / 字段缺失 / 字段 / 模板级约束失败聚合为 :class:`SchemaError` 抛出
         """
         mode = schema.mode
         declared = {tf.name for tf in tpl.fields}
@@ -296,13 +316,14 @@ class ConstraintExecutor:
             else:  # strip
                 root = StdObject(fields=[f for f in root.fields if f.name in declared], template=root.template)
 
-        # 必填字段缺失
+        # 字段缺失（校验器要求完整形状：可选字段也不可缺）
         for tf in tpl.fields:
-            if tf.default_value is None and root.get(tf.name) is None:
+            if root.get(tf.name) is None:
+                code = 'schema.missing_required' if tf.default_value is None else 'schema.missing_optional'
                 diags.append(
                     Diagnostic(
                         Severity.ERROR,
-                        'schema.missing_required',
+                        code,
                         {'field': tf.name, 'template': tpl.name},
                         None,
                         tf.name,

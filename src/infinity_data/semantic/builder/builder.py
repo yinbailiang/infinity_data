@@ -91,6 +91,7 @@ class AstBuilder:
         self._collector: DiagnosticCollector = DiagnosticCollector()  # 本次 build 的共享收集器
         self._depth = 0
         self._recursive_defaults: set[TemplateKey] = set()
+        self._var_values: list[tuple[str, StdValue]] = []
 
     # ═══════════════════════════════════════════════════════
     # 公开入口
@@ -115,6 +116,7 @@ class AstBuilder:
         self._collector = collector
         self._depth = 0
         self._recursive_defaults = set()
+        self._var_values = []
 
         # Phase 1 产物注入执行期状态（按引用共享，约定只读）
         self._templates = context.templates
@@ -130,6 +132,9 @@ class AstBuilder:
 
         # !var 求值（§2.10）：root 构建前按文件填充 $ 命名空间（前向引用 + 环检测，就地解析）
         self._resolve_var_statements(context)
+
+        # 模板字段默认值求值（定义期）：仅作为校验器 / 从不实例化的模板也需要校验默认值
+        template_defaults = self._build_template_defaults()
 
         # 构建 root（顶层结构约束挂在 root.constraints，不执行）
         root_fields: list[StdField] = []
@@ -162,6 +167,8 @@ class AstBuilder:
             root=StdObject(fields=self._finalize_object(root_fields, ''), constraints=root_constraints),
             templates=dict(self._templates),
             scope=dict(self._root_scope.visible),
+            template_defaults=template_defaults,
+            var_values=self._var_values,
         )
 
     # ═══════════════════════════════════════════════════════
@@ -234,6 +241,7 @@ class AstBuilder:
             rv = self._resolve_value(s.value, '', scope)
             if rv is None:
                 continue  # 值解析失败已报告
+            full = rv  # jsonpath 投影前的完整值（约束随树携带，供编译期校验）
             if s.json_path:
                 try:
                     rv = apply_json_path(rv, s.json_path)
@@ -244,10 +252,41 @@ class AstBuilder:
                 self._err('namespace.duplicate', {'name': s.alias}, s.source, '')
                 continue
             namespace[s.alias] = rv
+            self._var_values.append((f'${s.alias}', full))
 
     # ═══════════════════════════════════════════════════════
-    # 递归默认值防护（方案 C：默认引用图 + 静态环检测）
+    # 模板默认值求值（定义期校验输入，不依赖实例化）
     # ═══════════════════════════════════════════════════════
+
+    def _build_template_defaults(self) -> dict[TemplateKey, list[StdField]]:
+        """求值全部模板字段的默认值（模板定义点 scope），供 Phase 2b 定义期校验。
+
+        默认值只在实例化时才会被求值/执行约束——仅作为校验器使用或从未实例化的
+        模板，非法默认值（类型不符 / 嵌套模板缺参等）否则永远静默。此处按定义点
+        scope 求值并挂载约束（**不执行**）；引用递归默认值环的字段跳过（根因已由
+        :meth:`_detect_recursive_defaults` 报告，避免级联诊断）。
+        """
+        defaults: dict[TemplateKey, list[StdField]] = {}
+        for key, tpl in self._templates.items():
+            scope = self._template_scopes.get(key)
+            if scope is None:
+                continue  # 防御：被拒模板未登记 scope
+            fields: list[StdField] = []
+            for tf in tpl.fields:
+                if tf.default_value is None:
+                    continue
+                if any(dep in self._recursive_defaults for dep, _ in self._iter_default_refs(tf.default_value, scope)):
+                    continue  # 递归默认值环：根因已报，跳过展开校验
+                child = f'{key.name}.{tf.name}'
+                value = self._resolve_value(tf.default_value, child, scope)
+                if value is None:
+                    continue  # 值解析失败已报告
+                specs, diags = resolve_constraints(tf.constraints, scope)
+                self._collector.extend(diags)
+                fields.append(StdField(name=tf.name, value=value, source=value.source or tf.source, constraints=specs))
+            if fields:
+                defaults[key] = fields
+        return defaults
 
     def _detect_recursive_defaults(self) -> None:
         """静态检测默认值引用环，标记禁展开模板并报告根因。
