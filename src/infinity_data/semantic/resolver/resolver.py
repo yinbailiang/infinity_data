@@ -15,6 +15,7 @@ Phase 2a（:class:`~infinity_data.semantic.builder.AstBuilder`）消费。
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from infinity_data.frontend import parse_source
@@ -25,6 +26,7 @@ from infinity_data.parser import (
     EnvImportStmt,
     FileImportStmt,
     TemplateDef,
+    TemplateField,
     TemplateImportItem,
     TemplateImportStmt,
     VarStmt,
@@ -160,6 +162,24 @@ class TemplateGraphResolver:
             else:
                 seen_optional = True
 
+    def _check_duplicate_fields(self, stmt: TemplateDef) -> TemplateDef:
+        """模板定义内同名字段 → ``dict.duplicate_key``（§1.1），返回去重后的定义。
+
+        按源码顺序保留先到者：重复字段不进入模板模型，因此实例化时不会对同一
+        定义二次报告，也不会让重复项进入必填字段列表造成级联诊断。
+        """
+        seen: set[str] = set()
+        deduped: list[TemplateField] = []
+        for tf in stmt.fields:
+            if tf.name in seen:
+                self._collector.add(Diagnostic(Severity.ERROR, 'dict.duplicate_key', {'name': tf.name}, tf.source))
+                continue
+            seen.add(tf.name)
+            deduped.append(tf)
+        if len(deduped) == len(stmt.fields):
+            return stmt
+        return replace(stmt, fields=deduped)
+
     def _collect_templates(self, doc: Document, root_identity: str) -> None:
         for stmt in doc.statements:
             if not isinstance(stmt, TemplateDef):
@@ -172,6 +192,7 @@ class TemplateGraphResolver:
                 )
                 rejected = True
             # 无论是否被拒绝都校验内部（一次暴露所有错误，避免多轮修复）
+            stmt = self._check_duplicate_fields(stmt)
             self._check_required_order(stmt)
             if rejected:
                 continue  # 保留首次定义，拒绝隐式的"后者覆盖前者"
@@ -308,6 +329,7 @@ class TemplateGraphResolver:
                 continue
             if self._check_template_name_conflict(s.name, s.source):
                 continue
+            s = self._check_duplicate_fields(s)
             key = TemplateKey(identity=file_id, name=s.name)
             self._templates[key] = s
             scope.visible[s.name] = key

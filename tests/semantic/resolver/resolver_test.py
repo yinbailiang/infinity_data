@@ -81,6 +81,31 @@ def test_resolve_duplicate_local_template() -> None:
     assert ctx.templates[matches[0]].fields[0].name == 'a'  # 保留先到者
 
 
+def test_resolve_duplicate_template_fields_definition_time() -> None:
+    """模板定义内同名字段 → dict.duplicate_key（定义时即报错），保留先到者。"""
+    ctx, collector = _resolve_text('~T {\n    a: int = 1\n    a: int = 2\n}\n')
+    assert _codes(collector) == ['dict.duplicate_key']
+    key = ctx.root_scope.visible['T']
+    assert [tf.name for tf in ctx.templates[key].fields] == ['a']  # 去重后进入模板模型
+
+
+def test_resolve_duplicate_fields_in_imported_template(tmp_path: Path) -> None:
+    """导入的 .inft 里的重复字段同样在定义期报错并去重。"""
+    _write(
+        tmp_path / 'templates' / 'extra.inft',
+        '~Extra {\n    name: str = "x"\n    name: str = "y"\n}\n',
+    )
+    file = DiskFile.from_fullpath(tmp_path / 'app.infd')
+    _write(Path(file.name), '!from p"templates/extra.inft" import Extra\n')
+    doc, _ = parse_source(file)
+    resolver = _make_resolver(tmp_path, SandboxConfig(allow_templates=['./templates/*.inft']))
+    collector = DiagnosticCollector()
+    ctx = resolver.resolve(doc, file, collector)
+    assert _codes(collector) == ['dict.duplicate_key']
+    key = ctx.root_scope.visible['Extra']
+    assert [tf.name for tf in ctx.templates[key].fields] == ['name']
+
+
 def test_resolve_does_not_execute_constraints() -> None:
     """Phase 1 只做导入解析，不执行约束——字段约束错误不在 context 诊断中。"""
     _, collector = _resolve_text('x: int = "not-an-int"\n')

@@ -9,6 +9,8 @@
 - **只校验、不转换**：约束失败仅产出诊断，不改变值（coercion 属错误设计）
 - 顶层 schema 校验（strict/lenient/strip）也在此：
   对顶层对象执行模板约束 + 额外字段策略
+- 定义期静态校验：模板定义中的约束声明（名字 / 参数个数）无需实例化即可报错
+  （:meth:`ConstraintExecutor.validate_templates`）
 
 本层消费 Phase 2a 数据模型（:class:`StdDocument` 等），与构建器零耦合；
 诊断写入调用方注入的共享 :class:`DiagnosticCollector`（流水线单一收集器）。
@@ -95,6 +97,50 @@ class ConstraintExecutor:
         elif isinstance(node, StdArray):
             for i, elem in enumerate(node.elements):
                 self.validate(elem, collector, f'{path}[{i}]')
+
+    def validate_templates(self, collector: DiagnosticCollector) -> None:
+        """静态校验模板定义中的约束声明（名字 / 参数个数），不执行约束。
+
+        模板字段约束只在实例化时执行——未被实例化的模板里的非法声明
+        （未知约束名 ``constraint.unknown``、参数个数不符 ``constraint.arg_count``）
+        否则永远不会被发现。仅检查**顶层**约束声明：部分约束参数是名字而非约束
+        （``has(x)`` / ``field(x, c)``），静态层无法区分，嵌套约束仍在执行时校验。
+
+        被实例化的模板会再次在调用点报出同一问题（定义点 + 使用点），
+        两个位置都指向真实错误。
+        """
+        for key, tpl in self._templates.items():
+            scope = self._template_scopes.get(key)
+            if scope is None:
+                continue
+            for tf in tpl.fields:
+                specs, diags = resolve_constraints(tf.constraints, scope)
+                collector.extend(diags)
+                for spec in specs:
+                    self._check_static_signature(spec, collector)
+            specs, diags = resolve_constraint_list(tpl.constraints, scope)
+            collector.extend(diags)
+            for spec in specs:
+                self._check_static_signature(spec, collector)
+
+    def _check_static_signature(self, spec: ResolvedConstraint, collector: DiagnosticCollector) -> None:
+        """单个约束声明的静态签名校验（模板真名与无效占位符跳过）。"""
+        if spec.name == _INVALID_CONSTRAINT or spec.name in self._templates_by_name:
+            return
+        entry = self._registry.lookup(spec.name)
+        if entry is None:
+            collector.add(Diagnostic(Severity.ERROR, 'constraint.unknown', {'name': spec.name}, spec.source))
+            return
+        expected = entry.arity_error(len(spec.args))
+        if expected is not None:
+            collector.add(
+                Diagnostic(
+                    Severity.ERROR,
+                    'constraint.arg_count',
+                    {'name': spec.name, 'expected': expected, 'given': len(spec.args)},
+                    spec.source,
+                )
+            )
 
     def _validate_field(self, field: StdField, collector: DiagnosticCollector, path: str) -> None:
         """字段：先递归值（内部结构约束），再执行字段注解约束（链式短路）。"""

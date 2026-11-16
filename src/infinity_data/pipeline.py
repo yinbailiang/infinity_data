@@ -137,6 +137,8 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
             template_scopes=context.template_scopes,
             sandbox=sandbox_impl,
         )
+        # 定义期静态校验：未实例化模板中的非法约束声明（名字 / 参数个数）
+        executor.validate_templates(collector)
         executor.validate(std.root, collector)
         if resolver.schema is not None:
             scope = (

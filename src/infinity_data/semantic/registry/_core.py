@@ -74,6 +74,16 @@ class ConstraintEntry:
     max_args: int | None = None
     description: str = ''
 
+    def arity_error(self, n_args: int) -> str | None:
+        """参数个数不符时返回期望描述（``"N"`` / ``"lo~hi"``），符合返回 ``None``。
+
+        执行期（注册表 :meth:`apply`）与定义期静态校验共用——参数个数规则
+        只有这一份实现，避免两处漂移。
+        """
+        if n_args < self.min_args or (self.max_args is not None and n_args > self.max_args):
+            return str(self.min_args) if self.max_args is None else f'{self.min_args}~{self.max_args}'
+        return None
+
 
 def ok_result() -> ConstraintResult:
     """构造通过结果。"""

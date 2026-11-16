@@ -10,7 +10,15 @@ import pytest
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.location import SourceRange
-from infinity_data.parser import ConstraintIdent, Constraints, TemplateConfig, TemplateDef, TemplateField
+from infinity_data.parser import (
+    Constraint,
+    ConstraintCall,
+    ConstraintIdent,
+    Constraints,
+    TemplateConfig,
+    TemplateDef,
+    TemplateField,
+)
 from infinity_data.sandbox import Schema, SchemaError
 from infinity_data.semantic.builder import ResolvedConstraint, StdField, StdLiteral, StdObject
 from infinity_data.semantic.executor import ConstraintExecutor
@@ -254,3 +262,77 @@ def test_schema_strip_extra_field_removed() -> None:
     new_root, codes = _apply_schema('strip')
     assert codes == []
     assert new_root.fields == []
+
+
+# ═══════════════════════════════════════════════════════════
+# 定义期静态校验（validate_templates）
+# ═══════════════════════════════════════════════════════════
+
+
+def _template_with_field(name: str, constraint: Constraint) -> TemplateDef:
+    return TemplateDef(
+        name=name,
+        fields=[
+            TemplateField(
+                name='x',
+                constraints=Constraints(constraints=[constraint], source=_SRC),
+                default_value=None,
+                source=_SRC,
+            )
+        ],
+        config=TemplateConfig(),
+        constraints=[],
+        source=_SRC,
+    )
+
+
+def test_validate_templates_reports_missing_constraint_args() -> None:
+    """未实例化的模板里 any 缺参数 → 定义期即报 constraint.arg_count。"""
+    tpl = _template_with_field('T', ConstraintIdent(name='any', source=_SRC))
+    collector = DiagnosticCollector()
+    _executor({TemplateKey(identity='i', name='T'): tpl}).validate_templates(collector)
+    assert [d.code for d in collector] == ['constraint.arg_count']
+
+
+def test_validate_templates_reports_unknown_constraint() -> None:
+    """未实例化的模板里未知约束名 → 定义期即报 constraint.unknown。"""
+    tpl = _template_with_field('T', ConstraintIdent(name='nosuch', source=_SRC))
+    collector = DiagnosticCollector()
+    _executor({TemplateKey(identity='i', name='T'): tpl}).validate_templates(collector)
+    assert [d.code for d in collector] == ['constraint.unknown']
+
+
+def test_validate_templates_accepts_template_as_constraint() -> None:
+    """模板真名作为约束引用 → 静态校验跳过（不误报未知约束）。"""
+    other_key = TemplateKey(identity='i', name='Other')
+    other = TemplateDef(name='Other', fields=[], constraints=[], config=TemplateConfig(), source=_SRC)
+    tpl = _template_with_field('T', ConstraintIdent(name=str(other_key), source=_SRC))
+    collector = DiagnosticCollector()
+    _executor({other_key: other, TemplateKey(identity='i', name='T'): tpl}).validate_templates(collector)
+    assert not list(collector)
+
+
+def test_validate_templates_counts_call_args() -> None:
+    """参数个数在范围内（多参数逻辑约束）→ 不误报。"""
+    call = ConstraintCall(
+        name='any',
+        arguments=[ConstraintIdent(name='int', source=_SRC), ConstraintIdent(name='str', source=_SRC)],
+        source=_SRC,
+    )
+    collector = DiagnosticCollector()
+    _executor({TemplateKey(identity='i', name='T'): _template_with_field('T', call)}).validate_templates(collector)
+    assert not list(collector)
+
+
+def test_validate_templates_checks_template_level_constraints() -> None:
+    """模板级约束（``: <...>``）同样静态校验。"""
+    tpl = TemplateDef(
+        name='T',
+        fields=[],
+        config=TemplateConfig(),
+        constraints=[ConstraintIdent(name='when', source=_SRC)],
+        source=_SRC,
+    )
+    collector = DiagnosticCollector()
+    _executor({TemplateKey(identity='i', name='T'): tpl}).validate_templates(collector)
+    assert [d.code for d in collector] == ['constraint.arg_count']

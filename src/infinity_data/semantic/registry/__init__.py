@@ -125,8 +125,8 @@ class ConstraintRegistry:
         if entry is None:
             return fail_result('constraint.unknown', {'name': constraint.name}, source, path)
         n = len(constraint.args)
-        if n < entry.min_args or (entry.max_args is not None and n > entry.max_args):
-            expected = str(entry.min_args) if entry.max_args is None else f'{entry.min_args}~{entry.max_args}'
+        expected = entry.arity_error(n)
+        if expected is not None:
             return fail_result(
                 'constraint.arg_count', {'name': constraint.name, 'expected': expected, 'given': n}, source, path
             )

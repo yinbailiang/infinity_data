@@ -617,6 +617,75 @@ def test_duplicate_template_still_validates_internals() -> None:
     assert any(d.code == 'template.required_order' for d in result.diagnostics)
 
 
+def test_template_duplicate_field_reported_at_definition_time() -> None:
+    """模板定义内重复字段：未实例化也报 dict.duplicate_key（保留先到者）。"""
+    result = compile_source("""
+~T {
+    a: int = 1,
+    a: int = 2
+}
+""")
+    assert result.has_errors
+    assert [d.code for d in result.diagnostics].count('dict.duplicate_key') == 1
+
+
+def test_template_duplicate_field_instantiated_single_diagnostic() -> None:
+    """重复字段在定义期去重：实例化不再二次报告，输出保留先到者。"""
+    result = compile_source('~T {\n    a: int = 1\n    a: int = 2\n}\nt = T()\n')
+    assert [d.code for d in result.diagnostics].count('dict.duplicate_key') == 1
+    assert result.value == {'t': {'a': 1}}
+
+
+def test_template_duplicate_field_and_missing_args_reported_together() -> None:
+    """一次编译暴露全部定义期错误（重复字段 + 约束缺参数）。"""
+    result = compile_source("""
+~Test1(extra_positional_vars="rest") {
+    _1: int, _2: int, _2: int, _2: int, _2: int,
+    rest: list,
+    test: any
+}
+""")
+    codes = [d.code for d in result.diagnostics]
+    assert codes.count('dict.duplicate_key') == 3
+    assert codes.count('constraint.arg_count') == 1
+
+
+def test_template_constraint_missing_args_reported_at_definition_time() -> None:
+    """模板未实例化时，约束参数个数不符在定义期报 constraint.arg_count。"""
+    result = compile_source('~T {\n    x: any\n}\n')
+    assert result.has_errors
+    assert any(d.code == 'constraint.arg_count' for d in result.diagnostics)
+
+
+def test_template_constraint_unknown_name_reported_at_definition_time() -> None:
+    """模板未实例化时，未知约束名在定义期报 constraint.unknown。"""
+    result = compile_source('~T {\n    x: nosuch\n}\n')
+    assert result.has_errors
+    assert any(d.code == 'constraint.unknown' for d in result.diagnostics)
+
+
+def test_template_constraint_static_valid_no_false_positive() -> None:
+    """合法声明（模板即约束、可空语法糖、多参数逻辑约束）无静态误报。"""
+    result = compile_source("""
+~A {
+    a: int = 1
+}
+~B {
+    x: A = A(),
+    y: str? = null,
+    z: <any(int, str)> = 1,
+    w: <range(1, 10)> = 5
+}
+""")
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+
+
+def test_template_constraint_bad_signature_reported_at_definition_and_call() -> None:
+    """实例化时定义点与调用点各报一次：两个位置都指向真实错误。"""
+    result = compile_source('~T {\n    x: any = 1\n}\nt = T()\n')
+    assert [d.code for d in result.diagnostics].count('constraint.arg_count') == 2
+
+
 # ═══════════════════════════════════════════════════════════
 # 导入
 # ═══════════════════════════════════════════════════════════
