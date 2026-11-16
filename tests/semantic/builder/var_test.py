@@ -29,7 +29,7 @@ def _build(src: str) -> tuple[StdDocument, DiagnosticCollector]:
     collector = DiagnosticCollector()
     collector.extend(parse_diags)
     context = resolver.resolve(doc, file, collector)
-    std = AstBuilder().build(doc, context, collector)
+    std = AstBuilder().build(doc, context, collector).document
     return std, collector
 
 

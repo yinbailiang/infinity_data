@@ -13,12 +13,17 @@ __all__ = [
     'ParseUnrecognizedStatement',
     'ParseUnrecognizedImport',
     'ParseUnexpectedToken',
+    'ParseExpectedKeyword',
     'ParseExpandOutsideCall',
     'ParseExpandSuffixOrder',
     'ParsePostfixOrder',
     'ParseTemplateArgOrder',
     'ParseEmptyTokenList',
-    'ParseInvalidJsonPath',
+    'ParseJsonPathMustStartDot',
+    'ParseJsonPathMissingSegment',
+    'ParseJsonPathMissingAliasOrSegment',
+    'ParseJsonPathMissingCloseBracket',
+    'ParseJsonPathIndexExpected',
     'ParseUnrecognizedValue',
     'ParseMissingSeparator',
     'ParseImportMissingComma',
@@ -77,6 +82,21 @@ class ParseUnexpectedToken(DiagnosticDeclaration):
         'en-US': '{location_prefix}expected {expected}, got {actual}',
     }
     expected: str
+    actual: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseExpectedKeyword(DiagnosticDeclaration):
+    """期望关键字但实际 token 不符。"""
+
+    code: ClassVar[str] = 'parse.expected_keyword'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}期望关键字 {keyword!r}，实际为 {actual}',
+        'en-US': '{location_prefix}expected keyword {keyword!r}, got {actual}',
+    }
+    keyword: str
     actual: str
 
 
@@ -147,16 +167,67 @@ class ParseEmptyTokenList(DiagnosticDeclaration):
 
 @registry.register
 @dataclass(frozen=True)
-class ParseInvalidJsonPath(DiagnosticDeclaration):
-    """无效 JSON 路径。"""
+class ParseJsonPathMustStartDot(DiagnosticDeclaration):
+    """JSON 路径未以 . 起始。"""
 
-    code: ClassVar[str] = 'parse.invalid_json_path'
+    code: ClassVar[str] = 'parse.json_path_must_start_dot'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{location_prefix}无效的 JSON 路径{detail}',
-        'en-US': '{location_prefix}invalid JSON path{detail}',
+        'zh-CN': '{location_prefix}JSON 路径必须以 . 起始',
+        'en-US': '{location_prefix}JSON path must start with .',
     }
-    detail: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseJsonPathMissingSegment(DiagnosticDeclaration):
+    """. 后缺少段名。"""
+
+    code: ClassVar[str] = 'parse.json_path_missing_segment'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}. 后缺少段名',
+        'en-US': '{location_prefix}missing path segment after .',
+    }
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseJsonPathMissingAliasOrSegment(DiagnosticDeclaration):
+    """. 后需要段名或 as 别名。"""
+
+    code: ClassVar[str] = 'parse.json_path_missing_alias_or_segment'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}. 后需要段名或 as 别名',
+        'en-US': '{location_prefix}expected a path segment or as alias after .',
+    }
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseJsonPathMissingCloseBracket(DiagnosticDeclaration):
+    """[ 下标后缺少 ]。"""
+
+    code: ClassVar[str] = 'parse.json_path_missing_close_bracket'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}[ 下标后缺少 ]',
+        'en-US': '{location_prefix}missing ] after index',
+    }
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseJsonPathIndexExpected(DiagnosticDeclaration):
+    """[ 后须为整数下标。"""
+
+    code: ClassVar[str] = 'parse.json_path_index_expected'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}[ 后须为整数下标',
+        'en-US': '{location_prefix}expected an integer index after [',
+    }
 
 
 @registry.register

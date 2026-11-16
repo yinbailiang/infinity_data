@@ -89,11 +89,11 @@ class CompilationResult:
 
     @property
     def has_errors(self) -> bool:
-        return any(d.effective_severity is Severity.ERROR for d in self.diagnostics)
+        return any(d.severity is Severity.ERROR for d in self.diagnostics)
 
     @property
     def warnings(self) -> list[Diagnostic]:
-        return [d for d in self.diagnostics if d.effective_severity is Severity.WARNING]
+        return [d for d in self.diagnostics if d.severity is Severity.WARNING]
 
 
 def _sorted_diagnostics(collector: DiagnosticCollector) -> list[Diagnostic]:
@@ -107,7 +107,7 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
     三阶段语义流水线在此**顶层组装**（各阶段互相零耦合，仅经数据模型）：
 
     Phase 1（导入求解）→ :class:`ResolvedContext`
-      → Phase 2a（AST 构建）→ :class:`StdDocument`
+      → Phase 2a（AST 构建）→ :class:`BuildArtifacts`（document + 定义期校验数据）
       → Phase 2b（约束执行 + schema 校验）→ 校验后的 root
 
     诊断：单一 :class:`DiagnosticCollector` 从词法到语义全程复用，
@@ -137,7 +137,8 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
         context = resolver.resolve(doc, file, collector)
 
         # Phase 2a：AST 构建（约束挂载未执行）
-        std = AstBuilder().build(doc, context, collector)
+        artifacts = AstBuilder().build(doc, context, collector)
+        std = artifacts.document
 
         # Phase 2b：约束执行 + 顶层 schema 校验（两阶段共享同一注册表实例）
         executor = ConstraintExecutor(
@@ -149,9 +150,9 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
         # 定义期静态校验：未实例化模板中的非法约束声明（名字 / 参数个数）
         executor.validate_templates(collector)
         # 定义期默认值校验：模板默认值不依赖实例化（仅作校验器时也要合法）
-        executor.validate_template_defaults(std.template_defaults, collector)
+        executor.validate_template_defaults(artifacts.template_defaults, collector)
         # !var 求值结果携带的约束：无论是否被 root 引用都在编译期校验
-        executor.validate_var_values(std.var_values, collector)
+        executor.validate_var_values(artifacts.var_values, collector)
         executor.validate(std.root, collector)
         if resolver.schema is not None:
             scope = (
@@ -167,22 +168,18 @@ def _compile(file: File, options: CompileOptions) -> CompilationResult:
             std = replace(std, root=root)
     except SandboxError as e:
         # 沙盒/schema 违规 → 追加到共享收集器（保留此前已收集的诊断），返回空文档（不抛出）
-        collector.add(e.declaration, e.source)
+        if e.diagnostics:
+            collector.extend(e.diagnostics)
+        else:
+            collector.add(e.declaration, e.source)
         return CompilationResult(
             document=StdDocument(),
             diagnostics=_sorted_diagnostics(collector),
         )
 
-    # 末端：StdDocument 纯数据（不携带诊断）；诊断全部由收集器快照承载
-    document = StdDocument(
-        root=std.root,
-        templates=std.templates,
-        scope=std.scope,
-        template_defaults=std.template_defaults,
-        var_values=std.var_values,
-    )
+    # 末端：StdDocument 纯数据（不携带诊断，也不携带定义期校验中间数据）。
     return CompilationResult(
-        document=document,
+        document=std,
         diagnostics=_sorted_diagnostics(collector),
     )
 

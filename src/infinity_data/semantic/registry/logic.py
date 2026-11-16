@@ -51,7 +51,7 @@ def _summary_severity(diags: list[Diagnostic]) -> Severity:
     使「越出沙盒 → 警告 + 失败」（constraint.path_denied 为 WARNING）在
     ``all`` / ``any`` / ``one`` 组合下保持软失败（不产生硬编译错误）。
     """
-    if all(d.effective_severity is not Severity.ERROR for d in diags):
+    if all(d.severity is not Severity.ERROR for d in diags):
         return Severity.WARNING
     return Severity.ERROR
 
@@ -75,7 +75,7 @@ def _check_any(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(ConstraintAnyFail(), source, path, severity=_summary_severity(diags)),
+            Diagnostic(ConstraintAnyFail(), source, path, severity_override=_summary_severity(diags)),
             *diags,
         ],
     )
@@ -105,7 +105,7 @@ def _check_one(
         return ConstraintResult(
             ok=False,
             diagnostics=[
-                Diagnostic(ConstraintOneNone(), source, path, severity=_summary_severity(diags)),
+                Diagnostic(ConstraintOneNone(), source, path, severity_override=_summary_severity(diags)),
                 *diags,
             ],
         )
@@ -132,7 +132,7 @@ def _check_all(
     return ConstraintResult(
         ok=False,
         diagnostics=[
-            Diagnostic(ConstraintAllFail(), source, path, severity=_summary_severity(diags)),
+            Diagnostic(ConstraintAllFail(), source, path, severity_override=_summary_severity(diags)),
             *diags,
         ],
     )

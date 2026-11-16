@@ -36,7 +36,7 @@ def test_detect_bom_reports_and_skips() -> None:
     stream = CharStream('\ufeffa')
     col = DiagnosticCollector()
     RawTokenizer._detect_bom(stream, col, file)
-    assert any(d.code == 'tokenize.bom' and d.effective_severity.value == 'warning' for d in col)
+    assert any(d.code == 'tokenize.bom' and d.severity.value == 'warning' for d in col)
     assert stream.peek() == 'a'
 
 

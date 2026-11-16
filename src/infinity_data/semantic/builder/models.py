@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from infinity_data.semantic.resolver.models import TemplateKey
 
 __all__ = [
+    'BuildArtifacts',
     'LiteralKind',
     'ResolvedConstraint',
     'StdArray',
@@ -66,10 +67,6 @@ class StdDocument:
       与 ``templates`` 配合可完整解析：可见名 → TemplateKey → TemplateDef。
       纯快照（普通 dict）：各文件的 `$` 命名空间 / !var 关联在 Phase 1 的
       :class:`Scope` 上（§1.8），不随产物下发。
-    - ``template_defaults``：模板字段默认值的求值结果（定义点 scope 解析，
-      带约束未执行）——供 Phase 2b 做**定义期**校验（不依赖实例化）
-    - ``var_values``：``!var`` 求值结果（jsonpath 投影**前**的完整值，
-      路径显示为 ``$别名``）——携带的约束（模板展开 / dict 字面量）同样在编译期校验
 
     不携带诊断：所有诊断经共享 :class:`DiagnosticCollector` 收集，
     由流水线在 :class:`CompilationResult` 上承载——诊断不属于文档数据。
@@ -78,5 +75,19 @@ class StdDocument:
     root: StdObject = field(default_factory=StdObject)
     templates: dict[TemplateKey, TemplateDef] = field(default_factory=lambda: {})
     scope: dict[str, TemplateKey] = field(default_factory=lambda: {})
+
+
+@dataclass
+class BuildArtifacts:
+    """Phase 2a 产物：公共文档 + 仅用于定义期校验的中间数据。
+
+    - ``document``：可下发的纯数据文档
+    - ``template_defaults``：模板字段默认值的求值结果（定义点 scope 解析，
+      带约束未执行）——供 Phase 2b 做**定义期**校验（不依赖实例化）
+    - ``var_values``：``!var`` 求值结果（jsonpath 投影**前**的完整值，
+      路径显示为 ``$别名``）——携带的约束同样在编译期校验
+    """
+
+    document: StdDocument
     template_defaults: dict[TemplateKey, list[StdField]] = field(default_factory=lambda: {})
     var_values: list[tuple[str, StdValue]] = field(default_factory=lambda: [])

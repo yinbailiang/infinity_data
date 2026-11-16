@@ -1,6 +1,6 @@
 """统一诊断模型（所有阶段共用）与容错收集器。
 
-核心约定（详见 `.agents/MEMORY/memorys/diagnostics_redesign.md`）：
+核心约定（详见 `ENGINEERING.md` 的「诊断模型」章节）：
 
 - **单层定义**：诊断声明类本身即参数 dataclass
   （``code`` / ``severity`` / ``templates`` 为 ``ClassVar``，字段为渲染参数）
@@ -62,8 +62,8 @@ DEFAULT_LANG = 'en-US'
 SUPPORTED_LANGS: tuple[str, ...] = ('zh-CN', 'en-US')
 """支持的语言标签（精确匹配，不做语言码归一化）。"""
 
-I18N_LANGS_FALLBACK: tuple[str, ...] = ('zh-CN', 'en-US')
-"""固定回退链（请求语言之后依次尝试；不再扫描任意模板键兜底）。"""
+I18N_LANGS_FALLBACK: tuple[str, ...] = ('en-US', 'zh-CN')
+"""固定回退链（请求语言之后依次尝试；优先默认语言 en-US）。"""
 
 I18N_FALLBACK_MARKER = '[fallback: {lang}] {message}'
 """回退可见性标记（出现在用户消息正文中，工具不得解析消息文本）。"""
@@ -71,8 +71,11 @@ I18N_FALLBACK_MARKER = '[fallback: {lang}] {message}'
 I18N_RENDER_ERROR = '[diagnostic render failed: {code}]'
 """渲染异常兜底文案（占位符问题等，绝不返回空串或崩溃）。"""
 
-_LOCALE_ENV_VARS: tuple[str, ...] = ('LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE')
-"""语言探测的环境变量优先级（显式 lang 优先于一切）。"""
+_LOCALE_ENV_VARS: tuple[str, ...] = ('LC_ALL', 'LC_MESSAGES', 'LANG')
+"""POSIX locale 环境变量优先级（GNU ``LANGUAGE`` 扩展单独处理）。"""
+
+_LANGUAGE_ENV = 'LANGUAGE'
+"""GNU gettext 消息语言偏好列表（优先级高于 POSIX locale）。"""
 
 _RESERVED_CONTEXT_NAMES = frozenset({'location_prefix', 'path_prefix'})
 """渲染器保留的上下文占位符（声明字段不得同名）。"""
@@ -97,8 +100,9 @@ def _parse_locale(raw: str) -> str | None:
 
     - ``zh_CN.UTF-8`` → ``zh-CN``
     - ``zh`` / ``C`` / ``POSIX``（无国家码）→ ``None``
-    - ``LANGUAGE`` 的冒号分隔列表取第一个可解析项
+    - 冒号分隔列表（GNU ``LANGUAGE``）返回首个已支持语言，否则返回首个可解析项
     """
+    first: str | None = None
     for part in raw.split(':'):
         value = part.strip()
         if not value:
@@ -109,20 +113,53 @@ def _parse_locale(raw: str) -> str | None:
         lang, country = base.split('_', 1)
         if not lang or not country:
             continue
-        return f'{lang.lower()}-{country.upper()}'
+        parsed = f'{lang.lower()}-{country.upper()}'
+        if first is None:
+            first = parsed
+        if parsed in SUPPORTED_LANGS:
+            return parsed
+    return first
+
+
+def _is_c_locale(raw: str) -> bool:
+    """是否为禁用翻译的 C / POSIX locale。"""
+    value = raw.split(':', 1)[0].split('.', 1)[0].split('@', 1)[0].strip().lower()
+    return value in ('c', 'posix')
+
+
+def _parse_language_list(raw: str) -> str | None:
+    """GNU ``LANGUAGE`` 偏好列表 → 首个已支持语言。"""
+    for part in raw.split(':'):
+        parsed = _parse_locale(part)
+        if parsed in SUPPORTED_LANGS:
+            return parsed
     return None
 
 
 def detect_lang() -> str:
-    """按环境变量探测语言：LC_ALL > LC_MESSAGES > LANG > LANGUAGE > en-US。"""
-    for name in _LOCALE_ENV_VARS:
-        raw = os.environ.get(name)
-        if not raw:
-            continue
-        parsed = _parse_locale(raw)
-        if parsed is not None:
-            return parsed
-    return DEFAULT_LANG
+    """按环境变量探测语言。
+
+    优先级：``LANGUAGE``（GNU gettext 偏好列表）> ``LC_ALL`` > ``LC_MESSAGES`` > ``LANG``。
+    ``LANGUAGE`` 中的语言都不支持时，回落到 POSIX locale；
+    ``C`` / ``POSIX`` locale 禁用翻译，直接回退 :data:`DEFAULT_LANG`。
+    探测到不支持的语言时同样回退 :data:`DEFAULT_LANG`，避免默认落到中文。
+    """
+    effective_raw = next((os.environ[name] for name in _LOCALE_ENV_VARS if os.environ.get(name)), None)
+    if effective_raw is not None and _is_c_locale(effective_raw):
+        return DEFAULT_LANG
+
+    language_raw = os.environ.get(_LANGUAGE_ENV)
+    if language_raw:
+        preferred = _parse_language_list(language_raw)
+        if preferred is not None:
+            return preferred
+
+    if effective_raw is None:
+        return DEFAULT_LANG
+    parsed = _parse_locale(effective_raw)
+    if parsed is None:
+        return DEFAULT_LANG
+    return parsed if parsed in SUPPORTED_LANGS else DEFAULT_LANG
 
 
 class DiagnosticDeclaration:
@@ -300,14 +337,15 @@ class Diagnostic:
     """统一诊断：声明实例（同时携带类型化参数）+ 源码位置 + 渲染语言。
 
     - ``declaration``：诊断声明实例（``code`` / 默认 ``severity`` / 模板 / 参数）
-    - ``severity``：覆盖声明级别（``path_denied`` 软失败、汇总降级等）；``None`` = 用声明级别
+    - ``severity_override``：覆盖声明级别（``path_denied`` 软失败、汇总降级等）；
+      ``None`` = 用声明级别。``severity`` 属性始终返回实际生效级别
     - ``lang``：渲染语言（收集器构造时探测并写入）
     """
 
     declaration: DiagnosticDeclaration
     source: SourceRange | None = None
     path: str = ''
-    severity: Severity | None = None
+    severity_override: Severity | None = None
     lang: str | None = None
 
     @property
@@ -316,9 +354,9 @@ class Diagnostic:
         return self.declaration.code
 
     @property
-    def effective_severity(self) -> Severity:
+    def severity(self) -> Severity:
         """实际严重级别（覆盖优先，否则声明级别）。"""
-        return self.severity if self.severity is not None else self.declaration.severity
+        return self.severity_override if self.severity_override is not None else self.declaration.severity
 
     @property
     def location(self) -> str:
@@ -327,7 +365,11 @@ class Diagnostic:
 
     def _select_template(self, requested: str) -> tuple[str | None, str, bool]:
         """按回退链选模板，返回 ``(模板, 实际语言, 是否回退)``。"""
+        seen: set[str] = set()
         for candidate in (requested, *I18N_LANGS_FALLBACK):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
             template = self.declaration.templates.get(candidate)
             if template:
                 return template, candidate, candidate != requested
@@ -359,7 +401,7 @@ class Diagnostic:
         _, used_lang, fallback = self._select_template(requested)
         return {
             'code': self.code,
-            'severity': self.effective_severity.value,
+            'severity': self.severity.value,
             'message': self.render(lang=lang, include_location=include_location),
             'lang': used_lang,
             'fallback': fallback,
@@ -393,8 +435,9 @@ class DiagnosticCollector:
     """
 
     def __init__(self, lang: str | None = None) -> None:
-        self._lang: str = lang or detect_lang()
+        self._lang: str = lang if lang in SUPPORTED_LANGS else detect_lang()
         self._errors: list[Diagnostic] = []
+        self._seen: set[tuple[str, str, str, str, str]] = set()
 
     @property
     def lang(self) -> str:
@@ -412,14 +455,30 @@ class DiagnosticCollector:
         path: str = '',
     ) -> None:
         """由声明实例构造并添加诊断（``severity`` 覆盖声明级别）。"""
-        self._errors.append(
-            Diagnostic(declaration=declaration, source=source, path=path, severity=severity, lang=self._lang)
+        self._append(
+            Diagnostic(declaration=declaration, source=source, path=path, severity_override=severity, lang=self._lang)
         )
 
     def extend(self, errors: Iterable[Diagnostic]) -> None:
         """批量添加诊断（未携带语言的诊断补齐为收集器语言）。"""
         for diagnostic in errors:
-            self._errors.append(diagnostic if diagnostic.lang is not None else replace(diagnostic, lang=self._lang))
+            self._append(diagnostic if diagnostic.lang is not None else replace(diagnostic, lang=self._lang))
+
+    def _append(self, diagnostic: Diagnostic) -> None:
+        """追加诊断；相同码 / 参数 / 位置 / 级别 / 语言的重复只保留首条。"""
+        params = repr(sorted(diagnostic.declaration.parameters().items()))
+        location = diagnostic.location if diagnostic.source is not None else diagnostic.path
+        key = (
+            diagnostic.code,
+            params,
+            location,
+            diagnostic.severity.value,
+            diagnostic.lang or '',
+        )
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self._errors.append(diagnostic)
 
     # ── 只读查询（severity 感知：warning 与 error 语义分离） ──
 
@@ -431,22 +490,22 @@ class DiagnosticCollector:
     @property
     def errors(self) -> list[Diagnostic]:
         """仅 ERROR 级别诊断的副本（warning 不算错误）。"""
-        return [d for d in self._errors if d.effective_severity is Severity.ERROR]
+        return [d for d in self._errors if d.severity is Severity.ERROR]
 
     @property
     def warnings(self) -> list[Diagnostic]:
         """仅 WARNING 级别诊断的副本。"""
-        return [d for d in self._errors if d.effective_severity is Severity.WARNING]
+        return [d for d in self._errors if d.severity is Severity.WARNING]
 
     @property
     def has_errors(self) -> bool:
         """是否含 ERROR 级别诊断（与 :class:`CompilationResult` 的 has_errors 语义一致）。"""
-        return any(d.effective_severity is Severity.ERROR for d in self._errors)
+        return any(d.severity is Severity.ERROR for d in self._errors)
 
     @property
     def has_warnings(self) -> bool:
         """是否含 WARNING 级别诊断。"""
-        return any(d.effective_severity is Severity.WARNING for d in self._errors)
+        return any(d.severity is Severity.WARNING for d in self._errors)
 
     # ── 容器协议 ──────────────────────────────────────
 
@@ -457,9 +516,8 @@ class DiagnosticCollector:
     def __len__(self) -> int:
         """已收集诊断数量（容器协议）。
 
-        空收集器为 falsy（``bool(collector)`` = 是否收集到任何诊断，含 warning；
-        区别于 ``has_errors`` 的"是否含 ERROR"）——
-        因此缺省构造**不可用 ``error_collector or DiagnosticCollector()``**：
-        空收集器会被 `or` 判定为假而静默替换，丢弃调用方传入的收集器。
+        注意：空收集器为 falsy，可能被 ``collector or DiagnosticCollector()``
+        静默替换；需要判断错误请用 ``has_errors``，需要数量请用
+        ``len(collector.diagnostics)``。
         """
         return len(self._errors)

@@ -10,6 +10,7 @@ import sys
 import urllib.parse
 from typing import Any, cast
 
+from infinity_data.infra.diagnostics import SUPPORTED_LANGS
 from infinity_data.tools.lsp import language
 from infinity_data.tools.lsp.protocol import read_message, write_message
 
@@ -81,7 +82,7 @@ class Server:
         if method == 'initialize':
             options = cast(dict[str, Any], params.get('initializationOptions') or {})
             lang = options.get('lang')
-            self._lang = lang if isinstance(lang, str) else None
+            self._lang = lang if lang in SUPPORTED_LANGS else None
             self._reply(msg_id, self._capabilities())
         elif method == 'initialized':
             pass

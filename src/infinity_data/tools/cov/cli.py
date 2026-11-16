@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from infinity_data import SandboxConfig, Severity, compile_source
+from infinity_data.infra.diagnostics import SUPPORTED_LANGS
 from infinity_data.infra.location import format_location
 from infinity_data.semantic.std import std_to_python
 from infinity_data.tools.cov.convert import DEFAULT_FORMAT, FORMATS, extract_path, render
@@ -77,8 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         '--lang',
+        choices=SUPPORTED_LANGS,
         default=None,
-        help='诊断消息语言（精确标签，如 zh-CN / en-US；缺省按环境探测）',
+        help='诊断消息语言（zh-CN / en-US；缺省按环境探测）',
     )
     parser.add_argument(
         '--diag-format',
@@ -103,14 +105,12 @@ def main(argv: list[str] | None = None) -> int:
     # 拒绝阈值：达到该级别（含更高）的诊断全部阻止输出
     threshold = None if args.severity == 'none' else _SEVERITY_RANK[Severity(args.severity)]
     blockers = (
-        []
-        if threshold is None
-        else [d for d in result.diagnostics if _SEVERITY_RANK.get(d.effective_severity, 0) >= threshold]
+        [] if threshold is None else [d for d in result.diagnostics if _SEVERITY_RANK.get(d.severity, 0) >= threshold]
     )
     if blockers:
         if args.diag_format == 'json':
             json.dump(
-                [d.to_dict(include_location=True) for d in blockers],
+                [d.to_dict(include_location=False) for d in blockers],
                 sys.stderr,
                 ensure_ascii=False,
                 indent=2,
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             print(file=sys.stderr)
         else:
             for d in blockers:
-                print(f'{d.code}: {d.render()} ({format_location(d.source)})', file=sys.stderr)
+                print(f'{d.code}: {d.render(include_location=False)} ({format_location(d.source)})', file=sys.stderr)
         return 1
 
     try:

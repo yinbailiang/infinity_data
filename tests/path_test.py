@@ -335,7 +335,7 @@ def test_fs_constraint_denied_is_warning_and_fail(tmp_path: Path, infd_file: Cal
     result = load(path, sandbox=SandboxConfig.deny_all())
     denied = [d for d in result.diagnostics if d.code == 'constraint.path_denied']
     assert denied, [d.render() for d in result.diagnostics]
-    assert denied[0].effective_severity is Severity.WARNING
+    assert denied[0].severity is Severity.WARNING
     assert not result.has_errors  # 警告不构成编译错误
 
 

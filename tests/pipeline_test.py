@@ -15,7 +15,7 @@ from infinity_data.semantic import StdObject
 def compile_ok(source: str) -> dict[str, Any]:
     """编译无错误断言，返回降维 dict。"""
     result = compile_source(source)
-    errors = [d for d in result.diagnostics if d.effective_severity is Severity.ERROR]
+    errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
     assert not errors, [f'{d.location}: {d.render()}' for d in errors]
     assert result.value is not None
     return result.value
@@ -705,12 +705,12 @@ def test_template_constraint_static_valid_no_false_positive() -> None:
     assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
-def test_template_constraint_bad_signature_reported_at_definition_and_call() -> None:
-    """同一非法签名在约束声明 / 默认值 / 实例值三处各报一次。"""
+def test_template_constraint_bad_signature_reported_once() -> None:
+    """同一非法签名只在定义期报一次，不在默认值与实例化处重复/级联。"""
     result = compile_source('~T {\n    x: any = 1\n}\nt = T()\n')
     diags = [d for d in result.diagnostics if d.code == 'constraint.arg_count']
-    assert len(diags) == 3
-    assert {d.path for d in diags} == {'', 'T.x', 't.x'}
+    assert len(diags) == 1
+    assert diags[0].path == ''
 
 
 # ═══════════════════════════════════════════════════════════
@@ -726,11 +726,11 @@ def test_template_default_validated_at_definition_time() -> None:
     assert diag.path == 'T.tmp'
 
 
-def test_template_default_reported_at_definition_and_instance() -> None:
-    """定义点 + 使用点都报（保留双诊断）。"""
+def test_template_default_reported_once_at_definition() -> None:
+    """默认值错误只在定义点报一次（同源位置去重）。"""
     result = compile_source('~T {\n    tmp: dict = 123\n}\nx = T()\n')
     paths = {d.path for d in result.diagnostics if d.code == 'constraint.type_mismatch'}
-    assert paths == {'T.tmp', 'x.tmp'}
+    assert paths == {'T.tmp'}
 
 
 def test_template_valid_default_no_error() -> None:
@@ -789,6 +789,47 @@ def test_reverse_postfix_order_warns_but_is_equivalent() -> None:
     assert not result.has_errors, [d.render() for d in result.diagnostics]
     assert any(d.code == 'parse.postfix_order' for d in result.warnings)
     assert result.value == {'x': None}
+
+
+def test_bare_nullable_absent_markers_combine() -> None:
+    """裸 `?` / `!` 也支持组合：`?!` / `!?` 等价 any(?, !)。"""
+    result = compile_source('a: ?! = null\nb: !? = noexist\n')
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
+    assert any(d.code == 'parse.postfix_order' for d in result.warnings)
+    assert result.value == {'a': None}
+
+
+def test_angle_bare_markers_are_any_not_all() -> None:
+    """尖括号内裸 `?!` 是 any(?, !)，不是永远失败的 all(?, !)。"""
+    result = compile_source('x: <?!> = null\n')
+    assert not result.has_errors, [d.render() for d in result.diagnostics]
+    assert result.value == {'x': None}
+
+
+def test_english_diagnostics_do_not_contain_chinese_params() -> None:
+    """英文渲染不应混入中文：覆盖历史“参数即文案”的声明。"""
+    import re
+
+    samples = [
+        'x: ip4 = "999.1.1.1"\n',
+        'x: email = "bad"\n',
+        'x: same_target(1) = p"a"\n',
+        'x: extension(3) = p"a.txt"\n',
+        '!template\n',
+        '!file .a[\n',
+    ]
+    for source in samples:
+        result = compile_source(source, lang='en-US')
+        for diagnostic in result.diagnostics:
+            message = diagnostic.render(include_location=False)
+            assert not re.search(r'[\u4e00-\u9fff]', message), (source, message)
+
+
+def test_var_value_referenced_reports_once() -> None:
+    """被 root 引用的 !var 值只报一次，不在定义点与引用点重复。"""
+    result = compile_source('~V {\n    n: int\n}\n!var V(n = "x") import . as v\na = $v\n')
+    diags = [d for d in result.diagnostics if d.code == 'constraint.type_mismatch']
+    assert len(diags) == 1
 
 
 def test_absent_suffix_rejects_null() -> None:
@@ -1156,7 +1197,7 @@ MyApp {
     ]
 }
 """)
-    errors = [d for d in result.diagnostics if d.effective_severity is Severity.ERROR]
+    errors = [d for d in result.diagnostics if d.severity is Severity.ERROR]
     assert not errors, [f'{d.location}: {d.render()}' for d in errors]
 
     app = result.value['MyApp']

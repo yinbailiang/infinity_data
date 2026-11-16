@@ -104,7 +104,7 @@ def fail_result(
     """
     return ConstraintResult(
         ok=False,
-        diagnostics=[Diagnostic(declaration=declaration, source=source, path=path, severity=severity)],
+        diagnostics=[Diagnostic(declaration=declaration, source=source, path=path, severity_override=severity)],
     )
 
 
@@ -114,9 +114,9 @@ def fail_result(
 
 
 def describe(val: StdValue | None) -> str:
-    """人类可读的值描述。"""
+    """人类可读的值描述（语言中立，供中英文诊断共用）。"""
     if val is None:
-        return '无值'
+        return 'none'
     if isinstance(val, StdLiteral):
         return f'{val.kind}({val.value!r})'
     if isinstance(val, StdArray):

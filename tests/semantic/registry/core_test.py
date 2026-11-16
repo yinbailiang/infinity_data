@@ -61,8 +61,9 @@ def test_fail_result_uses_declaration_and_location() -> None:
     assert diagnostic.code == 'constraint.type_mismatch'
     assert diagnostic.path == 'a.b'
     assert diagnostic.source is None
-    assert diagnostic.severity is None
-    assert diagnostic.effective_severity is Severity.ERROR
+    assert diagnostic.severity_override is None
+    assert diagnostic.severity is Severity.ERROR
+    assert diagnostic.severity is Severity.ERROR
 
 
 def test_fail_result_severity_override() -> None:
@@ -72,7 +73,9 @@ def test_fail_result_severity_override() -> None:
     result = fail_result(declaration, None, '', severity=Severity.WARNING)
 
     assert result.ok is False
-    assert result.diagnostics[0].effective_severity is Severity.WARNING
+    assert result.diagnostics[0].severity_override is Severity.WARNING
+    assert result.diagnostics[0].severity is Severity.WARNING
+    assert result.diagnostics[0].severity is Severity.WARNING
 
 
 # ═══════════════════════════════════════════════════════════
@@ -121,7 +124,7 @@ def test_arity_error_zero_unbounded() -> None:
 
 
 def test_describe_none_and_literals() -> None:
-    assert describe(None) == '无值'
+    assert describe(None) == 'none'
     assert describe(StdLiteral(kind='str', value='x')) == "str('x')"
     assert describe(StdLiteral(kind='int', value=1)) == 'int(1)'
     assert describe(StdLiteral(kind='bool', value=True)) == 'bool(True)'

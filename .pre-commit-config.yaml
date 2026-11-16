@@ -42,8 +42,7 @@ repos:
     rev: 1.7.0
     hooks:
       - id: interrogate
-        # 当前实测 74.6%；阈值留余量，随 docstring 补充逐步上调
-        args: ["--fail-under=60"]
+        args: ["--fail-under=80"]
         files: ^src/
 
   - repo: local

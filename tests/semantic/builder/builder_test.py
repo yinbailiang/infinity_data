@@ -21,12 +21,12 @@ def _build(src: str) -> tuple[StdDocument, DiagnosticCollector]:
     resolver = TemplateGraphResolver(import_resolver=ImportResolver(sandbox=sb))
     collector = DiagnosticCollector()
     context = resolver.resolve(doc, file, collector)
-    std = AstBuilder().build(doc, context, collector)
+    std = AstBuilder().build(doc, context, collector).document
     return std, collector
 
 
 def _has_errors(collector: DiagnosticCollector) -> bool:
-    return any(d.effective_severity is Severity.ERROR for d in collector)
+    return any(d.severity is Severity.ERROR for d in collector)
 
 
 def _codes(collector: DiagnosticCollector) -> list[str]:

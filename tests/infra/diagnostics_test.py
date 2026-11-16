@@ -74,6 +74,12 @@ def test_render_fallback_is_visible() -> None:
     assert d.render(lang='en-US') == 'english only 1'
 
 
+def test_render_unsupported_language_prefers_english() -> None:
+    """请求语言不支持时优先回退默认语言 en-US，而不是中文。"""
+    d = Diagnostic(_Hello(name='x'), lang='de-DE')
+    assert d.render() == I18N_FALLBACK_MARKER.format(lang='en-US', message='hello x')
+
+
 def test_render_location_and_path_prefix() -> None:
     f = MemFile(name='f.infd', root_path=Path('.'), content='')
     d = Diagnostic(
@@ -130,7 +136,7 @@ def test_collector_severity_override() -> None:
     col.add(_Hello(name='soft'), severity=Severity.WARNING)
     assert not col.has_errors
     assert [d.code for d in col.warnings] == ['test.hello']
-    assert col.diagnostics[0].effective_severity is Severity.WARNING
+    assert col.diagnostics[0].severity is Severity.WARNING
 
 
 def test_collector_extend_fills_lang() -> None:
@@ -259,15 +265,56 @@ def test_detect_lang_priority(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     assert detect_lang() == DEFAULT_LANG
 
+    monkeypatch.setenv('LANG', 'de_DE.UTF-8')
+    assert detect_lang() == DEFAULT_LANG  # 非中英文 locale 不再落到中文
+
     monkeypatch.setenv('LANG', 'zh_CN.UTF-8')
     assert detect_lang() == 'zh-CN'
 
     monkeypatch.setenv('LC_MESSAGES', 'fr_FR.UTF-8')
-    assert detect_lang() == 'fr-FR'
+    assert detect_lang() == DEFAULT_LANG  # 不支持的语言直接回落默认语言
 
     monkeypatch.delenv('LC_MESSAGES')
     monkeypatch.setenv('LANG', 'zh')
     assert detect_lang() == DEFAULT_LANG
 
     monkeypatch.setenv('LANGUAGE', 'fr_FR:zh_CN.UTF-8')
-    assert detect_lang() == 'fr-FR'
+    assert detect_lang() == 'zh-CN'  # 优先选择已支持的语言
+
+
+def test_language_overrides_posix_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GNU LANGUAGE 优先于 LC_ALL / LC_MESSAGES / LANG。"""
+    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE'):
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setenv('LC_ALL', 'zh_CN.UTF-8')
+    monkeypatch.setenv('LANGUAGE', 'en_US:zh_CN')
+    assert detect_lang() == 'en-US'
+
+    monkeypatch.setenv('LC_ALL', 'de_DE.UTF-8')
+    monkeypatch.setenv('LANGUAGE', 'fr_FR:en_US')
+    assert detect_lang() == 'en-US'
+
+
+def test_c_locale_disables_language(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C / POSIX locale 禁用翻译，即使 LANGUAGE 请求中文也回落英文。"""
+    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE'):
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setenv('LC_ALL', 'C')
+    monkeypatch.setenv('LANGUAGE', 'zh_CN')
+    assert detect_lang() == DEFAULT_LANG
+
+    monkeypatch.setenv('LC_ALL', 'POSIX.UTF-8')
+    assert detect_lang() == DEFAULT_LANG
+
+
+def test_posix_locale_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无 LANGUAGE 时按 LC_ALL > LC_MESSAGES > LANG 选择语言。"""
+    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE'):
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setenv('LC_ALL', 'zh_CN.UTF-8')
+    monkeypatch.setenv('LC_MESSAGES', 'de_DE.UTF-8')
+    monkeypatch.setenv('LANG', 'en_US.UTF-8')
+    assert detect_lang() == 'zh-CN'

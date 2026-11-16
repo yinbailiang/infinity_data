@@ -203,7 +203,7 @@ def test_dollar_cast_structured_value_errors_and_keeps(tmp_path: Path) -> None:
     )
     result = load(f)
     assert result.has_errors
-    assert [(d.effective_severity, d.code) for d in result.diagnostics] == [
+    assert [(d.severity, d.code) for d in result.diagnostics] == [
         (Severity.ERROR, 'dollar.convert_unsupported'),
         (Severity.ERROR, 'dollar.convert_unsupported'),
     ]
@@ -370,14 +370,14 @@ def test_file_import_first_segment_as_key(tmp_path: Path) -> None:
 
 
 def test_invalid_json_path_reported(tmp_path: Path) -> None:
-    """JSON path 无效段（如 [0 缺 ]）必须报告 parse.invalid_json_path。"""
+    """JSON path 无效段（如 [0 缺 ]）必须报告 parse.json_path_*。"""
     data = tmp_path / 'data.json'
     _write(data, '{"a": [7]}')
     f = tmp_path / 'app.infd'
     _write(f, '!file p"data.json" as json import .a[0 as v\nx = $v\n')
     result = load(f, sandbox=SandboxConfig(allow_files=['./data.json']))
     assert result.has_errors
-    assert any(d.code == 'parse.invalid_json_path' for d in result.diagnostics)
+    assert any(d.code.startswith('parse.json_path_') for d in result.diagnostics)
 
 
 def test_file_import_raw_explicit(tmp_path: Path) -> None:
@@ -492,7 +492,7 @@ def test_check_does_not_raise(tmp_path: Path) -> None:
     _write(f, '!env import USER\nuser = $USER\n')
     diagnostics = check(f)  # 默认零信任 → 违规转 ERROR 诊断
     assert diagnostics
-    assert all(d.effective_severity is Severity.ERROR for d in diagnostics)
+    assert all(d.severity is Severity.ERROR for d in diagnostics)
 
 
 # ═══════════════════════════════════════════════════════
@@ -988,22 +988,22 @@ def test_schema_strict_missing_required(tmp_path: Path) -> None:
     _write(f, '~AppConfig {\n    name: str\n}\n')
     result = load(f, schema=Schema(template='AppConfig'))
     assert result.has_errors
-    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert [d.code for d in result.diagnostics] == ['schema.missing_required']
     assert result.value == {}
 
 
 def test_schema_missing_optional_field(tmp_path: Path) -> None:
-    """schema 校验器要求完整形状：可选字段缺失 → schema.failed。"""
+    """schema 校验器要求完整形状：可选字段缺失 → schema.missing_optional。"""
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str\n    port: int = 8080\n}\nname = "demo"\n')
     result = load(f, schema=Schema(template='AppConfig'))
     assert result.has_errors
-    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert [d.code for d in result.diagnostics] == ['schema.missing_optional']
     assert 'port' in result.diagnostics[0].render()
 
 
 def test_schema_absent_suffix_allows_missing(tmp_path: Path) -> None:
-    """schema 中 `!` 字段可缺失：不报 schema.failed。"""
+    """schema 中 `!` 字段可缺失：不报 schema.missing_*。"""
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str\n    port: int! = 8080\n}\nname = "demo"\n')
     result = load(f, schema=Schema(template='AppConfig'))
@@ -1016,7 +1016,7 @@ def test_schema_strict_extra_field_fails(tmp_path: Path) -> None:
     _write(f, '~AppConfig {\n    name: str = "x"\n}\nname = "x"\nextra = 1\n')
     result = load(f, schema=Schema(template='AppConfig', mode='strict'))
     assert result.has_errors
-    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert [d.code for d in result.diagnostics] == ['schema.extra_fields']
     assert result.value == {}
 
 
@@ -1025,7 +1025,7 @@ def test_schema_lenient_extra_field_warns(tmp_path: Path) -> None:
     _write(f, '~AppConfig {\n    name: str = "x"\n}\nname = "x"\nextra = 1\n')
     result = load(f, schema=Schema(template='AppConfig', mode='lenient'))
     assert not result.has_errors
-    assert any(d.effective_severity is Severity.WARNING for d in result.diagnostics)
+    assert any(d.severity is Severity.WARNING for d in result.diagnostics)
     assert result.value == {'name': 'x', 'extra': 1}
 
 
@@ -1056,7 +1056,7 @@ def test_schema_field_constraint_violation(tmp_path: Path) -> None:
     _write(f, '~AppConfig {\n    port: <int, range(1, 100)> = 80\n}\nport = 200\n')
     result = load(f, schema=Schema(template='AppConfig'))
     assert result.has_errors
-    assert [d.code for d in result.diagnostics] == ['schema.failed']
+    assert [d.code for d in result.diagnostics] == ['constraint.all_fail', 'constraint.range_above']
     assert result.value == {}
 
 

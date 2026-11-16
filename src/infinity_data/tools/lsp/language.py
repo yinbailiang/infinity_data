@@ -354,10 +354,10 @@ def analyze(text: str, file_path: str, lang: str | None = None) -> list[dict[str
         diags.append(
             {
                 'range': rng,
-                'severity': _SEVERITY_MAP.get(d.effective_severity, 1),
+                'severity': _SEVERITY_MAP.get(d.severity, 1),
                 'code': d.code,
                 'source': 'infd',
-                'message': d.render(),
+                'message': d.render(include_location=False),
                 'data': d.to_dict(),
             }
         )

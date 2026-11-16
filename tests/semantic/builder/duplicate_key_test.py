@@ -28,7 +28,7 @@ def _build(src: str) -> tuple[StdDocument, DiagnosticCollector]:
     collector = DiagnosticCollector()
     collector.extend(parse_diags)  # 语法层诊断并入同一收集器（template.dup_argument 属 parser 层）
     context = resolver.resolve(doc, file, collector)
-    std = AstBuilder().build(doc, context, collector)
+    std = AstBuilder().build(doc, context, collector).document
     return std, collector
 
 

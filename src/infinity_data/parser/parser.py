@@ -3,19 +3,24 @@
 from collections.abc import Iterable
 from typing import Any, TypeVar
 
-from infinity_data.infra.diagnostics import DiagnosticCollector
+from infinity_data.infra.diagnostics import DiagnosticCollector, DiagnosticDeclaration
 from infinity_data.infra.ll1_stream import NoNextType
 from infinity_data.parser.diagnostics import (
     ParseEmptyTokenList,
     ParseEmptyTypeAnnotation,
     ParseExpandOutsideCall,
     ParseExpandSuffixOrder,
+    ParseExpectedKeyword,
     ParseFieldRequiresEquals,
     ParseImportMissingComma,
     ParseImportPathRequired,
     ParseImportRequiresNewline,
     ParseInvalidCast,
-    ParseInvalidJsonPath,
+    ParseJsonPathIndexExpected,
+    ParseJsonPathMissingAliasOrSegment,
+    ParseJsonPathMissingCloseBracket,
+    ParseJsonPathMissingSegment,
+    ParseJsonPathMustStartDot,
     ParseMissingSeparator,
     ParseNestingTooDeep,
     ParsePostfixOrder,
@@ -24,7 +29,6 @@ from infinity_data.parser.diagnostics import (
     ParseTemplateConfigUnknown,
     ParseTemplateConfigValue,
     ParseTemplateFieldNoConstraint,
-    ParseUnexpectedToken,
     ParseUnrecognizedConstraint,
     ParseUnrecognizedStatement,
     ParseUnrecognizedValue,
@@ -250,11 +254,11 @@ class Parser:
         tok = stream.peek()
         if isinstance(tok, NoNextType):
             collector.add(
-                ParseUnexpectedToken(expected=f'关键字 {name!r}', actual='EOF'),
+                ParseExpectedKeyword(keyword=name, actual='EOF'),
                 stream.span_from(None),
             )
             return
-        collector.add(ParseUnexpectedToken(expected=f'关键字 {name!r}', actual=tok.raw.type.name), tok.raw.source)
+        collector.add(ParseExpectedKeyword(keyword=name, actual=tok.raw.type.name), tok.raw.source)
         stream.advance()
 
     @staticmethod
@@ -435,11 +439,11 @@ class Parser:
         if not json_path and not Parser._peek_keyword(stream, 'as'):
             tok = stream.peek()
             if isinstance(tok, DotToken):
-                detail = '：. 后需要段名或 as 别名'
+                declaration: DiagnosticDeclaration = ParseJsonPathMissingAliasOrSegment()
             else:
-                detail = '：路径必须以 . 起始'
+                declaration = ParseJsonPathMustStartDot()
             if not isinstance(tok, NoNextType):
-                collector.add(ParseInvalidJsonPath(detail=detail), tok.raw.source)
+                collector.add(declaration, tok.raw.source)
             Parser._skip_to_import_boundary(stream)
             return FileImportItem(
                 source=stream.span_from(first),
@@ -501,10 +505,10 @@ class Parser:
                     if isinstance(stream.peek(), RbracketToken):
                         stream.advance()
                     else:
-                        Parser._report_invalid_json_path(stream, collector, '：[ 下标后缺少 ]')
+                        Parser._report_invalid_json_path(stream, collector, ParseJsonPathMissingCloseBracket())
                     segments.append(JsonPathIndex(source=stream.span_from(lbracket), index=value))
                 case _:
-                    Parser._report_invalid_json_path(stream, collector, '：[ 后须为整数下标')
+                    Parser._report_invalid_json_path(stream, collector, ParseJsonPathIndexExpected())
                     return []
         else:
             # 只有 .（或 . as alias）→ 导入整个文件
@@ -523,7 +527,7 @@ class Parser:
                             segments.append(JsonPathKey(source=stream.single_span(str_tok), key=value))
                             stream.advance()
                         case _:
-                            Parser._report_invalid_json_path(stream, collector, '：. 后缺少段名')
+                            Parser._report_invalid_json_path(stream, collector, ParseJsonPathMissingSegment())
                             break
 
                 case LbracketToken():
@@ -534,10 +538,10 @@ class Parser:
                             if isinstance(stream.peek(), RbracketToken):
                                 stream.advance()
                             else:
-                                Parser._report_invalid_json_path(stream, collector, '：[ 下标后缺少 ]')
+                                Parser._report_invalid_json_path(stream, collector, ParseJsonPathMissingCloseBracket())
                             segments.append(JsonPathIndex(source=stream.span_from(lbracket), index=value))
                         case _:
-                            Parser._report_invalid_json_path(stream, collector, '：[ 后须为整数下标')
+                            Parser._report_invalid_json_path(stream, collector, ParseJsonPathIndexExpected())
                             break
 
                 case _:
@@ -546,12 +550,16 @@ class Parser:
         return segments
 
     @staticmethod
-    def _report_invalid_json_path(stream: TokenStream, collector: DiagnosticCollector, detail: str) -> None:
-        """JSON path 段无效 → 报 parse.invalid_json_path（指向当前 token）。"""
+    def _report_invalid_json_path(
+        stream: TokenStream,
+        collector: DiagnosticCollector,
+        declaration: DiagnosticDeclaration,
+    ) -> None:
+        """JSON path 段无效 → 报对应 ``parse.json_path_*`` 码（指向当前 token）。"""
         tok = stream.peek()
         if isinstance(tok, NoNextType):
             return
-        collector.add(ParseInvalidJsonPath(detail=detail), tok.raw.source)
+        collector.add(declaration, tok.raw.source)
 
     @staticmethod
     def _parse_template_import(
@@ -999,9 +1007,10 @@ class Parser:
             case QuestionToken() | ExclamationToken():
                 stream.advance()
                 name = '?' if isinstance(first, QuestionToken) else '!'
+                base = ConstraintIdent(source=stream.single_span(first), name=name)
                 return Constraints(
                     source=stream.span_from(first),
-                    constraints=[ConstraintIdent(source=stream.single_span(first), name=name)],
+                    constraints=[Parser._apply_postfix(base, stream, collector, initial=name)],
                 )
 
             case _:
@@ -1013,17 +1022,26 @@ class Parser:
                 return Constraints(source=stream.span_from(first))
 
     @staticmethod
-    def _apply_postfix(base: Constraint, stream: TokenStream, collector: DiagnosticCollector) -> Constraint:
+    def _apply_postfix(
+        base: Constraint,
+        stream: TokenStream,
+        collector: DiagnosticCollector,
+        *,
+        initial: str | None = None,
+    ) -> Constraint:
         """约束后缀：``?``（可空）/ ``!``（可缺失），可组合。
 
         展开：``type?`` → ``any(type, ?)``、``type!`` → ``any(type, !)``、
         ``type?!`` / ``type!?`` → ``any(type, ?, !)``。组合推荐 ``?!``；
         反序 ``!?`` 等价但报 ``parse.postfix_order`` 警告。
 
+        ``initial``：调用方已消费的首个标记（裸 ``?`` / ``!`` 作为基类型时），
+        参与组合与顺序判断，但不重复进入参数列表。
+
         去重并按规范顺序（``?`` 在前、``!`` 在后）展开，保证两种书写产生同一 AST。
         """
-        marks: list[str] = []
-        first: QuestionToken | ExclamationToken | None = None
+        marks: list[str] = [initial] if initial is not None else []
+        first_tok: QuestionToken | ExclamationToken | None = None
         while True:
             tok = stream.peek()
             if isinstance(tok, QuestionToken):
@@ -1032,20 +1050,24 @@ class Parser:
                 marks.append('!')
             else:
                 break
-            if first is None:
-                first = tok
+            if first_tok is None:
+                first_tok = tok
             stream.advance()
         if not marks:
             return base
-        if '!?' in ''.join(marks):
-            assert first is not None
-            collector.add(ParsePostfixOrder(), first.raw.source)
+        marker_base = base.name if isinstance(base, ConstraintIdent) and base.name in ('?', '!') else None
+        if marker_base is not None and all(mark == marker_base for mark in marks):
+            return base
+        joined = ''.join(marks)
+        if '!' in joined and '?' in joined and joined.index('!') < joined.index('?'):
+            warning_source = (
+                base.source if initial is not None else (first_tok.raw.source if first_tok else base.source)
+            )
+            collector.add(ParsePostfixOrder(), warning_source)
         ordered = [m for m in ('?', '!') if m in marks]
-        return ConstraintCall(
-            source=base.source,
-            name='any',
-            arguments=[base, *[ConstraintIdent(source=base.source, name=m) for m in ordered]],
-        )
+        arguments = [] if marker_base is not None else [base]
+        arguments.extend(ConstraintIdent(source=base.source, name=m) for m in ordered)
+        return ConstraintCall(source=base.source, name='any', arguments=arguments)
 
     @staticmethod
     def _parse_constraint(stream: TokenStream, collector: DiagnosticCollector) -> Constraint:
@@ -1078,7 +1100,8 @@ class Parser:
             case QuestionToken() | ExclamationToken():
                 stream.advance()
                 name = '?' if isinstance(tok, QuestionToken) else '!'
-                return ConstraintIdent(source=tok.raw.source, name=name)
+                base = ConstraintIdent(source=tok.raw.source, name=name)
+                return Parser._apply_postfix(base, stream, collector, initial=name)
 
             case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | PathToken():
                 base = Parser._parse_constraint_literal(stream)

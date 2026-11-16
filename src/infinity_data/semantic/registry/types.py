@@ -306,7 +306,7 @@ def _check_same_target(
         return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     other = args[0]
     if not isinstance(other, PurePath):
-        return fail_result(ConstraintSameTargetArg(expected='path 字面量'), source, path)
+        return fail_result(ConstraintSameTargetArg(actual=repr(other)), source, path)
     a = posixpath.normpath(s)
     b = posixpath.normpath(other.as_posix())
     if a != b:
@@ -327,7 +327,7 @@ def _check_same_name(
         return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     expected = args[0]
     if not isinstance(expected, str):
-        return fail_result(ConstraintSameNameArg(expected='字符串'), source, path)
+        return fail_result(ConstraintSameNameArg(actual=repr(expected)), source, path)
     name = PurePosixPath(s).name
     if name != expected:
         return fail_result(ConstraintSameNameMismatch(name=name, expected=expected), source, path)
@@ -347,8 +347,8 @@ def _check_extension(
         return fail_result(ConstraintTypeMismatch(expected='path', actual=describe(val)), source, path)
     exts = [a if a.startswith('.') else '.' + a for a in args if isinstance(a, str)]
     if not exts:
-        return fail_result(ConstraintExtensionArg(expected='扩展名字符串'), source, path)
+        return fail_result(ConstraintExtensionArg(actual=repr(args[0])), source, path)
     suffix = PurePosixPath(s).suffix  # '.json' 或 ''（无扩展名）
     if suffix not in exts:
-        return fail_result(ConstraintExtensionMismatch(suffix=suffix or '(无)', expected=exts), source, path)
+        return fail_result(ConstraintExtensionMismatch(suffix=suffix or '<none>', expected=exts), source, path)
     return ok_result()

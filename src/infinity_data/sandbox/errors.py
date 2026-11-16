@@ -10,12 +10,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Mapping
+from typing import ClassVar, Literal, Mapping
 
 from infinity_data.infra.diagnostics import (
     Diagnostic,
     DiagnosticDeclaration,
     Severity,
+    detect_lang,
     registry,
 )
 from infinity_data.infra.location import SourceRange, format_location
@@ -76,10 +77,10 @@ class SandboxAccessDenied(DiagnosticDeclaration):
     code: ClassVar[str] = 'sandbox.access_denied'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{location_prefix}{label}超出沙盒授权: {path_src}',
-        'en-US': '{location_prefix}{label} denied by sandbox: {path_src}',
+        'zh-CN': '{location_prefix}{target} 目标超出沙盒授权: {path_src}',
+        'en-US': '{location_prefix}{target} target denied by sandbox: {path_src}',
     }
-    label: str
+    target: Literal['!file', '!from']
     path_src: str
 
 
@@ -91,10 +92,10 @@ class SandboxFileMissing(DiagnosticDeclaration):
     code: ClassVar[str] = 'sandbox.file_missing'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{location_prefix}{label}的目标不存在: {path_src}',
-        'en-US': '{location_prefix}{label} target does not exist: {path_src}',
+        'zh-CN': '{location_prefix}{target} 目标不存在或不是文件: {path_src}',
+        'en-US': '{location_prefix}{target} target is missing or not a file: {path_src}',
     }
-    label: str
+    target: Literal['!file', '!from']
     path_src: str
 
 
@@ -115,15 +116,15 @@ class SchemaUndefinedTemplate(DiagnosticDeclaration):
 @registry.register
 @dataclass(frozen=True)
 class SchemaFailed(DiagnosticDeclaration):
-    """顶层 schema 校验失败。"""
+    """顶层 schema 校验失败（汇总）。"""
 
     code: ClassVar[str] = 'schema.failed'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '顶层 schema 校验失败: {detail}',
-        'en-US': 'top-level schema validation failed: {detail}',
+        'zh-CN': '顶层 schema 校验失败（{count} 个错误）',
+        'en-US': 'top-level schema validation failed ({count} error(s))',
     }
-    detail: str
+    count: int
 
 
 @registry.register
@@ -185,16 +186,23 @@ class SchemaMissingOptional(DiagnosticDeclaration):
 
 
 class SandboxError(Exception):
-    """沙盒安全异常基类（自有体系）：携带诊断声明实例 + 源码位置。"""
+    """沙盒安全异常基类（自有体系）：携带诊断声明实例 + 源码位置。
+
+    ``diagnostics``：可选的结构化诊断列表（schema 校验等多错误场景）；
+    非空时调用方应优先逐条并入收集器。
+    """
 
     def __init__(
         self,
         declaration: DiagnosticDeclaration,
         source: SourceRange | None = None,
+        *,
+        diagnostics: list[Diagnostic] | None = None,
     ) -> None:
         super().__init__(declaration.code)
         self.declaration: DiagnosticDeclaration = declaration
         self.source: SourceRange | None = source
+        self.diagnostics: list[Diagnostic] = diagnostics or []
 
     @property
     def code(self) -> str:
@@ -208,8 +216,22 @@ class SandboxError(Exception):
 
     @property
     def message(self) -> str:
-        """渲染后的用户消息（含位置前缀）。"""
-        return Diagnostic(declaration=self.declaration, source=self.source).render()
+        """渲染后的用户消息（含位置前缀，按环境探测语言）。
+
+        携带多条结构化诊断时按行拼接全部消息，避免把多条错误压成一个字符串；
+        无附加诊断时回退到 ``declaration`` 的摘要消息。
+        """
+        if not self.diagnostics:
+            return Diagnostic(declaration=self.declaration, source=self.source, lang=detect_lang()).render()
+        return '\n'.join(self.messages)
+
+    @property
+    def messages(self) -> list[str]:
+        """逐条渲染的用户消息（无附加诊断时返回单条摘要）。"""
+        if not self.diagnostics:
+            return [self.message]
+        lang = detect_lang()
+        return [d.render(lang=d.lang or lang) for d in self.diagnostics]
 
     def __str__(self) -> str:
         return self.message
@@ -232,15 +254,15 @@ class EnvNotSetError(SandboxError):
 class AccessDeniedError(SandboxError):
     """文件/模板导入超出 glob 白名单。"""
 
-    def __init__(self, label: str, path: str, source: SourceRange | None = None) -> None:
-        super().__init__(SandboxAccessDenied(label=label, path_src=path), source)
+    def __init__(self, target: Literal['!file', '!from'], path: str, source: SourceRange | None = None) -> None:
+        super().__init__(SandboxAccessDenied(target=target, path_src=path), source)
 
 
 class FileMissingError(SandboxError):
     """白名单内但目标不存在（``strict`` 模式下中止编译）。"""
 
-    def __init__(self, label: str, path: str, source: SourceRange | None = None) -> None:
-        super().__init__(SandboxFileMissing(label=label, path_src=path), source)
+    def __init__(self, target: Literal['!file', '!from'], path: str, source: SourceRange | None = None) -> None:
+        super().__init__(SandboxFileMissing(target=target, path_src=path), source)
 
 
 class SchemaError(SandboxError):

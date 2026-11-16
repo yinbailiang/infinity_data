@@ -10,7 +10,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import PurePath
-from typing import ClassVar, Mapping
+from typing import ClassVar, Literal, Mapping
 
 from infinity_data.infra.diagnostics import DiagnosticDeclaration, Severity, registry
 
@@ -75,7 +75,11 @@ __all__ = [
     'ConstraintPositionOut',
     'ConstraintInNotIn',
     'ConstraintStringOnly',
-    'ConstraintInvalidValue',
+    'ConstraintInvalidIp',
+    'ConstraintInvalidEmail',
+    'ConstraintInvalidUrl',
+    'ConstraintInvalidUuid',
+    'ConstraintInvalidHostname',
     'ConstraintInvalidPath',
     'ConstraintPathDenied',
     'ConstraintPathNotExist',
@@ -988,16 +992,72 @@ class ConstraintStringOnly(DiagnosticDeclaration):
 
 @registry.register
 @dataclass(frozen=True)
-class ConstraintInvalidValue(DiagnosticDeclaration):
-    """无效值。"""
+class ConstraintInvalidIp(DiagnosticDeclaration):
+    """IP 地址格式无效。"""
 
-    code: ClassVar[str] = 'constraint.invalid_value'
+    code: ClassVar[str] = 'constraint.invalid_ip'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{path_prefix}无效的{what} {value!r}',
-        'en-US': '{path_prefix}invalid {what} {value!r}',
+        'zh-CN': '{path_prefix}无效的 {constraint} 地址 {value!r}',
+        'en-US': '{path_prefix}invalid {constraint} address {value!r}',
     }
-    what: str
+    constraint: Literal['ip', 'ip4', 'ip6']
+    value: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ConstraintInvalidEmail(DiagnosticDeclaration):
+    """邮箱地址格式无效。"""
+
+    code: ClassVar[str] = 'constraint.invalid_email'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{path_prefix}无效的邮箱地址 {value!r}',
+        'en-US': '{path_prefix}invalid email address {value!r}',
+    }
+    value: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ConstraintInvalidUrl(DiagnosticDeclaration):
+    """URL 格式无效。"""
+
+    code: ClassVar[str] = 'constraint.invalid_url'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{path_prefix}无效的 URL {value!r}',
+        'en-US': '{path_prefix}invalid URL {value!r}',
+    }
+    value: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ConstraintInvalidUuid(DiagnosticDeclaration):
+    """UUID 格式无效。"""
+
+    code: ClassVar[str] = 'constraint.invalid_uuid'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{path_prefix}无效的 UUID {value!r}',
+        'en-US': '{path_prefix}invalid UUID {value!r}',
+    }
+    value: str
+
+
+@registry.register
+@dataclass(frozen=True)
+class ConstraintInvalidHostname(DiagnosticDeclaration):
+    """主机名格式无效。"""
+
+    code: ClassVar[str] = 'constraint.invalid_hostname'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{path_prefix}无效的主机名 {value!r}',
+        'en-US': '{path_prefix}invalid hostname {value!r}',
+    }
     value: str
 
 
@@ -1094,10 +1154,10 @@ class ConstraintSameTargetArg(DiagnosticDeclaration):
     code: ClassVar[str] = 'constraint.same_target_arg'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{path_prefix}same_target 参数必须是 path 字面量，实际 {expected}',
-        'en-US': '{path_prefix}same_target argument must be a path literal, got {expected}',
+        'zh-CN': '{path_prefix}same_target 参数必须是 path 字面量，实际 {actual}',
+        'en-US': '{path_prefix}same_target argument must be a path literal, got {actual}',
     }
-    expected: str
+    actual: str
 
 
 @registry.register
@@ -1123,10 +1183,10 @@ class ConstraintSameNameArg(DiagnosticDeclaration):
     code: ClassVar[str] = 'constraint.same_name_arg'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{path_prefix}same_name 参数必须是字符串，实际 {expected}',
-        'en-US': '{path_prefix}same_name argument must be a string, got {expected}',
+        'zh-CN': '{path_prefix}same_name 参数必须是字符串，实际 {actual}',
+        'en-US': '{path_prefix}same_name argument must be a string, got {actual}',
     }
-    expected: str
+    actual: str
 
 
 @registry.register
@@ -1152,10 +1212,10 @@ class ConstraintExtensionArg(DiagnosticDeclaration):
     code: ClassVar[str] = 'constraint.extension_arg'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{path_prefix}extension 参数必须是扩展名字符串（如 "json"），实际 {expected}',
-        'en-US': '{path_prefix}extension argument must be an extension string (e.g. "json"), got {expected}',
+        'zh-CN': '{path_prefix}extension 参数必须是扩展名字符串（如 "json"），实际 {actual}',
+        'en-US': '{path_prefix}extension argument must be an extension string (e.g. "json"), got {actual}',
     }
-    expected: str
+    actual: str
 
 
 @registry.register

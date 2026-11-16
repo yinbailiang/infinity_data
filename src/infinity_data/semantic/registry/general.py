@@ -15,7 +15,11 @@ from infinity_data.semantic.diagnostics import (
     ConstraintEachOnly,
     ConstraintEqMismatch,
     ConstraintInNotIn,
-    ConstraintInvalidValue,
+    ConstraintInvalidEmail,
+    ConstraintInvalidHostname,
+    ConstraintInvalidIp,
+    ConstraintInvalidUrl,
+    ConstraintInvalidUuid,
     ConstraintNanNotAllowed,
     ConstraintNegativeFail,
     ConstraintNonnegativeFail,
@@ -232,7 +236,7 @@ def _check_ip(
         ipaddress.ip_address(s)
         return ok_result()
     except ValueError:
-        return fail_result(ConstraintInvalidValue(what='IP 地址', value=s), source, path)
+        return fail_result(ConstraintInvalidIp(constraint='ip', value=s), source, path)
 
 
 def _check_ip4(
@@ -250,7 +254,7 @@ def _check_ip4(
         ipaddress.IPv4Address(s)
         return ok_result()
     except ValueError:
-        return fail_result(ConstraintInvalidValue(what='IPv4 地址', value=s), source, path)
+        return fail_result(ConstraintInvalidIp(constraint='ip4', value=s), source, path)
 
 
 def _check_ip6(
@@ -268,7 +272,7 @@ def _check_ip6(
         ipaddress.IPv6Address(s)
         return ok_result()
     except ValueError:
-        return fail_result(ConstraintInvalidValue(what='IPv6 地址', value=s), source, path)
+        return fail_result(ConstraintInvalidIp(constraint='ip6', value=s), source, path)
 
 
 def _check_regex(
@@ -308,7 +312,7 @@ def _check_email(
         return fail_result(ConstraintStringOnly(constraint='email'), source, path)
     if re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', s):
         return ok_result()
-    return fail_result(ConstraintInvalidValue(what='邮箱地址', value=s), source, path)
+    return fail_result(ConstraintInvalidEmail(value=s), source, path)
 
 
 def _check_url(
@@ -324,7 +328,7 @@ def _check_url(
     p = urlparse(s)
     if p.scheme and p.netloc:
         return ok_result()
-    return fail_result(ConstraintInvalidValue(what='URL', value=s), source, path)
+    return fail_result(ConstraintInvalidUrl(value=s), source, path)
 
 
 def _check_uuid(
@@ -342,7 +346,7 @@ def _check_uuid(
         uuid.UUID(s)
         return ok_result()
     except ValueError:
-        return fail_result(ConstraintInvalidValue(what='UUID', value=s), source, path)
+        return fail_result(ConstraintInvalidUuid(value=s), source, path)
 
 
 _HOSTNAME_RE = re.compile(
@@ -363,7 +367,7 @@ def _check_hostname(
         return fail_result(ConstraintStringOnly(constraint='hostname'), source, path)
     if _HOSTNAME_RE.fullmatch(s):
         return ok_result()
-    return fail_result(ConstraintInvalidValue(what='主机名', value=s), source, path)
+    return fail_result(ConstraintInvalidHostname(value=s), source, path)
 
 
 def _check_positive(

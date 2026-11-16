@@ -43,6 +43,7 @@ from infinity_data.parser import (
     walk,
 )
 from infinity_data.semantic.builder.models import (
+    BuildArtifacts,
     ResolvedConstraint,
     StdArray,
     StdDocument,
@@ -123,7 +124,7 @@ class AstBuilder:
     # 公开入口
     # ═══════════════════════════════════════════════════════
 
-    def build(self, doc: Document, context: ResolvedContext, collector: DiagnosticCollector) -> StdDocument:
+    def build(self, doc: Document, context: ResolvedContext, collector: DiagnosticCollector) -> BuildArtifacts:
         """构建带约束的 StdAst（纯数据变换，不执行约束）。
 
         Args:
@@ -132,8 +133,8 @@ class AstBuilder:
             collector: 共享诊断收集器（流水线单一收集器）
 
         Returns:
-            :class:`StdDocument`——root 已构建、约束已挂载未执行；
-            ``diagnostics`` 字段为空（诊断全部进 ``collector``，由流水线末端快照）。
+            :class:`BuildArtifacts`——``document`` 为可下发的纯数据文档，
+            ``template_defaults`` / ``var_values`` 供 Phase 2b 做定义期校验。
         """
         self._templates = {}
         self._template_scopes = {}
@@ -189,10 +190,12 @@ class AstBuilder:
                 case _:
                     pass  # ErrorStatement 已在语法阶段诊断
 
-        return StdDocument(
-            root=StdObject(fields=self._finalize_object(root_fields, ''), constraints=root_constraints),
-            templates=dict(self._templates),
-            scope=dict(self._root_scope.visible),
+        return BuildArtifacts(
+            document=StdDocument(
+                root=StdObject(fields=self._finalize_object(root_fields, ''), constraints=root_constraints),
+                templates=dict(self._templates),
+                scope=dict(self._root_scope.visible),
+            ),
             template_defaults=template_defaults,
             var_values=self._var_values,
         )

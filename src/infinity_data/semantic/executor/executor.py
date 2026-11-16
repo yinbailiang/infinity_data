@@ -21,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector
+from infinity_data.infra.location import format_location
 from infinity_data.parser import TemplateDef, TemplateField
 from infinity_data.sandbox import (
     Sandbox,
@@ -81,6 +82,9 @@ class ConstraintExecutor:
         self._templates = templates
         self._template_scopes = template_scopes
         self._templates_by_name: dict[str, TemplateKey] = {str(k): k for k in templates}
+        self._invalid_template_fields: set[tuple[TemplateKey, str]] = set()
+        self._invalid_template_constraints: set[TemplateKey] = set()
+        self._invalid_constraint_sources: set[str] = set()
         # 零信任默认：文件系统依赖约束（exist/dir/file/link）经沙盒授权探测
         self._sandbox = sandbox or Sandbox(config=SandboxConfig.deny_all(), base_dir=Path.cwd())
 
@@ -137,27 +141,36 @@ class ConstraintExecutor:
             for tf in tpl.fields:
                 specs, diags = resolve_constraints(tf.constraints, scope)
                 collector.extend(diags)
+                invalid = False
                 for spec in specs:
-                    self._check_static_signature(spec, collector)
+                    if self._check_static_signature(spec, collector):
+                        invalid = True
+                        self._invalid_constraint_sources.add(format_location(spec.source))
+                if invalid:
+                    self._invalid_template_fields.add((key, tf.name))
             specs, diags = resolve_constraint_list(tpl.constraints, scope)
             collector.extend(diags)
             for spec in specs:
-                self._check_static_signature(spec, collector)
+                if self._check_static_signature(spec, collector):
+                    self._invalid_template_constraints.add(key)
+                    self._invalid_constraint_sources.add(format_location(spec.source))
 
-    def _check_static_signature(self, spec: ResolvedConstraint, collector: DiagnosticCollector) -> None:
-        """单个约束声明的静态签名校验（模板真名与无效占位符跳过）。"""
+    def _check_static_signature(self, spec: ResolvedConstraint, collector: DiagnosticCollector) -> bool:
+        """单个约束声明的静态签名校验（模板真名与无效占位符跳过）；返回是否非法。"""
         if spec.name == _INVALID_CONSTRAINT or spec.name in self._templates_by_name:
-            return
+            return False
         entry = self._registry.lookup(spec.name)
         if entry is None:
             collector.add(ConstraintUnknown(name=spec.name), spec.source)
-            return
+            return True
         expected = entry.arity_error(len(spec.args))
         if expected is not None:
             collector.add(
                 ConstraintArgCount(name=spec.name, expected=expected, given=len(spec.args)),
                 spec.source,
             )
+            return True
+        return False
 
     def validate_template_defaults(
         self,
@@ -173,6 +186,8 @@ class ConstraintExecutor:
         """
         for key, fields in defaults.items():
             for field in fields:
+                if (key, field.name) in self._invalid_template_fields:
+                    continue  # 定义期已报约束签名错误，不再用默认值重复触发
                 self._validate_field(field, collector, key.name)
 
     def validate_var_values(self, values: list[tuple[str, StdValue]], collector: DiagnosticCollector) -> None:
@@ -215,6 +230,8 @@ class ConstraintExecutor:
         """
         if constraint.name == _INVALID_CONSTRAINT:
             return fail_result(ConstraintInvalid(), source, path)
+        if self._invalid_constraint_sources and format_location(constraint.source) in self._invalid_constraint_sources:
+            return ok_result()  # 定义期已报非法签名，不再重复执行
         key = self._templates_by_name.get(constraint.name)
         if key is not None:
             return self._check_template(key, value, source, path)
@@ -269,6 +286,8 @@ class ConstraintExecutor:
 
         # 逐字段校验（模板定义约束）；完整形状：约束接受 noexist（!）的字段可缺失
         for tf in tpl.fields:
+            if (key, tf.name) in self._invalid_template_fields:
+                continue  # 定义期已报非法签名，不再重复/级联
             child = f'{path}.{tf.name}' if path else tf.name
             f = field_map.get(tf.name)
             if f is None:
@@ -282,6 +301,8 @@ class ConstraintExecutor:
                 diags.append(Diagnostic(declaration, source, child))
                 continue
             if f.value is not None:
+                if (key, tf.name) in self._invalid_template_fields:
+                    continue  # 定义期已报非法签名，调用点不再重复
                 specs, rdiags = resolve_constraints(tf.constraints, scope)
                 diags.extend(rdiags)
                 for spec in specs:
@@ -305,13 +326,14 @@ class ConstraintExecutor:
                         )
                     )
 
-        # 模板级约束
-        specs, rdiags = resolve_constraint_list(tpl.constraints, scope)
-        diags.extend(rdiags)
-        for spec in specs:
-            result = self._exec(spec, value, source, path)
-            if not result.ok:
-                diags.extend(result.diagnostics)
+        # 模板级约束（定义期已判非法签名 → 不再执行）
+        if key not in self._invalid_template_constraints:
+            specs, rdiags = resolve_constraint_list(tpl.constraints, scope)
+            diags.extend(rdiags)
+            for spec in specs:
+                result = self._exec(spec, value, source, path)
+                if not result.ok:
+                    diags.extend(result.diagnostics)
 
         if diags:
             return ConstraintResult(ok=False, diagnostics=diags)
@@ -333,17 +355,19 @@ class ConstraintExecutor:
 
         校验器要求完整形状：字段缺失（含可选字段）一律失败；
         - lenient 的额外字段 WARNING 写入 ``collector``（非致命）
-        - strict / 字段缺失 / 字段 / 模板级约束失败聚合为 :class:`SchemaError` 抛出
+        - strict / 字段缺失 / 字段 / 模板级约束失败以逐条结构化诊断挂在
+          :class:`SchemaError` 上，由调用方统一并入收集器
         """
         mode = schema.mode
         declared = {tf.name for tf in tpl.fields}
+        key = next((k for k, value in self._templates.items() if value is tpl), None)
         diags: list[Diagnostic] = []
 
         # 额外字段处理（模式差异）
         extra_names = [f.name for f in root.fields if f.name not in declared]
         if extra_names:
             if mode == 'strict':
-                diags.append(Diagnostic(SchemaExtraFields(fields=extra_names)))
+                diags.append(Diagnostic(SchemaExtraFields(fields=extra_names), root.source))
             elif mode == 'lenient':
                 collector.add(SchemaExtraFieldsLenient(fields=extra_names))
             else:  # strip
@@ -351,6 +375,8 @@ class ConstraintExecutor:
 
         # 字段缺失（完整形状：约束接受 noexist 的字段可缺失）
         for tf in tpl.fields:
+            if key is not None and (key, tf.name) in self._invalid_template_fields:
+                continue  # 定义期已报非法签名，不再重复/级联
             if root.get(tf.name) is None:
                 if self._accepts_absent(tf, scope):
                     continue
@@ -359,10 +385,12 @@ class ConstraintExecutor:
                     if tf.default_value is None
                     else SchemaMissingOptional(field=tf.name, template=tpl.name)
                 )
-                diags.append(Diagnostic(declaration, None, tf.name))
+                diags.append(Diagnostic(declaration, root.source, tf.name))
 
         # 字段约束校验
         for tf in tpl.fields:
+            if key is not None and (key, tf.name) in self._invalid_template_fields:
+                continue
             f = root.get(tf.name)
             if f is not None and f.value is not None:
                 specs, rdiags = resolve_constraints(tf.constraints, scope)
@@ -373,15 +401,16 @@ class ConstraintExecutor:
                     if not result.ok:
                         diags.extend(result.diagnostics)
 
-        # 模板级约束
-        specs, rdiags = resolve_constraint_list(tpl.constraints, scope)
-        diags.extend(rdiags)
-        for spec in specs:
-            # 顶层对象无来源时回退约束表达式位置（避免丢位置）
-            result = self._exec(spec, root, root.source or spec.source, '')
-            if not result.ok:
-                diags.extend(result.diagnostics)
+        # 模板级约束（定义期已判非法签名 → 不再执行）
+        if key is None or key not in self._invalid_template_constraints:
+            specs, rdiags = resolve_constraint_list(tpl.constraints, scope)
+            diags.extend(rdiags)
+            for spec in specs:
+                # 顶层对象无来源时回退约束表达式位置（避免丢位置）
+                result = self._exec(spec, root, root.source or spec.source, '')
+                if not result.ok:
+                    diags.extend(result.diagnostics)
 
         if diags:
-            raise SchemaError(SchemaFailed(detail='；'.join(d.render(lang=collector.lang) for d in diags)))
+            raise SchemaError(SchemaFailed(count=len(diags)), diagnostics=diags)
         return root

@@ -7,7 +7,7 @@ from infinity_data import CompilationResult, Severity, compile_source
 
 
 def errors_of(result: CompilationResult) -> list[str]:
-    return [d.render() for d in result.diagnostics if d.effective_severity is Severity.ERROR]
+    return [d.render() for d in result.diagnostics if d.severity is Severity.ERROR]
 
 
 def compile_ok(source: str) -> dict[str, Any]:

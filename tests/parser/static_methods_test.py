@@ -88,7 +88,7 @@ def test_expect_keyword_missing_reports() -> None:
     col = DiagnosticCollector()
     s = _stream('env X', col)
     Parser._expect_keyword(s, col, 'import')
-    assert any(d.code == 'parse.unexpected_token' for d in col)
+    assert any(d.code == 'parse.expected_keyword' for d in col)
 
 
 # ── JSON path ─────────────────────────────────────────
@@ -116,7 +116,7 @@ def test_parse_json_path_invalid_index_reports() -> None:
     s = _stream('.a[x]', col)
     segs = Parser._parse_json_path(s, col)
     assert len(segs) == 1
-    assert any(d.code == 'parse.invalid_json_path' for d in col)
+    assert any(d.code.startswith('parse.json_path_') for d in col)
 
 
 # ── 约束 ─────────────────────────────────────────────

@@ -10,6 +10,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from infinity_data.infra.file import DiskFile, File
 from infinity_data.infra.location import SourceRange
@@ -134,6 +135,8 @@ class Sandbox:
     def __init__(self, config: SandboxConfig, base_dir: Path) -> None:
         self._config = config
         self._base_dir = base_dir
+        self._file_cache: dict[Path, DiskFile] = {}
+        """单次 Sandbox 生命周期内的 DiskFile 缓存（同一解析路径复用读取结果）。"""
 
     @property
     def config(self) -> SandboxConfig:
@@ -186,7 +189,7 @@ class Sandbox:
         source: SourceRange | None = None,
     ) -> File | None:
         """!file 目标：路径解析 + allow_files 授权 → File。"""
-        return self._open(from_path, self._config.allow_files, '文件导入', base_dir, source)
+        return self._open(from_path, self._config.allow_files, '!file', base_dir, source)
 
     def open_template(
         self,
@@ -196,7 +199,7 @@ class Sandbox:
         source: SourceRange | None = None,
     ) -> File | None:
         """!from 目标：路径解析 + allow_templates 授权 → File。"""
-        return self._open(from_path, self._config.allow_templates, '模板导入', base_dir, source)
+        return self._open(from_path, self._config.allow_templates, '!from', base_dir, source)
 
     def probe_path(self, from_path: str, *, base_dir: Path | None = None) -> Path | None:
         """构建期路径探测：路径解析 + allow_files 授权 → 原生 Path；未授权 → None。
@@ -216,7 +219,7 @@ class Sandbox:
         self,
         from_path: str,
         patterns: list[str] | None,
-        label: str,
+        target: Literal['!file', '!from'],
         base_dir: Path | None,
         source: SourceRange | None,
     ) -> File | None:
@@ -233,8 +236,14 @@ class Sandbox:
 
         if not match_globs(path, patterns, self._base_dir):
             if self._config.strict:
-                raise AccessDeniedError(label, from_path, source)
+                raise AccessDeniedError(target, from_path, source)
             return None
         if self._config.strict and not path.is_file():
-            raise FileMissingError(label, from_path, source)
-        return DiskFile.from_fullpath(path)
+            raise FileMissingError(target, from_path, source)
+        resolved = path.resolve()
+        cached = self._file_cache.get(resolved)
+        if cached is not None:
+            return cached
+        file = DiskFile.from_fullpath(path)
+        self._file_cache[resolved] = file
+        return file

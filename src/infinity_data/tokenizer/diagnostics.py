@@ -178,8 +178,8 @@ class TokenizeInvalidBang(DiagnosticDeclaration):
     code: ClassVar[str] = 'tokenize.invalid_bang'
     severity: ClassVar[Severity] = Severity.ERROR
     templates: ClassVar[Mapping[str, str]] = {
-        'zh-CN': '{location_prefix}! 后期望 env/file/from，实际为 {actual}',
-        'en-US': "{location_prefix}expected env/file/from after '!', got {actual}",
+        'zh-CN': '{location_prefix}! 后期望 env/file/from/var，实际为 {actual}',
+        'en-US': "{location_prefix}expected env/file/from/var after '!', got {actual}",
     }
     actual: str
 

@@ -1,7 +1,7 @@
 """semantic/builder/models.py 单元测试：StdAst 模型与三态属性。"""
 
 from infinity_data.infra.location import SourceRange
-from infinity_data.semantic.builder import StdArray, StdDocument, StdField, StdLiteral, StdObject
+from infinity_data.semantic.builder import BuildArtifacts, StdArray, StdDocument, StdField, StdLiteral, StdObject
 from infinity_data.semantic.std import StdNode, is_std_node
 
 
@@ -55,3 +55,14 @@ def test_std_document_defaults() -> None:
     assert doc.root is not None
     assert doc.templates == {}
     assert doc.scope == {}
+    # 定义期校验中间数据不属于公共文档
+    assert not hasattr(doc, 'template_defaults')
+    assert not hasattr(doc, 'var_values')
+
+
+def test_build_artifacts_wraps_validation_data() -> None:
+    doc = StdDocument()
+    artifacts = BuildArtifacts(document=doc)
+    assert artifacts.document is doc
+    assert artifacts.template_defaults == {}
+    assert artifacts.var_values == []

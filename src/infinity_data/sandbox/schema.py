@@ -17,6 +17,8 @@ class Schema:
     mode: Literal['strict', 'lenient', 'strip'] = 'strict'
 
     # 校验器要求完整形状：字段缺失（含可选字段）一律报错（默认值不参与给定值校验）
-    # strict:  额外字段 → 报错（SchemaError）
-    # lenient: 额外字段 → 警告
+    # strict:  额外字段 → schema.extra_fields（SchemaError）
+    # lenient: 额外字段 → schema.extra_fields_lenient 警告
     # strip:   额外字段 → 静默丢弃
+    # 字段缺失 / 字段约束失败 → schema.missing_required / schema.missing_optional /
+    #   具体 constraint.*，逐条挂到 SchemaError.diagnostics
