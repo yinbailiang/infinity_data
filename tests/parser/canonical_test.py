@@ -134,6 +134,16 @@ def test_canonical_preserves_arg_order() -> None:
     assert c == 'x = T(b = 2, a = 1, **{ c = 3 }, d = 4)'
 
 
+def test_canonical_postfix_nullable_absent() -> None:
+    """`?!` / `!?` 展开为同一 AST：any(T, ?, !)；`T!` / `T?` 各自展开。"""
+    both = _field(_parse('x: int?! = 1\n')).canonical()
+    reverse = _field(_parse('x: int!? = 1\n')).canonical()
+    assert both == 'x: any(int, ?, !) = 1'
+    assert reverse == both
+    assert _field(_parse('x: int! = 1\n')).canonical() == 'x: any(int, !) = 1'
+    assert _field(_parse('x: int? = null\n')).canonical() == 'x: any(int, ?) = null'
+
+
 def test_canonical_top_level_unpack_fixed_point() -> None:
     """顶层 ** 解包语句 round-trip 不动点。"""
     doc = _parse('**{ a = 1 }\n**{ b = 2 }\n')

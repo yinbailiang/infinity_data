@@ -58,8 +58,8 @@ register_diagnostic_define(
     diagnostic_define('schema.missing_required', '{path_prefix}顶层 schema 缺少必填字段 {field!r}（模板 {template}）'),
     diagnostic_define(
         'schema.missing_optional',
-        '{path_prefix}顶层 schema 缺少可选字段 {field!r}（模板 {template}；校验器要求完整形状）',
-        en='{path_prefix}top-level schema is missing optional field {field!r} (template {template}; validators require the full shape)',
+        '{path_prefix}顶层 schema 缺少可选字段 {field!r}（模板 {template}；用 `!` 允许缺失）',
+        en='{path_prefix}top-level schema is missing optional field {field!r} (template {template}; use `!` to allow absence)',
     ),
 )
 

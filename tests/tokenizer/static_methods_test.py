@@ -314,31 +314,39 @@ def test_nearest_bang_keyword() -> None:
 
 
 def test_read_bang_eof() -> None:
+    # 裸 !（EOF）：独立 EXCLAMATION（约束后缀 / 独立标记），不再是词法错误
     file = _file('!')
     stream = CharStream('!')
     col = DiagnosticCollector()
-    assert RawTokenizer._read_bang(stream, col, file) is None
-    assert any(d.code == 'tokenize.invalid_bang' for d in col)
+    tok = RawTokenizer._read_bang(stream, col, file)
+    assert tok is not None
+    assert tok.type is RawTokenType.EXCLAMATION
+    assert tok.raw == '!'
+    assert not list(col)
 
 
-def test_read_bang_invalid_char_consumed() -> None:
-    # !@：非法字符被一次性消费，只报一次 invalid_bang（不再叠加 unknown_char）
+def test_read_bang_independent_exclamation() -> None:
+    # !@：! 为独立 EXCLAMATION，@ 留给后续词法规则（unknown_char）
     file = _file('!@')
     stream = CharStream('!@')
     col = DiagnosticCollector()
-    assert RawTokenizer._read_bang(stream, col, file) is None
-    assert [d.code for d in col] == ['tokenize.invalid_bang']
-    assert stream.eof()
+    tok = RawTokenizer._read_bang(stream, col, file)
+    assert tok is not None
+    assert tok.type is RawTokenType.EXCLAMATION
+    assert stream.peek() == '@'
+    assert not list(col)
 
 
-def test_read_bang_digit_consumed_not_relexed() -> None:
-    # !5：5 被消费，不再重新解析成 INTEGER
+def test_read_bang_before_digit() -> None:
+    # !5：! 为独立 EXCLAMATION，5 不被吞掉（正常产出 INTEGER）
     file = _file('!5x')
     stream = CharStream('!5x')
     col = DiagnosticCollector()
-    assert RawTokenizer._read_bang(stream, col, file) is None
-    assert [d.code for d in col] == ['tokenize.invalid_bang']
-    assert stream.peek() == 'x'
+    tok = RawTokenizer._read_bang(stream, col, file)
+    assert tok is not None
+    assert tok.type is RawTokenType.EXCLAMATION
+    assert stream.peek() == '5'
+    assert not list(col)
 
 
 # ── 单行字符串 ───────────────────────────────────────

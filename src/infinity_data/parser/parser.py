@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.ll1_stream import NoNextType
-from infinity_data.parser.diagnostics import diag
+from infinity_data.parser.diagnostics import diag, warn
 from infinity_data.parser.models import (
     ArrayValue,
     Constraint,
@@ -55,6 +55,7 @@ from infinity_data.tokenizer.models.tokens import (
     EnvImportToken,
     EofToken,
     EqualsToken,
+    ExclamationToken,
     FileImportToken,
     FloatToken,
     FromImportToken,
@@ -875,12 +876,22 @@ class Parser:
 
     @staticmethod
     def _starts_constraint(tok: Token | NoNextType | None) -> bool:
-        """判断 token 是否可以起始一个约束（标识符 / ? / 字面量）。"""
+        """判断 token 是否可以起始一个约束（标识符 / ? / ! / 字面量）。"""
         if isinstance(tok, NoNextType) or tok is None:
             return False
         return isinstance(
             tok,
-            (IdentifierToken, QuestionToken, StringToken, IntegerToken, FloatToken, BoolToken, NullToken, PathToken),
+            (
+                IdentifierToken,
+                QuestionToken,
+                ExclamationToken,
+                StringToken,
+                IntegerToken,
+                FloatToken,
+                BoolToken,
+                NullToken,
+                PathToken,
+            ),
         )
 
     # ═══════════════════════════════════════════════════════
@@ -978,38 +989,24 @@ class Parser:
 
             case IdentifierToken(name=name):
                 stream.advance()
-                ident = ConstraintIdent(source=stream.single_span(first), name=name)
-
-                if isinstance(stream.peek(), QuestionToken):
-                    stream.advance()
-                    # 直接展开: type? → any(type, ?)
-                    return Constraints(
-                        source=stream.span_from(first),
-                        constraints=[Parser._nullable(ident)],
-                    )
+                base: Constraint = ConstraintIdent(source=stream.single_span(first), name=name)
 
                 # 单约束函数调用可省略尖括号: field: regex("re") = ...
                 if isinstance(stream.peek(), LparenToken):
-                    call = Parser._parse_constraint_call(stream, collector, first)
-                    # 调用后也可空: regex("re")? → any(regex("re"), ?)
-                    if isinstance(stream.peek(), QuestionToken):
-                        stream.advance()
-                        call = Parser._nullable(call)
-                    return Constraints(
-                        source=stream.span_from(first),
-                        constraints=[call],
-                    )
+                    base = Parser._parse_constraint_call(stream, collector, first)
 
+                # 后缀: type? / type! / type?!（? 可空，! 可缺失）
                 return Constraints(
                     source=stream.span_from(first),
-                    constraints=[ident],
+                    constraints=[Parser._apply_postfix(base, stream, collector)],
                 )
 
-            case QuestionToken():
+            case QuestionToken() | ExclamationToken():
                 stream.advance()
+                name = '?' if isinstance(first, QuestionToken) else '!'
                 return Constraints(
                     source=stream.span_from(first),
-                    constraints=[ConstraintIdent(source=stream.single_span(first), name='?')],
+                    constraints=[ConstraintIdent(source=stream.single_span(first), name=name)],
                 )
 
             case _:
@@ -1023,12 +1020,38 @@ class Parser:
                 return Constraints(source=stream.span_from(first))
 
     @staticmethod
-    def _nullable(c: Constraint) -> ConstraintCall:
-        """可空包装：constraint? → any(constraint, ?)。"""
+    def _apply_postfix(base: Constraint, stream: TokenStream, collector: DiagnosticCollector) -> Constraint:
+        """约束后缀：``?``（可空）/ ``!``（可缺失），可组合。
+
+        展开：``type?`` → ``any(type, ?)``、``type!`` → ``any(type, !)``、
+        ``type?!`` / ``type!?`` → ``any(type, ?, !)``。组合推荐 ``?!``；
+        反序 ``!?`` 等价但报 ``parse.postfix_order`` 警告。
+
+        去重并按规范顺序（``?`` 在前、``!`` 在后）展开，保证两种书写产生同一 AST。
+        """
+        marks: list[str] = []
+        first: QuestionToken | ExclamationToken | None = None
+        while True:
+            tok = stream.peek()
+            if isinstance(tok, QuestionToken):
+                marks.append('?')
+            elif isinstance(tok, ExclamationToken):
+                marks.append('!')
+            else:
+                break
+            if first is None:
+                first = tok
+            stream.advance()
+        if not marks:
+            return base
+        if '!?' in ''.join(marks):
+            assert first is not None
+            collector.add(warn('parse.postfix_order', {}, first.raw.source))
+        ordered = [m for m in ('?', '!') if m in marks]
         return ConstraintCall(
-            source=c.source,
+            source=base.source,
             name='any',
-            arguments=[c, ConstraintIdent(source=c.source, name='?')],
+            arguments=[base, *[ConstraintIdent(source=base.source, name=m) for m in ordered]],
         )
 
     @staticmethod
@@ -1059,9 +1082,10 @@ class Parser:
                 else:
                     base = ConstraintIdent(source=stream.single_span(name_tok), name=name_tok.name)
 
-            case QuestionToken():
+            case QuestionToken() | ExclamationToken():
                 stream.advance()
-                return ConstraintIdent(source=tok.raw.source, name='?')
+                name = '?' if isinstance(tok, QuestionToken) else '!'
+                return ConstraintIdent(source=tok.raw.source, name=name)
 
             case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | PathToken():
                 base = Parser._parse_constraint_literal(stream)
@@ -1078,11 +1102,8 @@ class Parser:
                     message=f'无法解析的约束: {bad_tok.raw.type.name}',
                 )
 
-        # 可空后缀: constraint? → any(constraint, ?)
-        if isinstance(stream.peek(), QuestionToken):
-            stream.advance()
-            return Parser._nullable(base)
-        return base
+        # 后缀: constraint? / constraint! / constraint?! → any(constraint, ?, !)
+        return Parser._apply_postfix(base, stream, collector)
 
     @staticmethod
     def _parse_constraint_call(

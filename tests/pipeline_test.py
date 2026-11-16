@@ -738,6 +738,40 @@ def test_validator_provided_optional_field_validated() -> None:
     assert any(d.code == 'constraint.type_mismatch' for d in result.diagnostics)
 
 
+def test_absent_suffix_allows_missing_field() -> None:
+    """`!`：约束接受 noexist → 校验器允许字段缺失。"""
+    result = compile_source('~T {\n    opt: dict! = {}\n}\na: T {}\n')
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+
+
+def test_absent_nullable_suffix_allows_missing_or_null() -> None:
+    """`?!`：字段可缺失、可为 null；两者都通过。"""
+    missing = compile_source('~T {\n    opt: dict?! = {}\n}\na: T {}\n')
+    null = compile_source('~T {\n    opt: dict?! = {}\n}\na: T { opt = null }\n')
+    assert not missing.has_errors, [d.message for d in missing.diagnostics]
+    assert not null.has_errors, [d.message for d in null.diagnostics]
+
+
+def test_nullable_suffix_does_not_allow_missing() -> None:
+    """`?` 仅允许 null：字段仍须声明（完整形状）。"""
+    result = compile_source('~T {\n    opt: dict? = {}\n}\na: T {}\n')
+    assert any(d.code == 'template.missing_optional' for d in result.diagnostics)
+
+
+def test_reverse_postfix_order_warns_but_is_equivalent() -> None:
+    """`!?` 与 `?!` 等价，但报 parse.postfix_order 警告。"""
+    result = compile_source('x: int!? = null\n')
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert any(d.code == 'parse.postfix_order' for d in result.warnings)
+    assert result.value == {'x': None}
+
+
+def test_absent_suffix_rejects_null() -> None:
+    """`!` 仅允许 noexist：null 不满足。"""
+    result = compile_source('x: int! = null\n')
+    assert result.has_errors
+
+
 def test_imported_template_default_validated(tmp_path: Path) -> None:
     """导入的 .inft 模板默认值同样在定义期校验。"""
     (tmp_path / 'extra.inft').write_text('~Extra {\n    v: int = "oops"\n}\n', encoding='utf-8')
@@ -980,6 +1014,7 @@ def test_bang_non_import_keyword_is_tokenize_error() -> None:
 
 
 def test_bang_at_eof_is_tokenize_error() -> None:
+    """裸 ! 现在是独立标点（后缀/独立标记），语句位置无法解析 → 语法错误。"""
     result = compile_source('a = 1\n!\n')
     assert result.has_errors
     assert result.value == {'a': 1}
@@ -1002,7 +1037,7 @@ def test_golden_test_infd() -> None:
     host: str = "0.0.0.0"
     port: <int, range(1, 65535)> = 80
     features: dict {
-        caching: <?> = noexist
+        caching: <dict?!> = noexist
         compression: bool = true
     }
     tags: <list, each(str)> = ["web"]

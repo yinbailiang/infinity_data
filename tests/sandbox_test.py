@@ -1002,6 +1002,15 @@ def test_schema_missing_optional_field(tmp_path: Path) -> None:
     assert 'port' in result.diagnostics[0].message
 
 
+def test_schema_absent_suffix_allows_missing(tmp_path: Path) -> None:
+    """schema 中 `!` 字段可缺失：不报 schema.failed。"""
+    f = tmp_path / 'app.infd'
+    _write(f, '~AppConfig {\n    name: str\n    port: int! = 8080\n}\nname = "demo"\n')
+    result = load(f, schema=Schema(template='AppConfig'))
+    assert not result.has_errors, [d.message for d in result.diagnostics]
+    assert result.value == {'name': 'demo'}
+
+
 def test_schema_strict_extra_field_fails(tmp_path: Path) -> None:
     f = tmp_path / 'app.infd'
     _write(f, '~AppConfig {\n    name: str = "x"\n}\nname = "x"\nextra = 1\n')

@@ -416,21 +416,20 @@ class RawTokenizer:
     def _read_bang(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken | None:
         """读取 ``!`` 起始的 token。
 
-        - ``!env`` / ``!file`` / ``!from`` → 组合导入关键字 token
-        - 其他任何情况 → 词法错误（语言不允许单独 ``!``），返回 None 跳过
+        - ``!env`` / ``!file`` / ``!from`` / ``!var`` → 组合导入关键字 token
+        - 其后不是标识符（空白 / 分隔符 / EOF 等）→ 独立 ``!``（约束后缀 / 独立标记）
+        - 其后是其他标识符 → 拼写纠正或词法错误（保持原行为）
         """
         start = stream.info()
         stream.advance()  # 消费 '!'
 
         if stream.eof():
-            collector.add(diag('tokenize.invalid_bang', {'actual': 'EOF'}, SourceRange.at(file, start)))
-            return None
+            return RawTokenizer._make_token(RawTokenType.EXCLAMATION, '!', start=start, stream=stream, file=file)
         ch = stream.peek()
         assert not isinstance(ch, NoNextType)
         if not _is_ident_start(ch):
-            collector.add(diag('tokenize.invalid_bang', {'actual': repr(ch)}, SourceRange.at(file, start)))
-            stream.advance()  # 消费非法字符，避免下一轮重复处理（如 !@ 再报 unknown_char）
-            return None
+            # 独立 `!`：不消费后续字符（由其自身 token 规则处理）
+            return RawTokenizer._make_token(RawTokenType.EXCLAMATION, '!', start=start, stream=stream, file=file)
 
         ident_tok = RawTokenizer._read_identifier_or_keyword(stream, file)
         match ident_tok.raw:

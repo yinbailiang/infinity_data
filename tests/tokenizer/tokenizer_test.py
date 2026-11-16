@@ -133,14 +133,16 @@ def test_invalid_bang_reported() -> None:
     assert any(d.code == 'tokenize.invalid_bang' for d in col)
 
 
-def test_bang_invalid_char_single_diagnostic() -> None:
-    # !@：只报一次 invalid_bang，不叠加 unknown_char；!5 的 5 不再产出 INTEGER
-    _, col1 = _tokenize('x = !@\n')
-    assert [d.code for d in col1].count('tokenize.invalid_bang') == 1
-    assert not any(d.code == 'tokenize.unknown_char' for d in col1)
-    toks2, col2 = _tokenize('x = !5\n')
-    assert [d.code for d in col2].count('tokenize.invalid_bang') == 1
-    assert not any(t.type is RawTokenType.INTEGER for t in toks2)
+def test_bang_independent_punctuation() -> None:
+    # 独立 ! 为标点（约束后缀）：后续字符各自正常词法化，不再报 invalid_bang
+    toks1, col1 = _tokenize('x = !@\n')
+    assert RawTokenType.EXCLAMATION in [t.type for t in toks1]
+    assert not any(d.code == 'tokenize.invalid_bang' for d in col1)
+    assert any(d.code == 'tokenize.unknown_char' for d in col1)
+
+    toks2, col2 = _tokenize('x: int! = 1\n')
+    assert RawTokenType.EXCLAMATION in [t.type for t in toks2]
+    assert not list(col2)
 
 
 def test_import_keyword_typo_corrected() -> None:

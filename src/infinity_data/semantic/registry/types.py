@@ -24,6 +24,7 @@ from infinity_data.tokenizer.models.raw_tokens import SourceRange
 __all__ = [
     '_check_object',
     '_check_nullable',
+    '_check_absent',
     '_check_int',
     '_check_float',
     '_check_str',
@@ -60,11 +61,23 @@ def _check_nullable(
     args: list[Any],
     executor: Executor,
 ) -> ConstraintResult:
-    if isinstance(val, StdLiteral) and val.kind in ('null', 'noexist'):
+    """``?``：值只能是 null（键存在、值为 null）。"""
+    if isinstance(val, StdLiteral) and val.kind == 'null':
         return ok_result()
-    return fail_result(
-        'constraint.type_mismatch', {'expected': 'noexist 或 null', 'actual': describe(val)}, source, path
-    )
+    return fail_result('constraint.type_mismatch', {'expected': 'null', 'actual': describe(val)}, source, path)
+
+
+def _check_absent(
+    val: StdValue | None,
+    source: SourceRange | None,
+    path: str,
+    args: list[Any],
+    executor: Executor,
+) -> ConstraintResult:
+    """``!``：值只能是 noexist（键不存在）。"""
+    if isinstance(val, StdLiteral) and val.kind == 'noexist':
+        return ok_result()
+    return fail_result('constraint.type_mismatch', {'expected': 'noexist', 'actual': describe(val)}, source, path)
 
 
 def _check_int(

@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from infinity_data.infra.diagnostics import Diagnostic, DiagnosticCollector, Severity
-from infinity_data.parser import TemplateDef
+from infinity_data.parser import TemplateDef, TemplateField
 from infinity_data.sandbox import Sandbox, SandboxConfig, Schema, SchemaError
 from infinity_data.semantic.builder.models import (
     ResolvedConstraint,
@@ -205,6 +205,18 @@ class ConstraintExecutor:
         # 不再取约束表达式自身（spec.source）——错误指向值而非约束声明
         return self._registry.apply(constraint, value, source, path, self)
 
+    def _accepts_absent(self, tf: TemplateField, scope: Scope) -> bool:
+        """字段约束是否接受 noexist（``!``）：对合成 noexist 值执行，诊断丢弃。
+
+        直接复用约束语义（``any(T, !)`` / ``one(...)`` 等天然正确），不做静态
+        组合分析。仅在字段缺失时调用，失败诊断不对外汇报。
+        """
+        specs, _ = resolve_constraints(tf.constraints, scope)
+        if not specs:
+            return False  # 空约束列表不接受任何值（含 noexist）
+        absent = StdLiteral(kind='noexist', value=None)
+        return all(self._exec(spec, absent, spec.source, '').ok for spec in specs)
+
     def _check_template(
         self,
         key: TemplateKey,
@@ -212,7 +224,10 @@ class ConstraintExecutor:
         source: SourceRange | None,
         path: str,
     ) -> ConstraintResult:
-        """模板即约束：校验手写 dict 是否符合模板声明（含字段 / 模板级约束）。"""
+        """模板即约束：校验手写 dict 是否符合模板声明（含字段 / 模板级约束）。
+
+        完整形状：字段必须声明；约束接受 noexist（``!``）的字段可缺失。
+        """
         tpl = self._templates[key]
         display = key.name
         scope = self._template_scopes[key]
@@ -235,12 +250,13 @@ class ConstraintExecutor:
         diags: list[Diagnostic] = []
         field_map = {f.name: f for f in value.fields}
 
-        # 逐字段校验（模板定义约束）；校验器要求完整形状：可选字段也不可缺
+        # 逐字段校验（模板定义约束）；完整形状：约束接受 noexist（!）的字段可缺失
         for tf in tpl.fields:
             child = f'{path}.{tf.name}' if path else tf.name
             f = field_map.get(tf.name)
             if f is None:
-                # 默认值只在实例化时填充；作为校验器时给定值必须声明全部字段
+                if self._accepts_absent(tf, scope):
+                    continue  # `!`：字段可缺失
                 code = 'template.missing_field' if tf.default_value is None else 'template.missing_optional'
                 diags.append(Diagnostic(Severity.ERROR, code, {'template': display, 'field': tf.name}, source, child))
                 continue
@@ -316,9 +332,11 @@ class ConstraintExecutor:
             else:  # strip
                 root = StdObject(fields=[f for f in root.fields if f.name in declared], template=root.template)
 
-        # 字段缺失（校验器要求完整形状：可选字段也不可缺）
+        # 字段缺失（完整形状：约束接受 noexist 的字段可缺失）
         for tf in tpl.fields:
             if root.get(tf.name) is None:
+                if self._accepts_absent(tf, scope):
+                    continue
                 code = 'schema.missing_required' if tf.default_value is None else 'schema.missing_optional'
                 diags.append(
                     Diagnostic(

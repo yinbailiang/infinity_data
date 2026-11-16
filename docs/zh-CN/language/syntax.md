@@ -38,10 +38,13 @@
 空格不构成分隔）
 
 内置类型约束:
-- `?` 值只能是 `null` 或者 `noexist`
+- `?` 值只能是 `null`（键存在、值为 null）
+- `!` 值只能是 `noexist`（键不存在）
 - `object` 任何不是 `null` 或者 `noexist` 的值
 - `int`, `str`, `bool`, `float`, `list`, `dict` 字面意思
-- `object?`, `int?`, `str?`, `bool?`, ... 便携可空类型语法糖
+- `object?`, `int?`, `str?`, `bool?`, ... 可空语法糖（等价 `any(T, ?)`，仅允许 null）
+- `object!`, `int!`, `str!`, ... 可缺失语法糖（等价 `any(T, !)`，仅允许键不存在）
+- `int?!` / `int!?` 两者都允许（等价 `any(T, ?, !)`；推荐 `?!`，`!?` 会告警）
 
 内置一般约束:
 - `range(ge[, le])` 数值范围。**省略规则**：单参数 `range(ge)`（或尾逗号 `range(ge,)`）
@@ -93,8 +96,8 @@
 > 由此「可选字段（默认 `noexist`）+ 结构级约束」可自然表达「至少声明其一」:
 > ```infd
 > ~ResourceSpec {
->     requests: <dict?> = noexist,
->     limits: <dict?> = noexist,
+>     requests: <dict?!> = noexist,
+>     limits: <dict?!> = noexist,
 >     : <one(has(requests), has(limits))>,   # 必须只提供一个；都没提供则违反
 > }
 > r = ResourceSpec(limits = {cpu = "1"})     # ✅ has(requests)=false, has(limits)=true
@@ -123,9 +126,10 @@
 特殊规则:
 - **单约束可省略尖括号**: `field: int = 10` 等价于 `field: <int> = 10`
 - **默认all**: <a, b, c> 等价 all(a, b, c)
-- **可空约束**：`任意类型约束type_c`+`?` 等价 any(type_c, ?)——满足 `type_c` **或** 满足
-  `?`（null / noexist）即可；`?` 与常规约束的满足集合不相交，故与 `one` 语义等价，
-  用 `any` 更贴近「可空 = 类型或空」的直觉
+- **可空 / 可缺失约束**：`type_c?` 等价 `any(type_c, ?)`（值或 null）；`type_c!` 等价
+  `any(type_c, !)`（值或键不存在）；`type_c?!` / `type_c!?` 等价 `any(type_c, ?, !)`
+  （推荐 `?!`；`!?` 等价但报 `parse.postfix_order` 警告）。`?` / `!` 与常规约束的
+  满足集合不相交，故与 `one` 语义等价，用 `any` 更贴近「类型或空」的直觉
 
 ### 1.2.2 结构级约束（dict 级约束）
 
@@ -212,8 +216,9 @@ tls = false
 ## 1.4 基础类型
 
 内置类型:
-- `object` 所有类型都是object，除了 `?`
-- `?` 纯可空类型，值可以是 noexist 或者 null
+- `object` 所有类型都是 object，除了 `?` / `!`
+- `?` 纯可空类型：值只能是 null
+- `!` 纯可缺失类型：值只能是 noexist（键不存在）
 - `bool` 布尔值， true 或者 false
 - `int` 有符号整数，无限精度
 - `float` 无限精度10进制浮点

@@ -10,7 +10,7 @@ from typing import Any
 from infinity_data.infra.diagnostics import Diagnostic, Severity, diagnostic_define, register_diagnostic_define
 from infinity_data.infra.location import SourceRange
 
-__all__ = ['diag']
+__all__ = ['diag', 'warn']
 
 register_diagnostic_define(
     diagnostic_define(
@@ -35,6 +35,11 @@ register_diagnostic_define(
         'parse.expand_suffix_order',
         '[{location}] ... 后不能再跟 ^（调用级后缀顺序固定：^ 笛卡尔积 → ... 传播，§2.8）',
         en='[{location}] ^ cannot follow ... (call-level suffix order: ^ cartesian → ... propagate)',
+    ),
+    diagnostic_define(
+        'parse.postfix_order',
+        '[{location}] 约束后缀 `!?` 与 `?!` 等价，推荐写作 `?!`（先可空 `?`、后可缺失 `!`）',
+        en='[{location}] constraint suffix `!?` equals `?!`; prefer `?!` (nullable then absent)',
     ),
     diagnostic_define(
         'parse.template_arg_order',
@@ -125,3 +130,8 @@ register_diagnostic_define(
 def diag(code: str, params: dict[str, Any], source: SourceRange | None) -> Diagnostic:
     """构造语法阶段错误诊断（severity 恒为 ERROR）。"""
     return Diagnostic(Severity.ERROR, code, params, source)
+
+
+def warn(code: str, params: dict[str, Any], source: SourceRange | None) -> Diagnostic:
+    """构造语法阶段警告诊断（severity 恒为 WARNING）。"""
+    return Diagnostic(Severity.WARNING, code, params, source)

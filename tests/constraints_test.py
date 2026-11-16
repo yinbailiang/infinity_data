@@ -39,8 +39,11 @@ def test_type_nullable() -> None:
 
 
 def test_pure_nullable_question() -> None:
-    value = compile_ok('a: ? = null\nb: ? = noexist\n')
-    assert value == {'a': None}  # noexist 不出现
+    """`?` 仅允许 null；`!` 仅允许 noexist；两者组合用 any(?, !)。"""
+    value = compile_ok('a: ? = null\nb: ! = noexist\nc: <any(?, !)> = null\nd: <any(?, !)> = noexist\n')
+    assert value == {'a': None, 'c': None}  # noexist 不出现
+    assert compile_source('x: ? = noexist\n').has_errors
+    assert compile_source('x: ! = null\n').has_errors
 
 
 def test_special_float_passes_float_constraint() -> None:
@@ -162,18 +165,18 @@ def test_has_noexist_default() -> None:
     """
     # b 提供、a 默认 noexist → 只有 has(b) 满足，one 通过
     compile_ok(
-        '~R {\n    a: <int?> = noexist,\n    b: <int?> = noexist,\n    : <one(has(a), has(b))>,\n}\nx = R(b = 1)\n'
+        '~R {\n    a: <int!> = noexist,\n    b: <int!> = noexist,\n    : <one(has(a), has(b))>,\n}\nx = R(b = 1)\n'
     )
     # 都不提供 → 两个 has 都不满足 → one 失败
     assert compile_source(
-        '~R {\n    a: <int?> = noexist,\n    b: <int?> = noexist,\n    : <one(has(a), has(b))>,\n}\nx = R()\n'
+        '~R {\n    a: <int!> = noexist,\n    b: <int!> = noexist,\n    : <one(has(a), has(b))>,\n}\nx = R()\n'
     ).has_errors
 
 
 def test_field_noexist_is_missing() -> None:
     """回归：noexist 默认字段对 field(name, c) 视为缺失（约束不满足）。"""
-    assert compile_source('~R {\n    a: <int?> = noexist,\n    : <field(a, eq(1))>,\n}\nx = R()\n').has_errors
-    compile_ok('~R {\n    a: <int?> = noexist,\n    : <field(a, eq(1))>,\n}\nx = R(a = 1)\n')
+    assert compile_source('~R {\n    a: <int!> = noexist,\n    : <field(a, eq(1))>,\n}\nx = R()\n').has_errors
+    compile_ok('~R {\n    a: <int!> = noexist,\n    : <field(a, eq(1))>,\n}\nx = R(a = 1)\n')
 
 
 # ═══════════════════════════════════════════════════════════

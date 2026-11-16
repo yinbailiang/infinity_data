@@ -14,8 +14,9 @@ chars → RawTokenizer → FinalTokenizer → Parser
 
 ## 4.2 导入关键字在词法层组合
 
-- `!env` / `!file` / `!from` 由词法层组合为单一 token（避免语法层二义）
-- 单独的 `!` 或 `!` 后跟其他内容 → 词法错误
+- `!env` / `!file` / `!from` / `!var` 后紧跟关键字标识符时由词法层组合为单一 token（避免语法层二义）
+- 其他位置的 `!`（其后不接关键字标识符）是**独立标点**：约束后缀 `!`（可缺失）或独立约束 `!`
+- `!` 后跟非关键字标识符 → 拼写纠正（`tokenize.bang_corrected`）或词法错误（`tokenize.invalid_bang`）
 
 ## 4.3 顶层语句
 

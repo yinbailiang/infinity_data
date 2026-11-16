@@ -50,6 +50,7 @@ from infinity_data.semantic.registry.logic import (
     _check_when,
 )
 from infinity_data.semantic.registry.types import (
+    _check_absent,
     _check_bool,
     _check_dict,
     _check_dir,
@@ -136,7 +137,8 @@ class ConstraintRegistry:
         """注册语言规范 §1.2 的全部内置约束。"""
         # ── 类型约束 ──────────────────────────────
         self.register('object', _check_object, description='通用超类型，总是通过')
-        self.register('?', _check_nullable, description='纯可空类型：noexist 或 null')
+        self.register('?', _check_nullable, description='纯可空类型：值只能是 null')
+        self.register('!', _check_absent, description='纯可缺失类型：值只能是 noexist（键不存在）')
         self.register('int', _check_int, description='有符号整数')
         self.register('float', _check_float, description='十进制浮点（只接受 float，不含 int 提升）')
         self.register('str', _check_str, description='utf-8 字符串')

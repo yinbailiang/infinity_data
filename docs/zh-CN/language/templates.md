@@ -29,7 +29,7 @@
 示例:
 ```infd
 ~Features {
-    caching: <?> = noexist,
+    caching: <dict?!> = noexist,
     compression: bool = true,
 }
 
@@ -108,6 +108,7 @@ backend {
 - `field: TemplateName = value,`
 - `field: <TemplateName> = value,`
 - `field: TemplateName? = value,` （可空）
+- `field: TemplateName! = value,` （可缺失）
 - `field: <list, each(TemplateName)> [value,]` （与 each 组合）
 - `field: <any(TemplateName, OtherTemplate)> = value,` （与逻辑约束组合）
 
@@ -116,8 +117,8 @@ backend {
 校验器要求**完整形状**——模板声明的全部字段（含可选字段）都必须出现在值中:
 1. 验证值必须是字典（`null` / 字面量直接失败）。
 2. 逐字段校验：
-   - 值中**缺失**的字段：无默认值（必填）→ `template.missing_field`；
-     有默认值（可选）→ `template.missing_optional`——可选字段同样不可缺。
+   - 值中**缺失**的字段：约束接受 `noexist`（含 `!`，如 `dict!` / `any(T, !)`）→ 放行；
+     否则按有无默认值报 `template.missing_field` / `template.missing_optional`。
      两种情况都**不注入默认值**，缺失保持缺失。
    - 值中**存在**的字段：递归执行该字段声明的类型约束。
 3. 严格模式（`allow_extra=false`，默认）下，值中存在模板未声明的额外字段
@@ -125,7 +126,8 @@ backend {
 4. 模板自身的结构级约束（`: <...>`）照常执行。
 
 > 默认值只在**实例化**时生效（省略即填充）；作为校验器时默认值不参与给定值的
-> 形状，但默认值本身必须在定义期合法（§2.1）。
+> 形状，但默认值本身必须在定义期合法（§2.1）。字段可缺失用 `!` 声明
+> （如 `opt: dict!`）；不写 `!` 时可选字段也必须在值中声明。
 
 示例:
 ```infd

@@ -103,8 +103,8 @@ register_diagnostic_define(
     diagnostic_define('template.missing_field', '{path_prefix}模板 {template} 的必填字段 {field!r} 缺失'),
     diagnostic_define(
         'template.missing_optional',
-        '{path_prefix}模板 {template!r} 的可选字段 {field!r} 缺失（校验器要求完整形状：可选字段也不可缺）',
-        en='{path_prefix}optional field {field!r} of template {template!r} is missing (validators require the full shape)',
+        '{path_prefix}模板 {template!r} 的可选字段 {field!r} 缺失（完整形状要求声明字段；用 `!` 允许缺失）',
+        en='{path_prefix}optional field {field!r} of template {template!r} is missing (declare the field, or use `!` to allow absence)',
     ),
     # ═══════════════════════════════════════════════════════════
     # 字段 / 值 / $ 引用
