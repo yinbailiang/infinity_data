@@ -64,14 +64,18 @@ EofToken 后 `peek()` 仍会返回 `NoNextType`，相关守卫只是从"兜底"�
 - **沙盒错误**用异常 `SandboxError`（子类 `EnvNotAuthorizedError` /
   `EnvNotSetError` / `AccessDeniedError` / `SchemaError`）——因为必须**中止编译**
   （控制流），无法靠容错恢复继续。
-- 诊断定义**每层一个词汇表文件**，导入时经 `register_diagnostic_define()`
-  合并进全局注册表：
+- 诊断声明**每层一个词汇表文件**，每个声明是 `@dataclass(frozen=True)`
+  （`code` / `severity` / `templates` 为 `ClassVar`，字段即类型化参数），
+  `@registry.register` 导入即注册并做注册期校验：
   - `tokenizer/diagnostics.py` → `tokenize.*`
-  - `parser/diagnostics.py` → `parse.*`
+  - `parser/diagnostics.py` → `parse.*`（含语法层即报的 `template.dup_argument`）
   - `semantic/diagnostics.py` → `template.*` / `constraint.*` / `value.*` 等
-  - `sandbox/errors.py` → `sandbox.*` / `schema.*`（异常携带 code/params/source）
-- 消息由注册表按错误码 + 结构化 params 渲染（缺译回退 `DEFAULT_LANG='zh'`），
-  语义/约束层**不手工拼字符串**。
+  - `sandbox/errors.py` → `sandbox.*` / `schema.*`（异常携带声明实例 + source）
+- 消息由声明模板按语言渲染：精确 `zh-CN` / `en-US`；回退链
+  请求语言 → `I18N_LANGS_FALLBACK`（zh-CN、en-US），回退标记写入消息正文；
+  `DEFAULT_LANG='en-US'`，每次编译由 `DiagnosticCollector` 构造时探测
+  （LC_ALL > LC_MESSAGES > LANG > LANGUAGE > en-US）。
+  语义/约束层**不手工拼字符串**，也不再用 code + params 映射。
 
 ### 取舍：值位置错误的归属在 parser
 
@@ -160,3 +164,106 @@ Lparen/Rparen 级联错误。在值位置识别字段定义边界可以**止住�
 - 空源码 → 空 `StdDocument`（不算错误）。
 - **BOM 归词法层**：`RawTokenizer._detect_bom` 报 `tokenize.bom`（WARNING）并跳过
   ——文件格式问题由词法层报告，而非编译核心。
+
+---
+
+## 7. 三态标记拆分与完整形状校验（v4 语义）
+
+- **`?` 与 `!` 职责拆分**：`?` 仅表示 `null`（键存在、值为 null），
+  `!` 仅表示 `noexist`（键不存在）。
+  - 展开：`T?` → `any(T, ?)`、`T!` → `any(T, !)`、`T?!` / `T!?` →
+    `any(T, ?, !)`
+  - 推荐 `?!`；`!?` 等价但报 `parse.postfix_order` WARNING
+- **词法层的 `!`**：`!` + `env/file/from/var` 组合为导入 token；其余位置为独立
+  `EXCLAMATION` 标点——裸 `!`、`!@`、`!5` 不再报 `invalid_bang`。
+  仅当 `!` 后是**近似导入关键字**的标识符时保留拼写纠正
+  （`tokenize.bang_corrected`）或 `tokenize.invalid_bang`。
+- **完整形状**：模板即约束 / schema 要求字段显式声明，可选字段也不可缺。
+  缺失字段是否放行，唯一判据是**字段约束是否接受 noexist**：
+  `executor._accepts_absent` 对合成 `StdLiteral(kind='noexist')` 执行字段约束，
+  全部通过才放行（诊断丢弃）；空约束列表不接受。
+  不再按「有默认值 → `missing_optional`」一刀切，也不注入默认值。
+- 迁移影响：`int?` 不再接受 noexist；`<?> = noexist` 应写 `<dict?!>`，
+  `<int?> = noexist` 应写 `<int!>`。
+- 实现位置：`tokenizer._read_bang`、`parser._apply_postfix`、
+  `registry.types._check_nullable/_check_absent`、`executor._accepts_absent`。
+
+---
+
+## 8. 定义期校验：能静态发现的错不推迟到实例化
+
+- **模板字段重名**属定义错误（§1.1「同一 dict 含模板定义内」）：
+  Phase 1 `TemplateGraphResolver._check_duplicate_fields` 报
+  `dict.duplicate_key`，定义期去重（保留先到者）后再入模板表；
+  实例化不二次报告，重复项不进入必填字段列表。本地模板与 `!from` 导入的
+  `.inft` 走同一检查。
+- **约束签名**（`constraint.unknown` / `constraint.arg_count`）由 Phase 2b
+  `ConstraintExecutor.validate_templates` 静态校验；执行器是唯一同时持有注册表
+  与模板表（含真名映射）的组件，Phase 2a 设计上零注册表依赖。
+- **只校验顶层约束声明**：`has(x)` / `field(x, c)` 的参数是名字而非约束，
+  静态层无法区分；嵌套约束仍在执行时校验。被实例化的模板会在定义点与调用点
+  各报一次（两个位置都指向真实错误）。
+- **参数个数规则单一实现**：`ConstraintEntry.arity_error()`，执行期 `apply`
+  与定义期静态校验共用，避免两处漂移。
+- **默认值与 `!var` 值也做定义期校验**：Phase 2a 产出
+  `StdDocument.template_defaults`（定义点 scope 求值）与 `var_values`
+  （jsonpath 投影**前**的完整值）；Phase 2b `validate_template_defaults` /
+  `validate_var_values` 即使模板从未实例化、`!var` 未被 root 引用也会报错。
+  - 默认值路径 `Template.field`；`!var` 路径 `$别名`
+  - 递归默认值环上的字段跳过（`template.recursive_default` 根因优先）
+  - 已知噪音：非法约束签名可能在约束声明 / 默认值 / 实例值三处各报一次
+
+---
+
+## 9. 模板身份纳入数据依赖（env 取值）
+
+- **环境变量取值必须进入模板身份哈希**：早期「跨机器可复现」假设是错的——
+  静默漂移（不同机器 env 值不同、身份却相同）比身份不稳定更危险。
+- 导入真名：`!env` = `SHA256("env" || 名称 || 值)`，值取自 `$` 命名空间
+  （与实际绑定同源，不二次读环境）；`!var` 真名包含依赖绑定的真名
+  （env / file / var 链）；var 环退化为自身 payload 哈希（终止、可复现）。
+- 模板身份沿 Merkle 链间接覆盖 env 取值；未引用 `$` 的模板不受影响。
+- **已知局限**：`!var` 表达式内调用模板时，模板默认值里的 `$` 依赖不进入
+  var 真名（会与模板身份形成环），此类漂移目前不可见。
+- 实现位置：`semantic/resolver/imports.py#import_identities`、
+  `semantic/resolver/identity.py`；文档 §1.8 / §2.5。
+
+---
+
+## 10. 诊断声明与多语言渲染（v3.3.1）
+
+- **单层定义**：声明类本身即参数 dataclass（`code` / `severity` / `templates`
+  为 `ClassVar`，字段为真实类型参数）；`@registry.register` 导入即注册并校验：
+  dataclass、code 全局唯一、`en-US` 必存、模板非空、占位符 ⊆ 字段 ∪
+  保留上下文（`location_prefix` / `path_prefix`）、禁止 `Any` / `object`。
+- `Diagnostic` 持有声明实例 + `source` / `path` / `severity` 覆盖 / `lang`；
+  提供 `effective_severity`、`render(lang, include_location)`、`to_dict()`。
+  沙盒异常同样持有声明实例，不再用 code + params 映射。
+- **语言**：`DEFAULT_LANG='en-US'`；每次编译由 `DiagnosticCollector` 构造时探测
+  （`LC_ALL > LC_MESSAGES > LANG > LANGUAGE > en-US`）。回退链固定为
+  请求语言 → `zh-CN` → `en-US`，不扫描任意模板键；回退标记
+  `[fallback: lang]` 写入消息正文（有意可见），渲染异常返回固定错误文案。
+- **已删除兼容层**：`Diagnostic.message` / `.params`、`DiagnosticDefine`、
+  `render_message`、`diagnostic_define`、`register_diagnostic_define`、
+  `registered_diagnostic_defines`。`ErrorValue` / `ErrorConstraint.message`
+  仅为 parser 恢复载荷；`error.generic` 重复报告已删除。
+- 注册声明 151 条（tokenizer / parser / semantic / sandbox 四层词汇表，
+  全部 zh-CN + en-US）。`CompileOptions.lang` 贯穿公共 API；
+  CLI `--lang` / `--diag-format json`；LSP `initializationOptions.lang` +
+  `diagnostic.data`。
+
+---
+
+## 11. LSP 预览统一走 emit
+
+- LSP 悬停/结构预览不再自写 JSON 序列化：
+  `_preview_json` 使用
+  `dump_to_json(value, EmitConfig(full_float=True, full_path=True, keep_noexist=True))`。
+- 编译产物直接传 `StdValue`（emit 支持 std 输入）；模板骨架传已投影的 Python 值。
+  path → `{"__type__": "path", ...}`、Decimal → `{"__type__": "decimal", ...}`、
+  noexist → `{"__type__": "noexist"}`。
+- 旧 `_dump_json` 把 Decimal 转 float（丢精度），path 直接 `TypeError`
+  （模板默认值为 path 时悬停崩溃）——已由 emit 统一修复。
+- **错误节点容错**：`_structure_value(ErrorValue)` 与 `_constraint_text(ErrorConstraint)`
+  返回 `<错误>` 占位；未知节点回退 `…`，悬停对畸形文档任意位置不抛异常。
+- 相关测试：`tests/lsp/language_test.py` 预览段（完整语义 + 错误节点）。

@@ -9,7 +9,7 @@
 > 本文件是长期维护的项目记忆，记录「为什么这样设计」；对外教程与语言规范见 `docs/`。
 >
 > **文档状态（v3.3.0，2026-11）**：第 2–5、8 章已按当前代码校准；
-> 尚未落地的能力统一标注「规划」。当前实现基线：753 个测试通过、
+> 尚未落地的能力统一标注「规划」。当前实现基线：839 个测试通过、
 > ruff 干净、pyright strict 零错误。
 
 ---
@@ -79,7 +79,7 @@ from infinity_data import (
     Schema,             # 顶层 schema 约束
     SchemaError,        # schema 违规异常（继承 SandboxError）
     CompilationResult,  # 编译结果：document / value / diagnostics / has_errors / warnings
-    Diagnostic,         # 诊断（code / params / severity / source / message）
+    Diagnostic,         # 诊断（声明实例 + source / path / severity 覆盖 / lang；render() / to_dict()）
     Severity,           # ERROR / WARNING / INFO / DEBUG
 )
 
@@ -119,12 +119,13 @@ def load(
     sandbox: SandboxConfig | None = None,       # 默认 deny_all()（零信任，库默认）
     registry: ConstraintRegistry | None = None, # 自定义约束注册表
     schema: Schema | None = None,               # 顶层模板约束
+    lang: str | None = None,                    # 诊断语言（zh-CN / en-US；缺省按环境探测）
 ) -> CompilationResult:
     """加载 .infd/.inft 文件并编译，返回 CompilationResult。
 
     Args:
         path: 文件路径（相对导入以此为基准）
-        其余选项见 CompileOptions（env / sandbox / registry / schema）
+        其余选项见 CompileOptions（env / sandbox / registry / schema / lang）
 
     沙盒/schema 违规**不抛出**：编译核心转为 ERROR 诊断，返回空文档
     （result.has_errors / result.diagnostics / result.value）。
@@ -388,6 +389,11 @@ emit ──→ to_json() / to_yaml() / to_toml()（有损投影）
   主文件与 `!from` 导入文件共用
 - 三阶段语义流水线在 `pipeline._compile` 顶层组装，阶段间只经数据模型耦合；
   单一 `DiagnosticCollector` 从词法到语义全程复用
+- **定义期校验**：Phase 2a 额外产出模板默认值与 `!var` 完整值（jsonpath
+  投影前），Phase 2b 即使模板未实例化 / `!var` 未被引用也校验（
+  [internals §8](./internals.md#8-定义期校验能静态发现的错不推迟到实例化)）
+- **完整形状**：模板即约束 / schema 要求可选字段也显式声明；缺失字段是否
+  放行，唯一判据是字段约束是否接受 noexist（[internals §7](./internals.md#7-三态标记拆分与完整形状校验v4-语义)）
 - 公共 API（`load` / `safe_load` / `compile_source` / `check` / `compile_document`）
   都是 `_compile` 的薄包装
 
@@ -693,7 +699,7 @@ InfinityData 作为 JSON Schema 的"最佳编写方式"：
 
 | 能力 | 状态 | 说明 |
 |------|:--:|------|
-| **诊断 (Diagnostics)** | ✅ | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`；精确 `SourceRange` + 稳定错误码 + 中文消息；UTF-16 对齐 |
+| **诊断 (Diagnostics)** | ✅ | `didOpen`/`didChange`/`didSave` → `publishDiagnostics`；精确 `SourceRange` + 稳定错误码 + 多语言消息（zh-CN / en-US）；UTF-16 对齐 |
 | **补全 (Completion)** | ✅ | `$` 命名空间、内置约束名、当前文件可见模板名、模板字段（必填/可选）、语言关键字 |
 | **悬停 (Hover)** | ✅ | 约束描述、编译产物预览、被实例化的模板、`$` 变量值（定义点/调用点）、模板结构骨架 |
 | **跳转定义 (Definition)** | ✅ | 模板调用 / `!from` 导入 / `$` 引用（含跨文件） |
