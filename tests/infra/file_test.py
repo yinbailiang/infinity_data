@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from infinity_data.infra.file import DiskFile, MemFile
+from infinity_data.sandbox import Sandbox, SandboxConfig
 
 
 def test_mem_read_and_chars() -> None:
@@ -38,3 +39,28 @@ def test_disk_root_path_derived() -> None:
     # name 是原生 Path 字符串（Windows 上为反斜杠）→ as_posix 归一化比较
     assert Path(df.name).as_posix() == '/a/b/c.infd'
     assert df.root_path == Path('/a/b')
+
+
+def test_disk_read_is_cached_per_instance(tmp_path: Path) -> None:
+    """同一 DiskFile 只读一次；需要新内容时重新构造。"""
+    p = tmp_path / 'x.infd'
+    p.write_text('a = 1\n', encoding='utf-8')
+    df = DiskFile.from_fullpath(p)
+    assert df.read() == 'a = 1\n'
+    p.write_text('b = 2\n', encoding='utf-8')
+    assert df.read() == 'a = 1\n'
+    assert DiskFile.from_fullpath(p).read() == 'b = 2\n'
+
+
+def test_sandbox_reuses_disk_file_instance(tmp_path: Path) -> None:
+    """同一次编译的 Sandbox 内，同一目标路径返回同一 DiskFile（读取缓存生效）。"""
+    p = tmp_path / 'x.infd'
+    p.write_text('a = 1\n', encoding='utf-8')
+    sandbox = Sandbox(config=SandboxConfig.full_access(), base_dir=tmp_path)
+    f1 = sandbox.open_file(str(p))
+    f2 = sandbox.open_file(str(p))
+    assert f1 is not None and f2 is not None
+    assert f1 is f2
+    assert f1.read() == 'a = 1\n'
+    p.write_text('b = 2\n', encoding='utf-8')
+    assert f2.read() == 'a = 1\n'

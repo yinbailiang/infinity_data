@@ -4,15 +4,19 @@
 
 - ``name``：诊断显示名（``file:line:col`` 中的 file）
 - ``root_path``：相对导入解析基准（所在目录）
-- ``read()``：源码内容
+- ``read()``：源码内容（DiskFile 按实例缓存）
 - ``chars()``：逐字符迭代流（词法分析输入）
 - ``identity``：唯一身份（磁盘 = resolve 后绝对路径；内存 = ``路径:mem:内容hash``）；模板身份（TemplateKey）基于它，含来源路径
 - ``content_hash()``：内容 sha256 前缀（MemFile 身份的一部分 / 内容校验）
+
+缓存语义：同一个 ``DiskFile`` 实例只读盘一次；需要观察磁盘变化请重新构造
+``DiskFile`` / 重新编译。``MemFile`` 内容本就在内存中，不额外缓存。
 """
 
 import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 __all__ = ['File', 'DiskFile', 'MemFile']
@@ -52,9 +56,14 @@ class DiskFile(File):
         """完整路径（``name`` 的 :class:`Path` 视图）。"""
         return Path(self.name)
 
-    def read(self) -> str:
-        """读取源码内容（utf-8）。"""
+    @cached_property
+    def _text(self) -> str:
+        """磁盘内容（按实例缓存，首次读取后不再读盘）。"""
         return self.path.read_text(encoding='utf-8')
+
+    def read(self) -> str:
+        """读取源码内容（首次读盘，之后复用缓存）。"""
+        return self._text
 
     @property
     def identity(self) -> str:
@@ -84,5 +93,5 @@ class MemFile(File):
 
     @property
     def identity(self) -> str:
-        """身份 = 根路径:mem:内容hash（循环导入防护 / 缓存键）。"""
+        """身份 = 根路径:mem:内容hash（循环导入防护 / parse_cache 键）。"""
         return str(self.root_path.resolve()) + ':mem:' + self.content_hash()

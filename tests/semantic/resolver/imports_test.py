@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -162,8 +163,33 @@ def test_import_identities_toml_file(tmp_path: Path) -> None:
     r = ImportResolver(sandbox=sb)
     ids1 = r.import_identities(doc, {})
     (tmp_path / 'data.toml').write_text('port = 2\n', encoding='utf-8')
-    ids2 = r.import_identities(doc, {})
+    # File 读取按实例缓存：观察文件变化需要新的 Sandbox / 编译会话
+    sb2 = Sandbox(SandboxConfig(allow_files=['./data.toml']), base_dir=tmp_path)
+    ids2 = ImportResolver(sandbox=sb2).import_identities(doc, {})
     assert ids1['p'] != ids2['p']
+
+
+def test_import_identity_reuses_resolved_file_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve 已读过的文件在 import_identities 阶段复用缓存，不再二次读盘。"""
+    (tmp_path / 'data.toml').write_text('port = 1\n', encoding='utf-8')
+    file = MemFile(name='t.infd', root_path=tmp_path, content='!file p"data.toml" as toml import .port as p\n')
+    doc, _ = parse_source(file)
+    sandbox = Sandbox(SandboxConfig(allow_files=['./data.toml']), base_dir=tmp_path)
+    resolver = ImportResolver(sandbox=sandbox)
+
+    calls = 0
+    original = Path.read_text
+
+    def counting(self: Path, *args: Any, **kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', counting)
+    namespace = resolver.resolve(doc, DiagnosticCollector())
+    identities = resolver.import_identities(doc, namespace)
+    assert identities
+    assert calls == 1
 
 
 def test_parse_data_yaml_missing_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
