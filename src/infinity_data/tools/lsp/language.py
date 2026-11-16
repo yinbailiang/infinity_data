@@ -87,8 +87,10 @@ LANGUAGE_KEYWORDS: list[tuple[str, str]] = [
     ('!file', '现有配置导入：!file p"path" as fmt import .a.b as x'),
     ('!from', '模板导入：!from p"path" import Tpl [as Alias]'),
     ('!var', '本地注入：!var <值表达式> import [path] as NAME'),
+    ('!assert', '编译期断言：!assert <值表达式> is <约束>'),
     ('import', '导入语句关键字'),
     ('as', '别名关键字（$name as int）'),
+    ('is', '断言关键字：!assert <值表达式> is <约束>'),
     ('~', '模板定义：~Name { ... }'),
     ('...', '模板展开：参数级 = 展开轴，调用级 = 笛卡尔积'),
     ('^', '笛卡尔积：调用级 ^ 后缀，多轴全组合展开'),
@@ -169,10 +171,11 @@ _TOKEN_MAP: dict[RawTokenType, int] = {
     _RAW.FILE_IMPORT: 3,
     _RAW.FROM_IMPORT: 3,
     _RAW.VAR_IMPORT: 3,
+    _RAW.ASSERT: 3,
 }
 
 # 上下文关键字（词法层为普通标识符，语法层才识别）
-_CONTEXTUAL_KEYWORDS = frozenset({'import', 'as'})
+_CONTEXTUAL_KEYWORDS = frozenset({'import', 'as', 'is'})
 
 
 def semantic_tokens(text: str, file_path: str) -> list[int]:
@@ -196,7 +199,7 @@ def semantic_tokens(text: str, file_path: str) -> list[int]:
             continue
         type_idx = _TOKEN_MAP.get(tok.type)
         if type_idx is None:
-            # 标识符：上下文关键字（import / as）→ keyword，其余 → variable
+            # 标识符：上下文关键字（import / as / is）→ keyword，其余 → variable
             if tok.type is _RAW.IDENTIFIER:
                 type_idx = 3 if tok.raw in _CONTEXTUAL_KEYWORDS else 4
             else:

@@ -123,6 +123,14 @@ def test_semantic_tokens_types() -> None:
     assert 5 in types  # comment
 
 
+def test_semantic_tokens_assert_keywords() -> None:
+    """!assert 与断言中的 is 都应标注为 keyword。"""
+    spans = _decode_semantic('!assert [1] is <list>\n')
+    keywords = {(char, length) for _, char, length, token_type in spans if token_type == 3}
+    assert (0, len('!assert')) in keywords
+    assert (12, len('is')) in keywords
+
+
 def test_semantic_tokens_comment_excluded_inside_string() -> None:
     """字符串内的 # 不应被识别为注释。"""
     text = 'a = "x#y"\n# real comment\n'
