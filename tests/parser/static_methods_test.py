@@ -33,7 +33,7 @@ from infinity_data.parser.parser import Parser
 from infinity_data.parser.token_stream import TokenStream
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
-from infinity_data.tokenizer.models.tokens import IdentifierToken, IntegerToken
+from infinity_data.tokenizer.models.tokens import BoolToken, IdentifierToken, IntegerToken
 from infinity_data.tokenizer.tokenizer import RawTokenizer
 
 
@@ -68,7 +68,7 @@ def test_starts_constraint() -> None:
 
 def test_literal_config_value() -> None:
     col = DiagnosticCollector()
-    lit = Parser._wrap_literal(_stream('true', col).peek())
+    lit = Parser._wrap_literal(_stream('true', col).expect(BoolToken))
     assert Parser._literal_config_value(lit) is True
 
 
@@ -254,7 +254,7 @@ def test_apply_template_config() -> None:
     col = DiagnosticCollector()
     config = TemplateConfig()
     key_tok = _stream('allow_extra', col).expect(IdentifierToken)
-    value = Parser._wrap_literal(_stream('true', col).peek())
+    value = Parser._wrap_literal(_stream('true', col).expect(BoolToken))
     Parser._apply_template_config(col, config, key_tok, value)
     assert config.allow_extra is True
     assert not col.has_errors
@@ -264,7 +264,7 @@ def test_apply_template_config_unknown_key_reports() -> None:
     col = DiagnosticCollector()
     config = TemplateConfig()
     key_tok = _stream('bogus', col).expect(IdentifierToken)
-    value = Parser._wrap_literal(_stream('true', col).peek())
+    value = Parser._wrap_literal(_stream('true', col).expect(BoolToken))
     Parser._apply_template_config(col, config, key_tok, value)
     assert any(d.code == 'parse.template_config_unknown' for d in col)
 

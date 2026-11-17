@@ -284,7 +284,7 @@ class ImportResolver:
                 return json.loads(text)
             if fmt in ('yaml', 'yml'):
                 try:
-                    import yaml  # pyright: ignore[reportMissingModuleSource]
+                    import yaml
                 except ImportError:
                     collector.add(ImportYamlMissing(), source)
                     return None

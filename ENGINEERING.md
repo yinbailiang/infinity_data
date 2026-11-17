@@ -18,6 +18,10 @@ InfinityData 是一个工程纪律驱动的声明式配置语言编译器。以�
 | 生产代码 `# type: ignore` | **0** |
 | 当前错误 | **0 errors, 0 warnings** |
 
+「零遮蔽」不靠人工审查：`tests/hygiene_test.py` 扫描 `src/infinity_data/` 下任意
+`# type:` / `# pyright:` 注释，命中即测试失败。CI 测试矩阵与 pre-commit 的
+`pytest-cov` 钩子都会执行该守卫，新增遮蔽无法合入。
+
 ```toml
 [tool.pyright]
 typeCheckingMode = "strict"

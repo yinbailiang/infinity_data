@@ -94,6 +94,7 @@ from infinity_data.tokenizer.models.tokens import (
     LangleToken,
     LbraceToken,
     LbracketToken,
+    LiteralToken,
     LparenToken,
     NewlineToken,
     NoexistToken,
@@ -1128,8 +1129,8 @@ class Parser:
                 base = ConstraintIdent(source=tok.raw.source, name=name)
                 return Parser._apply_postfix(base, stream, collector, initial=name)
 
-            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | PathToken():
-                base = Parser._parse_constraint_literal(stream)
+            case StringToken() | IntegerToken() | FloatToken() | BoolToken() | NullToken() | PathToken() as tok:
+                base = Parser._parse_constraint_literal(stream, tok)
 
             case _:
                 if isinstance(tok, (NoNextType, EofToken)):
@@ -1172,9 +1173,8 @@ class Parser:
         )
 
     @staticmethod
-    def _parse_constraint_literal(stream: TokenStream) -> ConstraintLiteral:
+    def _parse_constraint_literal(stream: TokenStream, tok: LiteralToken) -> ConstraintLiteral:
         """解析约束中的字面量参数，包装为 ConstraintLiteral。"""
-        tok = stream.peek()
         stream.advance()
         lit = Parser._wrap_literal(tok)
         return ConstraintLiteral(source=lit.source, value=lit)
@@ -1251,10 +1251,9 @@ class Parser:
                 return ErrorValue(source=source, message=f'无法解析的值: {name}')
 
     @staticmethod
-    def _wrap_literal(tok: Token | NoNextType | None) -> LiteralValue:
+    def _wrap_literal(tok: LiteralToken) -> LiteralValue:
         """将字面量 Token 包装为 LiteralValue。"""
-        assert not isinstance(tok, NoNextType) and tok is not None
-        return LiteralValue(source=tok.raw.source, value=tok)  # type: ignore[arg-type]
+        return LiteralValue(source=tok.raw.source, value=tok)
 
     @staticmethod
     def _parse_dollar_value(stream: TokenStream, collector: DiagnosticCollector) -> DollarValue:

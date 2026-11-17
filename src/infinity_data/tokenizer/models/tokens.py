@@ -292,3 +292,8 @@ class NewlineToken(Token):
 @dataclass
 class EofToken(Token):
     pass
+
+
+# 字面量 token 联合类型：值 / 约束参数位置可出现的 token，
+# 供 `LiteralValue` 与解析辅助函数共用，避免各处重复书写同一联合。
+LiteralToken = FloatToken | IntegerToken | BoolToken | NullToken | NoexistToken | StringToken | PathToken

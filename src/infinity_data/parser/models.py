@@ -8,15 +8,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
-from infinity_data.tokenizer.models.tokens import (
-    BoolToken,
-    FloatToken,
-    IntegerToken,
-    NoexistToken,
-    NullToken,
-    PathToken,
-    StringToken,
-)
+from infinity_data.tokenizer.models.tokens import LiteralToken
 
 # ═══════════════════════════════════════════════════════════
 # 规范化序列化辅助（canonical 输出标准 infd 源码，可被 parser 还原）
@@ -451,7 +443,7 @@ class Constraints(AstNode):
 class LiteralValue(AstNode):
     """字面量值"""
 
-    value: FloatToken | IntegerToken | BoolToken | NullToken | NoexistToken | StringToken | PathToken
+    value: LiteralToken
 
     def canonical(self) -> str:
         return self.value.canonical()
