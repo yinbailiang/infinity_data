@@ -125,3 +125,51 @@ def test_unterminated_value_no_crash() -> None:
     for src in ['x = [1,\n', 'x = [1', 'x = {a = ', 'a: ', '~X { a: ']:
         doc, _ = _parse(src)
         assert doc is not None
+
+
+# ── 字符串标识符（仅字段名） ──────────────────────
+
+
+def test_quoted_field_name_top_level() -> None:
+    doc, diags = _parse("'a-b@c$d' = 1\n")
+    assert not diags
+    field = doc.statements[0]
+    assert isinstance(field, Field) and field.name == 'a-b@c$d'
+
+
+def test_quoted_field_name_normalized_when_bare() -> None:
+    # 冗余引号在 FinalTokenizer 归一（警告由 finalizer_test 覆盖，此处验证 AST 名字）
+    doc, _ = _parse("'abc' = 1\n")
+    field = doc.statements[0]
+    assert isinstance(field, Field) and field.name == 'abc'
+
+
+def test_quoted_dict_key() -> None:
+    doc, diags = _parse("y = {'a-b' = 1}\n")
+    assert not diags
+    field = doc.statements[0]
+    assert isinstance(field, Field) and isinstance(field.value, DictValue)
+    item = field.value.items[0]
+    assert isinstance(item, Field) and item.name == 'a-b'
+
+
+def test_quoted_template_field_and_named_arg() -> None:
+    doc, diags = _parse("~T {\n    'a-b': int = 1\n}\nx = T('a-b' = 2)\n")
+    assert not diags
+    tpl = doc.statements[0]
+    assert isinstance(tpl, TemplateDef) and tpl.fields[0].name == 'a-b'
+
+
+def test_string_identifier_in_value_position_reports() -> None:
+    _, diags = _parse("x = 'a-b'\n")
+    assert [d.code for d in diags] == ['parse.string_identifier_misplaced']
+
+
+def test_string_identifier_as_template_name_reports() -> None:
+    _, diags = _parse("~'a-b' {}\n")
+    assert 'parse.string_identifier_misplaced' in [d.code for d in diags]
+
+
+def test_string_identifier_as_constraint_reports() -> None:
+    _, diags = _parse("x: 'a-b' = 1\n")
+    assert 'parse.string_identifier_misplaced' in [d.code for d in diags]

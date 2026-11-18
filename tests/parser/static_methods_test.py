@@ -33,7 +33,7 @@ from infinity_data.parser.parser import Parser
 from infinity_data.parser.token_stream import TokenStream
 from infinity_data.tokenizer.finalizer import FinalTokenizer
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
-from infinity_data.tokenizer.models.tokens import BoolToken, IdentifierToken, IntegerToken
+from infinity_data.tokenizer.models.tokens import BareIdentifierToken, BoolToken, IdentifierToken, IntegerToken
 from infinity_data.tokenizer.tokenizer import RawTokenizer
 
 
@@ -152,7 +152,7 @@ def test_parse_constraints_nullable_wraps_any() -> None:
 def test_parse_constraint_call() -> None:
     col = DiagnosticCollector()
     s = _stream('regex("re")', col)
-    name_tok = s.expect(IdentifierToken)
+    name_tok = s.expect(BareIdentifierToken)
     call = Parser._parse_constraint_call(s, col, name_tok)
     assert call.name == 'regex'
     assert len(call.arguments) == 1
@@ -233,7 +233,7 @@ def test_parse_object_unpack_keeps_order() -> None:
 def test_parse_template_call() -> None:
     col = DiagnosticCollector()
     s = _stream('X(a=1, 2)', col)
-    name_tok = s.expect(IdentifierToken)
+    name_tok = s.expect(BareIdentifierToken)
     call = Parser._parse_template_call(s, col, name_tok)
     assert isinstance(call, TemplateCallValue)
     assert call.template_name == 'X'
@@ -253,7 +253,7 @@ def test_parse_template_field() -> None:
 def test_apply_template_config() -> None:
     col = DiagnosticCollector()
     config = TemplateConfig()
-    key_tok = _stream('allow_extra', col).expect(IdentifierToken)
+    key_tok = _stream('allow_extra', col).expect(BareIdentifierToken)
     value = Parser._wrap_literal(_stream('true', col).expect(BoolToken))
     Parser._apply_template_config(col, config, key_tok, value)
     assert config.allow_extra is True
@@ -263,7 +263,7 @@ def test_apply_template_config() -> None:
 def test_apply_template_config_unknown_key_reports() -> None:
     col = DiagnosticCollector()
     config = TemplateConfig()
-    key_tok = _stream('bogus', col).expect(IdentifierToken)
+    key_tok = _stream('bogus', col).expect(BareIdentifierToken)
     value = Parser._wrap_literal(_stream('true', col).expect(BoolToken))
     Parser._apply_template_config(col, config, key_tok, value)
     assert any(d.code == 'parse.template_config_unknown' for d in col)

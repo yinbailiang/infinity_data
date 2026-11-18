@@ -64,3 +64,10 @@ def test_error_node_canonical_escapes_message() -> None:
     msg = '含 "引号" 与 \\ 反斜杠'
     v = ErrorValue(source=SourceRange.empty(), message=msg)
     assert v.canonical() == f'error({json.dumps(msg, ensure_ascii=False)})'
+
+
+def test_field_canonical_quotes_non_bare_names() -> None:
+    assert Field(source=SourceRange.empty(), name='abc').canonical() == 'abc'
+    assert Field(source=SourceRange.empty(), name='a-b').canonical() == "'a-b'"
+    assert Field(source=SourceRange.empty(), name='true').canonical() == "'true'"
+    assert Field(source=SourceRange.empty(), name="a'b").canonical() == "'a\\'b'"

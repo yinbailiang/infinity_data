@@ -5,13 +5,16 @@ from pathlib import Path
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.infra.file import MemFile
 from infinity_data.tokenizer.finalizer import FinalTokenizer
+from infinity_data.tokenizer.identifiers import quote_identifier
 from infinity_data.tokenizer.keywords import BangKeyword
 from infinity_data.tokenizer.models.tokens import (
     BangKeywordToken,
+    BareIdentifierToken,
     EofToken,
     FloatToken,
     IdentifierToken,
     IntegerToken,
+    StringIdentifierToken,
     StringToken,
     Token,
 )
@@ -78,3 +81,70 @@ def test_malformed_exponent_handled_at_lexer() -> None:
     assert any(d.code == 'tokenize.invalid_number' for d in col)
     assert isinstance(toks[2], FloatToken)
     assert toks[2].value == 1  # Decimal('1e0')
+
+
+# ── 字符串标识符 ───
+
+
+def test_string_identifier_bare_normalized_with_warning() -> None:
+    toks, col = _final("'abc'")
+    assert isinstance(toks[0], BareIdentifierToken)
+    assert toks[0].name == 'abc'
+    assert [d.code for d in col] == ['tokenize.redundant_identifier_quotes']
+
+
+def test_string_identifier_kept_when_not_bare() -> None:
+    toks, col = _final("'a-b@c$d'")
+    assert isinstance(toks[0], StringIdentifierToken)
+    assert toks[0].name == 'a-b@c$d'
+    assert list(col) == []
+
+
+def test_string_identifier_reserved_literal_kept() -> None:
+    toks, _ = _final("'true'")
+    assert isinstance(toks[0], StringIdentifierToken)
+    assert toks[0].name == 'true'
+
+
+def test_string_identifier_escapes_decoded() -> None:
+    toks, col = _final(r"'a\'b\u0063'")
+    assert isinstance(toks[0], StringIdentifierToken)
+    assert toks[0].name == "a'bc"
+    assert list(col) == []
+
+
+def test_string_identifier_empty_reports() -> None:
+    toks, col = _final("''")
+    assert [d.code for d in col] == ['tokenize.empty_identifier']
+    assert isinstance(toks[0], BareIdentifierToken)
+    assert toks[0].name == ''
+
+
+def test_string_identifier_invalid_escape_reports() -> None:
+    toks, col = _final(r"'a\q'")
+    assert any(d.code == 'tokenize.invalid_escape' for d in col)
+    assert isinstance(toks[0], StringIdentifierToken)
+
+
+def test_string_identifier_canonical_round_trip() -> None:
+    """quote_identifier 的 JSON 风格转义必须能被 FinalTokenizer 解码回原名字。"""
+    name = 'a\nb"c\'d\\e\x01'
+    toks, col = _final(quote_identifier(name))
+    assert isinstance(toks[0], StringIdentifierToken)
+    assert toks[0].name == name
+    assert list(col) == []
+
+
+def test_string_identifier_surrogate_pair_decoded() -> None:
+    r"""\uXXXX 代理对交给 json.loads 合并（自写解码器会留下孤立代理字符）。"""
+    toks, col = _final(r"'\ud83d\ude00'")
+    assert isinstance(toks[0], StringIdentifierToken)
+    assert toks[0].name == '😀'
+    assert list(col) == []
+
+
+def test_string_identifier_raw_control_char_reports() -> None:
+    """与控制字符必须转义（JSON 风格，与双引号字符串一致）。"""
+    toks, col = _final("'a\tb'")
+    assert any(d.code == 'tokenize.invalid_escape' for d in col)
+    assert isinstance(toks[0], StringIdentifierToken)

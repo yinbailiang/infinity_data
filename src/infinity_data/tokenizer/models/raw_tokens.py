@@ -47,7 +47,8 @@ class RawTokenType(Enum):
     NOEXIST = 'noexist'
 
     # ── 标识符 / 关键字 ────────────────────────────
-    IDENTIFIER = 'identifier'
+    IDENTIFIER = 'identifier'  # 裸标识符（[A-Za-z_][A-Za-z0-9_]*）
+    STRING_IDENTIFIER = 'str_identifier'  # 单引号标识符（'a-b@c$d'）
 
     # ── Bang 组合关键字（! + 标识符，词法阶段识别，避免语法阶段二义）──
     BANG_KEYWORD = 'bang_keyword'  # raw='!env' / '!file' / '!from' / '!var' / '!assert'

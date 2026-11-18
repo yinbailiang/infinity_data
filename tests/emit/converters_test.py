@@ -254,3 +254,11 @@ def test_dump_load_roundtrip_std_is_lossless() -> None:
         ]
     )
     assert python_to_std(load_from_json(dump_to_json(obj))) == obj
+
+
+def test_special_identifier_keys_quoted_in_yaml_and_toml() -> None:
+    """字段名含特殊字符时，YAML/TOML 输出必须正确引用。"""
+    obj = _obj(StdField(name='@a-b$c', value=StdLiteral(kind='int', value=1)))
+    assert json.loads(to_json(obj)) == {'@a-b$c': 1}
+    assert "'@a-b$c'" in to_yaml(obj)
+    assert '"@a-b$c" = 1' in to_toml(obj)

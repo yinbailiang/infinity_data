@@ -1,5 +1,6 @@
 import decimal
 import json
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
@@ -274,11 +275,38 @@ class NoexistToken(Token):
 # ── 标识符 ─────────────────────────────────────────
 
 
+def quote_identifier(name: str) -> str:
+    """单引号标识符的 canonical 文本：复用 JSON 转义，外层换为单引号。"""
+    inner = json.dumps(name, ensure_ascii=False)[1:-1]
+    # 单引号内不需要转义双引号；单引号本身必须转义
+    return "'" + inner.replace('\\"', '"').replace("'", "\\'") + "'"
+
+
 @dataclass
-class IdentifierToken(Token):
-    """标识符"""
+class IdentifierToken(Token, ABC):
+    """标识符基类：裸标识符与单引号标识符的共同抽象。"""
 
     name: str = ''
+
+    @abstractmethod
+    def canonical(self) -> str:
+        """规范拼写（裸写或带引号）。"""
+
+
+@dataclass
+class BareIdentifierToken(IdentifierToken):
+    """裸标识符（[A-Za-z_][A-Za-z0-9_]*）。"""
+
+    def canonical(self) -> str:
+        return self.name
+
+
+@dataclass
+class StringIdentifierToken(IdentifierToken):
+    """单引号标识符：仅承载无法裸写的名字（词法层已归一化可裸写形式）。"""
+
+    def canonical(self) -> str:
+        return quote_identifier(self.name)
 
 
 # ── 换行 / EOF ─────────────────────────────────────

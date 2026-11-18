@@ -16,11 +16,14 @@ from pathlib import PurePosixPath
 
 from infinity_data.infra.diagnostics import DiagnosticCollector
 from infinity_data.tokenizer.diagnostics import (
+    TokenizeEmptyIdentifier,
     TokenizeInvalidEscape,
     TokenizeInvalidFloat,
     TokenizeInvalidNumber,
     TokenizeInvalidPath,
+    TokenizeRedundantIdentifierQuotes,
 )
+from infinity_data.tokenizer.identifiers import decode_string_identifier, is_bare_identifier
 from infinity_data.tokenizer.keywords import BangKeyword
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
@@ -28,6 +31,7 @@ from infinity_data.tokenizer.models.raw_tokens import (
 )
 from infinity_data.tokenizer.models.tokens import (
     BangKeywordToken,
+    BareIdentifierToken,
     BoolToken,
     CaretToken,
     ColonToken,
@@ -58,6 +62,7 @@ from infinity_data.tokenizer.models.tokens import (
     RparenToken,
     SinglelineStringToken,
     StarToken,
+    StringIdentifierToken,
     TildeToken,
     Token,
 )
@@ -227,7 +232,10 @@ class FinalTokenizer:
             return self._convert_bool(raw)
 
         if token_type == RawTokenType.IDENTIFIER:
-            return IdentifierToken(raw=raw, name=raw.raw)
+            return BareIdentifierToken(raw=raw, name=raw.raw)
+
+        if token_type == RawTokenType.STRING_IDENTIFIER:
+            return self._convert_string_identifier(raw)
 
         # 未知类型（不应到达）
         raise ValueError(f'未知 RawTokenType: {token_type}')
@@ -246,6 +254,25 @@ class FinalTokenizer:
             self._errors.add(TokenizeInvalidEscape(raw=raw.raw), raw.source)
             value = raw.raw[1:-1] if len(raw.raw) >= 2 else raw.raw
         return SinglelineStringToken(raw=raw, value=value)
+
+    def _convert_string_identifier(self, raw: RawToken) -> IdentifierToken:
+        """处理单引号标识符：解码 → 空串/冗余引号判定 → Bare 或 String。
+
+        - 无法裸写的名字 → :class:`StringIdentifierToken`（字段名位置才接受）
+        - 可裸写 → 警告 ``tokenize.redundant_identifier_quotes`` 并发射 Bare（词法层归一化）
+        - 空名字 → ``tokenize.empty_identifier``；无效转义回退去引号原文
+        """
+        value, ok = decode_string_identifier(raw.raw)
+        if not ok:
+            self._errors.add(TokenizeInvalidEscape(raw=raw.raw), raw.source)
+            value = raw.raw[1:-1] if len(raw.raw) >= 2 else raw.raw
+        if not value:
+            self._errors.add(TokenizeEmptyIdentifier(), raw.source)
+            return BareIdentifierToken(raw=raw, name='')
+        if is_bare_identifier(value):
+            self._errors.add(TokenizeRedundantIdentifierQuotes(name=value), raw.source)
+            return BareIdentifierToken(raw=raw, name=value)
+        return StringIdentifierToken(raw=raw, name=value)
 
     @staticmethod
     def _convert_multiline_string(raw: RawToken) -> MultilineStringToken:

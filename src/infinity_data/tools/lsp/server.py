@@ -118,7 +118,7 @@ class Server:
         return {
             'capabilities': {
                 'textDocumentSync': 1,  # Full
-                'completionProvider': {'triggerCharacters': [':', '<', '!', '~', '$', '.', '(', ',']},
+                'completionProvider': {'triggerCharacters': [':', '<', '!', '~', '$', '.', '(', ',', "'"]},
                 'hoverProvider': True,
                 'documentSymbolProvider': True,
                 'definitionProvider': True,

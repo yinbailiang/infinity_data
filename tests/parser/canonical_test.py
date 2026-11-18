@@ -149,3 +149,21 @@ def test_canonical_top_level_unpack_fixed_point() -> None:
     doc = _parse('**{ a = 1 }\n**{ b = 2 }\n')
     c = doc.canonical()
     assert _parse(c).canonical() == c
+
+
+def test_canonical_quoted_identifiers_round_trip() -> None:
+    """字符串标识符 canonical：可裸写归一、不可裸写保留引号，且不动点。"""
+    doc = _parse("'a-b@c$d' = 1\n'abc' = 2\n'true' = 3\n")
+    c = doc.canonical()
+    assert "'a-b@c$d' = 1" in c
+    assert 'abc = 2' in c
+    assert "'true' = 3" in c
+    assert _parse(c).canonical() == c
+
+
+def test_canonical_quoted_template_field_and_named_arg_round_trip() -> None:
+    doc = _parse("~T {\n    'a-b': int = 1\n}\nx = T('a-b' = 2)\n")
+    c = doc.canonical()
+    assert "'a-b': int = 1" in c
+    assert "T('a-b' = 2)" in c
+    assert _parse(c).canonical() == c

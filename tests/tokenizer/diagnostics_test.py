@@ -4,11 +4,14 @@ from infinity_data.infra.diagnostics import Diagnostic, DiagnosticDeclaration
 from infinity_data.tokenizer.diagnostics import (
     TokenizeBangCorrected,
     TokenizeBom,
+    TokenizeEmptyIdentifier,
     TokenizeMismatchedBracket,
+    TokenizeRedundantIdentifierQuotes,
     TokenizeSignedNan,
     TokenizeUnexpectedCloseBracket,
     TokenizeUnknownChar,
     TokenizeUnterminatedBracket,
+    TokenizeUnterminatedIdentifier,
     TokenizeUnterminatedMultilineString,
     TokenizeUnterminatedString,
 )
@@ -28,3 +31,6 @@ def test_vocab_registered() -> None:
     assert 'BOM' in _msg(TokenizeBom())
     assert '未闭合' in _msg(TokenizeUnterminatedString())
     assert '多行字符串未闭合' in _msg(TokenizeUnterminatedMultilineString(flag='``'))
+    assert '未闭合' in _msg(TokenizeUnterminatedIdentifier())
+    assert '不能为空' in _msg(TokenizeEmptyIdentifier())
+    assert '裸写' in _msg(TokenizeRedundantIdentifierQuotes(name='abc'))

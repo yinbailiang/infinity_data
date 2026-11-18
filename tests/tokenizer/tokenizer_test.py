@@ -185,3 +185,31 @@ def test_lone_plus_skipped_end_to_end() -> None:
     toks, col = _tokenize('x = +\n')
     assert any(d.code == 'tokenize.invalid_number' for d in col)
     assert not any(t.raw == '+' for t in toks)
+
+
+# ── 字符串标识符 ───
+
+
+def test_string_identifier_raw_token() -> None:
+    toks, col = _tokenize("'a-b@c$d' = 1\n")
+    assert not col.has_errors
+    assert toks[0].type is RawTokenType.STRING_IDENTIFIER
+    assert toks[0].raw == "'a-b@c$d'"
+
+
+def test_string_identifier_kept_raw_for_finalizer() -> None:
+    """可裸写与否在 FinalTokenizer 判定，词法层仍保留原样的 STRING_IDENTIFIER。"""
+    toks, _ = _tokenize("'abc'")
+    assert toks[0].type is RawTokenType.STRING_IDENTIFIER
+
+
+def test_string_identifier_escaped_quote() -> None:
+    toks, col = _tokenize(r"'a\'b'")
+    assert not col.has_errors
+    assert toks[0].raw == r"'a\'b'"
+
+
+def test_string_identifier_unterminated() -> None:
+    toks, col = _tokenize("'a-b\n")
+    assert any(d.code == 'tokenize.unterminated_identifier' for d in col)
+    assert toks[0].type is RawTokenType.STRING_IDENTIFIER

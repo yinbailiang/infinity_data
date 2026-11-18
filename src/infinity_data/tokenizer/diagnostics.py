@@ -27,6 +27,9 @@ __all__ = [
     'TokenizeSignedNan',
     'TokenizeUnterminatedComment',
     'TokenizeBom',
+    'TokenizeUnterminatedIdentifier',
+    'TokenizeEmptyIdentifier',
+    'TokenizeRedundantIdentifierQuotes',
 ]
 
 
@@ -252,3 +255,43 @@ class TokenizeBom(DiagnosticDeclaration):
         'zh-CN': '{location_prefix}文件包含 BOM，规范要求 UTF-8 NO BOM 编码',
         'en-US': '{location_prefix}file contains a BOM; UTF-8 NO BOM is required',
     }
+
+
+@registry.register
+@dataclass(frozen=True)
+class TokenizeUnterminatedIdentifier(DiagnosticDeclaration):
+    """单引号标识符未闭合。"""
+
+    code: ClassVar[str] = 'tokenize.unterminated_identifier'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}字符串标识符未闭合（缺少结束单引号）',
+        'en-US': '{location_prefix}unterminated string identifier (missing closing single quote)',
+    }
+
+
+@registry.register
+@dataclass(frozen=True)
+class TokenizeEmptyIdentifier(DiagnosticDeclaration):
+    """空字符串标识符。"""
+
+    code: ClassVar[str] = 'tokenize.empty_identifier'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}字符串标识符不能为空',
+        'en-US': '{location_prefix}string identifier must not be empty',
+    }
+
+
+@registry.register
+@dataclass(frozen=True)
+class TokenizeRedundantIdentifierQuotes(DiagnosticDeclaration):
+    """单引号标识符可裸写（冗余引号）。"""
+
+    code: ClassVar[str] = 'tokenize.redundant_identifier_quotes'
+    severity: ClassVar[Severity] = Severity.WARNING
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}标识符 {name!r} 可以裸写，视为裸写',
+        'en-US': '{location_prefix}identifier {name!r} can be written bare; treated as bare',
+    }
+    name: str

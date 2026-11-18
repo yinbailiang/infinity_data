@@ -26,6 +26,7 @@ __all__ = [
     'ParseJsonPathMissingCloseBracket',
     'ParseJsonPathIndexExpected',
     'ParseUnrecognizedValue',
+    'ParseStringIdentifierMisplaced',
     'ParseMissingSeparator',
     'ParseImportMissingComma',
     'ParseImportRequiresNewline',
@@ -467,3 +468,17 @@ class ParseNestingTooDeep(DiagnosticDeclaration):
         'en-US': '{location_prefix}nesting depth exceeds limit {limit}; deeper content skipped',
     }
     limit: int
+
+
+@registry.register
+@dataclass(frozen=True)
+class ParseStringIdentifierMisplaced(DiagnosticDeclaration):
+    """字符串标识符出现在字段名以外的位置。"""
+
+    code: ClassVar[str] = 'parse.string_identifier_misplaced'
+    severity: ClassVar[Severity] = Severity.ERROR
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{location_prefix}字符串标识符 {name!r} 只能作为字段名使用',
+        'en-US': '{location_prefix}string identifier {name!r} is only valid as a field name',
+    }
+    name: str

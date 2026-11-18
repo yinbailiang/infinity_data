@@ -63,6 +63,7 @@ from infinity_data.semantic.std import (
     StdObject,
     StdValue,
 )
+from infinity_data.tokenizer.identifiers import decode_string_identifier, render_identifier
 from infinity_data.tokenizer.keywords import BANG_KEYWORDS, CONTEXTUAL_KEYWORDS, CONTEXTUAL_NAMES
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
 from infinity_data.tokenizer.models.tokens import NoexistToken, NullToken
@@ -97,6 +98,9 @@ LANGUAGE_KEYWORDS: list[tuple[str, str]] = [
     ('false', '布尔字面量'),
     ('nan', '浮点字面量 NaN'),
 ]
+
+_EMPTY_SYMBOL_NAME = '<empty>'
+"""错误恢复产生的空名字在大纲中的占位（LSP 要求 name 非空）。"""
 
 _SEVERITY_MAP: dict[Severity, int] = {
     Severity.ERROR: 1,
@@ -155,6 +159,8 @@ _TOKEN_MAP: dict[RawTokenType, int] = {
     _RAW.STRING: 1,
     _RAW.MULTILINE_STRING: 1,
     _RAW.PATH: 1,
+    # 字符串标识符（字段名）→ variable
+    _RAW.STRING_IDENTIFIER: 4,
     # 数字 → number
     _RAW.INTEGER: 2,
     _RAW.FLOAT: 2,
@@ -207,7 +213,7 @@ def semantic_tokens(text: str, file_path: str) -> list[int]:
             char = (start.col - 1) if i == 0 else 0
             char_u16 = utf16_prefix(line_text, char)
             spans.append((line, char_u16, utf16_len(part), type_idx))
-            if tok.type in (_RAW.STRING, _RAW.MULTILINE_STRING, _RAW.PATH):
+            if tok.type in (_RAW.STRING, _RAW.MULTILINE_STRING, _RAW.PATH, _RAW.STRING_IDENTIFIER):
                 string_ranges.append((line, char, char + len(part)))
 
     spans.extend(_comment_spans(lines, string_ranges))
@@ -372,8 +378,55 @@ def _document(text: str, file_path: str, sandbox: SandboxConfig | None = None) -
 # ── 文本辅助 ──────────────────────────────────────────
 
 
+def _quoted_identifier_span(line: str, cp: int) -> tuple[str, int, int] | None:
+    """光标位于单引号标识符内 → (解码名, 含引号的起止码点)。"""
+    i = 0
+    while i < len(line):
+        if line[i] != "'":
+            i += 1
+            continue
+        start = i
+        i += 1
+        while i < len(line):
+            ch = line[i]
+            if ch == '\\':
+                i += 2  # 跳过转义字符（含 \\'）
+                continue
+            if ch == "'":
+                end = i + 1
+                # 光标紧贴闭引号（如手敲完 ``''`` 后停在右侧）也算命中：否则补全
+                # 不会替换整个引号 token，插入后会多出一个引号
+                at_boundary = cp == end and (end >= len(line) or not (line[end].isalnum() or line[end] == '_'))
+                if start <= cp < end or at_boundary:
+                    raw = line[start:end]
+                    value, ok = decode_string_identifier(raw)
+                    return (value if ok else raw[1:-1], start, end)
+                i = end
+                break
+            i += 1
+        else:
+            # 未闭合：只把「引号到光标」视为已输入部分——光标右侧内容（如尾括号）
+            # 不属于替换范围，也不参与前缀过滤
+            if start <= cp <= len(line):
+                return line[start + 1 : cp], start, cp
+            return None
+    return None
+
+
+def _lsp_range_at(line_no: int, start: int, end: int, line: str) -> dict[str, Any]:
+    """行内码点区间 → LSP range（UTF-16）。"""
+    return {
+        'start': {'line': line_no, 'character': utf16_len(line[:start])},
+        'end': {'line': line_no, 'character': utf16_len(line[:end])},
+    }
+
+
 def _word_span(text: str, position: dict[str, Any]) -> tuple[str, int, int]:
-    """光标处（0-based UTF-16）的标识符 → (标识符, 行内码点起始, 行内码点结束)。"""
+    """光标处（0-based UTF-16）的标识符 → (标识符, 行内码点起始, 行内码点结束)。
+
+    单引号标识符作为整体返回（span 含引号）：否则客户端只能看到 ``\\w+`` 片段
+    （如 ``'a-v'`` 只能取到 ``v``），悬停高亮与补全过滤都会错。
+    """
     line_no = int(position.get('line', 0))
     char = int(position.get('character', 0))
     lines = text.splitlines()
@@ -382,6 +435,9 @@ def _word_span(text: str, position: dict[str, Any]) -> tuple[str, int, int]:
     line = lines[line_no]
     cp = utf16_to_cp(line, char)
     cp = min(cp, len(line))
+    quoted = _quoted_identifier_span(line, cp)
+    if quoted is not None:
+        return quoted
     start = cp
     end = cp
     while start > 0 and (line[start - 1].isalnum() or line[start - 1] == '_'):
@@ -389,11 +445,6 @@ def _word_span(text: str, position: dict[str, Any]) -> tuple[str, int, int]:
     while end < len(line) and (line[end].isalnum() or line[end] == '_'):
         end += 1
     return line[start:end], start, end
-
-
-def _word_at(text: str, position: dict[str, Any]) -> str:
-    """取光标处（0-based）的标识符。"""
-    return _word_span(text, position)[0]
 
 
 def _bang_prefix_at(text: str, position: dict[str, Any]) -> str | None:
@@ -525,20 +576,26 @@ def _constraint_text(c: Any) -> str:
 
 
 def _template_field_items(tpl: TemplateDef) -> list[dict[str, Any]]:
-    """模板字段 → 补全项（``name = `` 形式，带 必填/可选 + 类型）。"""
+    """模板字段 → 补全项（``name = `` 形式，带 必填/可选 + 类型）。
+
+    名字用 canonical 拼写插入：无法裸写的字段（如 ``test-1``）自动带单引号；
+    ``filterText`` 保留裸名，输入 ``te`` 也能匹配。
+    """
     items: list[dict[str, Any]] = []
     for f in tpl.fields:
         required = '必填' if f.default_value is None else '可选'
         type_text = ', '.join(_constraint_text(c) for c in f.constraints.constraints) or '?'
-        doc_lines = [f'**`{f.name}`** — 模板字段（{required}）', '', f'- 类型: `{type_text}`']
+        spelling = render_identifier(f.name)
+        doc_lines = [f'**`{spelling}`** — 模板字段（{required}）', '', f'- 类型: `{type_text}`']
         if f.default_value is not None:
             doc_lines.append('- 默认值: 省略时使用模板默认值')
         items.append(
             {
-                'label': f.name,
+                'label': spelling,
                 'kind': 13,  # Property
                 'detail': f'模板字段·{required}·{type_text}',
-                'insertText': f'{f.name} = ',
+                'insertText': f'{spelling} = ',
+                'filterText': f.name,
                 'documentation': {'kind': 'markdown', 'value': '\n'.join(doc_lines)},
             }
         )
@@ -563,7 +620,7 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
             if name.startswith(partial)
         ]
 
-    word = _word_at(text, position)
+    word, word_start, word_end = _word_span(text, position)
     bang_prefix = _bang_prefix_at(text, position)
 
     # 模板调用参数内 → 补全该模板的字段名（最高优先级）
@@ -577,9 +634,17 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
                 fields = _template_field_items(tpl)
                 # 已用参数名不再提示（避免重复填写）
                 used = {a.name for a in call.named_args if isinstance(a, NamedArg)}
-                fields = [it for it in fields if it['label'] not in used]
+                fields = [it for it in fields if it['filterText'] not in used]
                 if word:
-                    fields = [it for it in fields if it['label'].startswith(word)]
+                    fields = [it for it in fields if it['filterText'].startswith(word)]
+                # 引号内输入时客户端的匹配文本带引号 → 换用 canonical 拼写，否则会被过滤掉
+                in_quotes = word_start < word_end and line_text[word_start] == "'"
+                if in_quotes:
+                    fields = [{**it, 'filterText': it['label']} for it in fields]
+                if word_end > word_start:
+                    # 用 textEdit 替换整个光标词/引号标识符，避免插入后变成 ''test-1''
+                    edit_range = _lsp_range_at(line_no, word_start, word_end, line_text)
+                    fields = [{**it, 'textEdit': {'range': edit_range, 'newText': it['insertText']}} for it in fields]
                 return fields
 
     items: list[dict[str, Any]] = []
@@ -618,7 +683,11 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
 
 
 def document_symbols(text: str, file_path: str) -> list[dict[str, Any]]:
-    """文档大纲：模板定义（Class）+ 顶层字段（Property）。"""
+    """文档大纲：模板定义（Class）+ 顶层字段（Property）。
+
+    LSP 客户端要求 ``DocumentSymbol.name`` 非空；错误恢复产生的空名字（如空标识符
+    ``'' = 1``）用 ``<empty>`` 占位——保留大纲条目与位置，避免静默丢失。
+    """
     file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
     doc, _ = parse_source(file)
     lines = text.splitlines()
@@ -628,9 +697,25 @@ def document_symbols(text: str, file_path: str) -> list[dict[str, Any]]:
         if rng is None:
             continue
         if isinstance(stmt, TemplateDef):
-            symbols.append({'name': f'~{stmt.name}', 'kind': 5, 'detail': '模板', 'range': rng, 'selectionRange': rng})
+            symbols.append(
+                {
+                    'name': f'~{stmt.name or _EMPTY_SYMBOL_NAME}',
+                    'kind': 5,
+                    'detail': '模板',
+                    'range': rng,
+                    'selectionRange': rng,
+                }
+            )
         elif isinstance(stmt, Field):
-            symbols.append({'name': stmt.name, 'kind': 13, 'detail': '字段', 'range': rng, 'selectionRange': rng})
+            symbols.append(
+                {
+                    'name': stmt.name or _EMPTY_SYMBOL_NAME,
+                    'kind': 13,
+                    'detail': '字段',
+                    'range': rng,
+                    'selectionRange': rng,
+                }
+            )
     return symbols
 
 
@@ -881,11 +966,15 @@ def _template_skeleton_hover(tpl: TemplateDef) -> str:
 
 
 def _node_hover(node: Any, word: str) -> dict[str, Any] | None:
-    """编译产物节点 → 悬停。"""
+    """编译产物节点 → 悬停。
+
+    字段标题用 ``node.name``（而非光标词）：字符串标识符含 ``-`` / ``@`` 等字符时，
+    光标词只是名字的一个片段（如 ``'a-v'`` 里取到 ``v``）。
+    """
     if isinstance(node, StdField):
         if node.value is None:
             return None
-        return _value_hover(word, '字段值（编译结果）', node.value)
+        return _value_hover(node.name, '字段值（编译结果）', node.value)
     if isinstance(node, StdObject):
         title = '模板实例（编译结果）' if node.template is not None else '对象值（编译结果）'
         return _value_hover(word, title, node)
@@ -896,7 +985,7 @@ def _node_hover(node: Any, word: str) -> dict[str, Any] | None:
     return None
 
 
-def hover(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any] | None:
+def _hover_impl(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any] | None:
     """悬停：约束描述 / 字段与子字段 / 模板与实例 / 模板参数 / $ 变量 / 模板骨架。
 
     优先级：
@@ -997,6 +1086,20 @@ def hover(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any]
         if tpl is not None:
             return {'contents': {'kind': 'markdown', 'value': _template_skeleton_hover(tpl)}}
     return None
+
+
+def hover(text: str, file_path: str, position: dict[str, Any]) -> dict[str, Any] | None:
+    """悬停入口：附加 ``range``，让客户端高亮完整标识符（含单引号）。"""
+    result = _hover_impl(text, file_path, position)
+    if result is None:
+        return None
+    _, start, end = _word_span(text, position)
+    if end > start:
+        line_no = int(position.get('line', 0))
+        lines = text.splitlines()
+        line = lines[line_no] if 0 <= line_no < len(lines) else ''
+        result['range'] = _lsp_range_at(line_no, start, end, line)
+    return result
 
 
 # ── 跳转到定义 ────────────────────────────────────────

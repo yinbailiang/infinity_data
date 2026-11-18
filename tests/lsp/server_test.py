@@ -163,7 +163,7 @@ def test_initialize_capabilities() -> None:
     assert caps['definitionProvider'] is True
     assert caps['documentSymbolProvider'] is True
     assert 'semanticTokensProvider' in caps
-    assert caps['completionProvider']['triggerCharacters'] == [':', '<', '!', '~', '$', '.', '(', ',']
+    assert caps['completionProvider']['triggerCharacters'] == [':', '<', '!', '~', '$', '.', '(', ',', "'"]
     assert resp['result']['serverInfo']['name'] == 'infinity-data-lsp'
 
 
@@ -253,6 +253,28 @@ def test_completion_request() -> None:
     resp = _pick(msgs, 2)
     labels = {it['label'] for it in resp['result']['items']}
     assert 'int' in labels
+
+
+def test_completion_request_quoted_field_scenario() -> None:
+    """协议端到端：未闭合引号 + 尾括号，返回只替换引号的 textEdit。"""
+    uri = 'file:///t/quoted.infd'
+    text = "~T {\n    'test-1': object\n}\nt = T(')\n"
+    h = _ServerHarness()
+    msgs = h.run(
+        _open_doc(uri, text),
+        {
+            'jsonrpc': '2.0',
+            'id': 4,
+            'method': 'textDocument/completion',
+            'params': {'textDocument': {'uri': uri}, 'position': {'line': 3, 'character': 7}},
+        },
+    )
+    items = _pick(msgs, 4)['result']['items']
+    item = next(it for it in items if it.get('filterText') == "'test-1'")
+    assert item['textEdit'] == {
+        'range': {'start': {'line': 3, 'character': 6}, 'end': {'line': 3, 'character': 7}},
+        'newText': "'test-1' = ",
+    }
 
 
 def test_hover_request() -> None:

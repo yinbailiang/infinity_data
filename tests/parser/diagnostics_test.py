@@ -5,6 +5,7 @@ from infinity_data.parser.diagnostics import (
     ParseAssertMissingConstraint,
     ParseInvalidCast,
     ParseMissingSeparator,
+    ParseStringIdentifierMisplaced,
     ParseUnexpectedToken,
     ParseUnrecognizedStatement,
 )
@@ -33,3 +34,8 @@ def test_invalid_cast_vocab() -> None:
 def test_assert_missing_constraint_vocab() -> None:
     msg = Diagnostic(ParseAssertMissingConstraint(), lang='zh-CN').render(include_location=False)
     assert '!assert' in msg and '约束' in msg
+
+
+def test_string_identifier_misplaced_vocab() -> None:
+    msg = Diagnostic(ParseStringIdentifierMisplaced(name='a-b'), lang='zh-CN').render(include_location=False)
+    assert '字段名' in msg and 'a-b' in msg

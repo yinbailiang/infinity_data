@@ -521,3 +521,101 @@ def test_definition_from_import(tmp_path: Any) -> None:
     loc = language.definition(text, str(tmp_path / 'app.infd'), {'line': 1, 'character': 6})
     assert loc is not None
     assert 'lib.inft' in loc['uri']
+
+
+def test_semantic_tokens_string_identifier() -> None:
+    """字符串标识符按 variable 高亮，且其中的 # 不算注释。"""
+    spans = _decode_semantic("'a#b' = 1\n")
+    variables = {(char, length) for _, char, length, token_type in spans if token_type == 4}
+    assert (0, len("'a#b'")) in variables
+    assert not [s for s in spans if s[3] == 5]
+
+
+def test_document_symbols_placeholder_for_empty_name() -> None:
+    """错误恢复产生的空名字用 <empty> 占位（不静止丢大纲、满足 LSP name 非空）。"""
+    symbols = language.document_symbols("'' = 1\n~'A'{}\n~ {}\n", 't.infd')
+    names = [s['name'] for s in symbols]
+    assert names == ['<empty>', '~A', '~<empty>']
+    assert all(s['name'] for s in symbols)
+
+
+def test_hover_quoted_field_name_uses_full_name() -> None:
+    """光标落在字符串标识符的片段上（如 'a-v' 的 v）时，标题用完整字段名。"""
+    text = "c {\n    'a-v' = 1\n}\n"
+    hv = language.hover(text, 't.infd', {'line': 1, 'character': 8})
+    assert hv is not None
+    body = hv['contents']['value']
+    assert '**`a-v`**' in body
+    assert '**`v`**' not in body
+    # 高亮范围覆盖整个单引号标识符（含引号），而非 \w+ 片段
+    assert hv['range'] == {
+        'start': {'line': 1, 'character': 4},
+        'end': {'line': 1, 'character': 9},
+    }
+
+
+def test_hover_range_bare_identifier() -> None:
+    hv = language.hover('c {\n  x = 1\n}\n', 't.infd', {'line': 1, 'character': 3})
+    assert hv is not None
+    assert hv['range'] == {
+        'start': {'line': 1, 'character': 2},
+        'end': {'line': 1, 'character': 3},
+    }
+
+
+def test_completion_quoted_field_inserts_quoted_name() -> None:
+    """引号字段以合法拼写插入（`'test-1' = `），并替换光标词。"""
+    text = "~T {\n    'test-1': object\n}\nt = T(te\n"
+    items = language.completion_items(text, 't.infd', {'line': 3, 'character': 8})
+    item = next(it for it in items if it.get('filterText') == 'test-1')
+    assert item['label'] == "'test-1'"
+    assert item['insertText'] == "'test-1' = "
+    assert item['textEdit'] == {
+        'range': {'start': {'line': 3, 'character': 6}, 'end': {'line': 3, 'character': 8}},
+        'newText': "'test-1' = ",
+    }
+
+
+def test_completion_quoted_field_matches_inside_quotes() -> None:
+    """已在引号内输入前缀（`T('te`）时仍能匹配，并替换整个引号 token。"""
+    text = "~T {\n    'test-1': object\n}\nt = T('te\n"
+    items = language.completion_items(text, 't.infd', {'line': 3, 'character': 9})
+    item = next(it for it in items if it.get('filterText') in ('test-1', "'test-1'"))
+    assert item['filterText'] == "'test-1'"  # 引号内匹配文本带引号，避免被客户端过滤
+    assert item['textEdit'] == {
+        'range': {'start': {'line': 3, 'character': 6}, 'end': {'line': 3, 'character': 9}},
+        'newText': "'test-1' = ",
+    }
+
+
+def test_completion_empty_quoted_identifier() -> None:
+    """光标在空引号 `''` 之间时也返回字段补全，并替换整个引号对。"""
+    text = "~T {\n    'test-1': object\n}\nt = T('')\n"
+    items = language.completion_items(text, 't.infd', {'line': 3, 'character': 7})
+    item = next(it for it in items if it.get('filterText') == "'test-1'")
+    assert item['textEdit'] == {
+        'range': {'start': {'line': 3, 'character': 6}, 'end': {'line': 3, 'character': 8}},
+        'newText': "'test-1' = ",
+    }
+
+
+def test_completion_at_closing_quote_boundary() -> None:
+    """光标紧贴闭引号右侧（手敲 ``''`` 后）仍替换整个引号对，避免多插一个引号。"""
+    text = "~T {\n    'test-1': object\n}\nt = T('')\n"
+    items = language.completion_items(text, 't.infd', {'line': 3, 'character': 8})
+    item = next(it for it in items if it.get('filterText') == "'test-1'")
+    assert item['textEdit'] == {
+        'range': {'start': {'line': 3, 'character': 6}, 'end': {'line': 3, 'character': 8}},
+        'newText': "'test-1' = ",
+    }
+
+
+def test_completion_unterminated_quote_ignores_trailing_text() -> None:
+    """未闭合引号只算到光标：`T(')` 里的尾括号不参与过滤、也不被替换。"""
+    text = "~T {\n    'test-1': object\n}\nt = T(')\n"
+    items = language.completion_items(text, 't.infd', {'line': 3, 'character': 7})
+    item = next(it for it in items if it.get('filterText') == "'test-1'")
+    assert item['textEdit'] == {
+        'range': {'start': {'line': 3, 'character': 6}, 'end': {'line': 3, 'character': 7}},
+        'newText': "'test-1' = ",
+    }

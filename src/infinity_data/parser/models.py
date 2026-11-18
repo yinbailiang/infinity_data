@@ -7,6 +7,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
+from infinity_data.tokenizer.identifiers import render_identifier
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 from infinity_data.tokenizer.models.tokens import LiteralToken
 
@@ -264,7 +265,7 @@ class TemplateField(AstNode):
         return [self.constraints] + ([self.default_value] if self.default_value is not None else [])
 
     def canonical(self) -> str:
-        head = f'{self.name}: {self.constraints.canonical()}'
+        head = f'{render_identifier(self.name)}: {self.constraints.canonical()}'
         if self.default_value is not None:
             return f'{head} = {self.default_value.canonical()}'
         return head
@@ -348,7 +349,7 @@ class Field(AstNode):
 
     def canonical(self) -> str:
         cs = _canonical_constraint_list(self.constraints.constraints) if self.constraints is not None else ''
-        head = f'{self.name}: {cs}' if cs else self.name
+        head = f'{render_identifier(self.name)}: {cs}' if cs else render_identifier(self.name)
         if self.value is not None:
             return f'{head} = {self.value.canonical()}'
         return head
@@ -497,7 +498,7 @@ class NamedArg(AstNode):
         return [self.value]
 
     def canonical(self) -> str:
-        return f'{self.name} = {self.value.canonical()}'
+        return f'{render_identifier(self.name)} = {self.value.canonical()}'
 
 
 @dataclass

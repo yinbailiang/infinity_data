@@ -5,9 +5,11 @@ import pytest
 from infinity_data.infra.location import SourceRange
 from infinity_data.tokenizer.models.raw_tokens import RawToken, RawTokenType
 from infinity_data.tokenizer.models.tokens import (
+    BareIdentifierToken,
     IdentifierToken,
     IntegerToken,
     SinglelineStringToken,
+    StringIdentifierToken,
     StringToken,
 )
 
@@ -27,9 +29,24 @@ def test_singleline_string_is_string_token() -> None:
     assert t.value == 'hi'
 
 
-def test_identifier_name() -> None:
-    t = IdentifierToken(raw=_raw(RawTokenType.IDENTIFIER, 'abc'), name='abc')
+def test_identifier_base_is_abstract() -> None:
+    assert IdentifierToken.__abstractmethods__ == frozenset({'canonical'})
+
+
+def test_bare_identifier_name() -> None:
+    t = BareIdentifierToken(raw=_raw(RawTokenType.IDENTIFIER, 'abc'), name='abc')
     assert t.name == 'abc'
+    assert isinstance(t, IdentifierToken)
+    assert t.canonical() == 'abc'
+
+
+def test_string_identifier_canonical_quotes_and_escapes() -> None:
+    t = StringIdentifierToken(raw=_raw(RawTokenType.STRING_IDENTIFIER, "'a-b'"), name='a-b')
+    assert isinstance(t, IdentifierToken)
+    assert t.canonical() == "'a-b'"
+
+    escaped = StringIdentifierToken(raw=_raw(RawTokenType.STRING_IDENTIFIER, "'a'b'"), name="a'b")
+    assert escaped.canonical() == "'a\\'b'"
 
 
 def test_literal_value() -> None:
@@ -38,5 +55,5 @@ def test_literal_value() -> None:
 
 
 def test_token_carries_raw_source() -> None:
-    t = IdentifierToken(raw=_raw(RawTokenType.IDENTIFIER, 'x'), name='x')
+    t = BareIdentifierToken(raw=_raw(RawTokenType.IDENTIFIER, 'x'), name='x')
     assert t.raw.source == SourceRange.empty()

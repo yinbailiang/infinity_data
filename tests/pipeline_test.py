@@ -1282,3 +1282,16 @@ MyApp {
     # 裸 key → noexist → 不出现在输出
     assert 'experimental_features' not in app
     assert 'maintenance_mode' not in app
+
+
+# ── 字符串标识符 ───────────────────────────────
+
+
+def test_quoted_field_name_e2e() -> None:
+    assert compile_ok("'a-b@c$d' = 1\n") == {'a-b@c$d': 1}
+
+
+def test_quoted_and_bare_same_name_duplicate_key() -> None:
+    result = compile_source("'a' = 1\na = 2\n")
+    assert 'dict.duplicate_key' in [d.code for d in result.diagnostics]
+    assert result.value == {'a': 1}

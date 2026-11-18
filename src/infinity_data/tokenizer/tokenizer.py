@@ -16,9 +16,14 @@ from infinity_data.tokenizer.diagnostics import (
     TokenizeUnknownChar,
     TokenizeUnterminatedBracket,
     TokenizeUnterminatedComment,
+    TokenizeUnterminatedIdentifier,
     TokenizeUnterminatedMultilineString,
     TokenizeUnterminatedString,
 )
+from infinity_data.tokenizer.identifiers import LITERAL_KEYWORDS
+from infinity_data.tokenizer.identifiers import is_ascii_digit as _is_ascii_digit
+from infinity_data.tokenizer.identifiers import is_ident_char as _is_ident_char
+from infinity_data.tokenizer.identifiers import is_ident_start as _is_ident_start
 from infinity_data.tokenizer.keywords import BANG_BY_NAME
 from infinity_data.tokenizer.models.raw_tokens import (
     RawToken,
@@ -26,26 +31,6 @@ from infinity_data.tokenizer.models.raw_tokens import (
     SourceInfo,
     SourceRange,
 )
-
-
-def _is_ascii_letter(ch: str) -> bool:
-    """ASCII 字母（标识符/关键字只允许 ASCII，规范 [A-Za-z_]）。"""
-    return 'a' <= ch <= 'z' or 'A' <= ch <= 'Z'
-
-
-def _is_ascii_digit(ch: str) -> bool:
-    """ASCII 数字（数字字面量只允许 [0-9]）。"""
-    return '0' <= ch <= '9'
-
-
-def _is_ident_start(ch: str) -> bool:
-    """标识符起始字符：字母或下划线。"""
-    return _is_ascii_letter(ch) or ch == '_'
-
-
-def _is_ident_char(ch: str) -> bool:
-    """标识符组成字符：字母/数字/下划线。"""
-    return _is_ascii_letter(ch) or _is_ascii_digit(ch) or ch == '_'
 
 
 def _peek_char(stream: CharStream) -> str | None:
@@ -81,13 +66,7 @@ class RawTokenizer:
         '\n': RawTokenType.NEWLINE,
     }
 
-    _keywords_map: dict[str, RawTokenType] = {
-        'null': RawTokenType.NULL,
-        'noexist': RawTokenType.NOEXIST,
-        'true': RawTokenType.BOOL,
-        'false': RawTokenType.BOOL,
-        'nan': RawTokenType.FLOAT,
-    }
+    _keywords_map: dict[str, RawTokenType] = LITERAL_KEYWORDS
 
     _open_to_close: dict[str, str] = {
         '{': '}',
@@ -170,6 +149,9 @@ class RawTokenizer:
 
             if ch == '"':
                 return self._read_string(stream, collector, file)
+
+            if ch == "'":
+                return self._read_string_identifier(stream, collector, file)
 
             if ch == '`':
                 return self._read_multiline_string(stream, collector, file)
@@ -555,6 +537,68 @@ class RawTokenizer:
         collector.add(TokenizeUnterminatedString(), SourceRange.at(file, start))
         close()
         return RawTokenizer._make_token(token_type, ''.join(raw_parts), start=start, stream=stream, file=file)
+
+    @staticmethod
+    def _read_string_identifier(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:
+        """读取单引号包裹的字符串标识符（如 ``'a-b@c$d'``）。
+
+        约定：调用时流已停在开引号 ``'`` 处。单行；转义规则与字符串一致并额外支持
+        ``\\'``（转义校验留待 FinalTokenizer，与字符串相同）。
+        """
+        start = stream.info()
+        raw_parts: list[str] = [stream.advance()]  # 消费开引号
+
+        def close() -> None:
+            """补全结束引号：若尾部是未完成的转义反斜杠则先丢弃。"""
+            if raw_parts and raw_parts[-1] == '\\':
+                raw_parts.pop()
+            raw_parts.append("'")
+
+        while not stream.eof():
+            ch = stream.peek()
+            assert not isinstance(ch, NoNextType)
+
+            if ch == '\\':
+                raw_parts.append(stream.advance())
+                if stream.eof():
+                    collector.add(TokenizeUnterminatedIdentifier(), SourceRange.at(file, start))
+                    close()
+                    return RawTokenizer._make_token(
+                        RawTokenType.STRING_IDENTIFIER, ''.join(raw_parts), start=start, stream=stream, file=file
+                    )
+                nxt = stream.peek()
+                assert not isinstance(nxt, NoNextType)
+                if nxt == '\n':
+                    collector.add(TokenizeUnterminatedIdentifier(), SourceRange.at(file, start))
+                    close()
+                    return RawTokenizer._make_token(
+                        RawTokenType.STRING_IDENTIFIER, ''.join(raw_parts), start=start, stream=stream, file=file
+                    )
+                raw_parts.append(stream.advance())
+                continue
+
+            if ch == "'":
+                raw_parts.append(ch)
+                stream.advance()
+                return RawTokenizer._make_token(
+                    RawTokenType.STRING_IDENTIFIER, ''.join(raw_parts), start=start, stream=stream, file=file
+                )
+
+            if ch == '\n':
+                collector.add(TokenizeUnterminatedIdentifier(), SourceRange.at(file, start))
+                close()
+                return RawTokenizer._make_token(
+                    RawTokenType.STRING_IDENTIFIER, ''.join(raw_parts), start=start, stream=stream, file=file
+                )
+
+            raw_parts.append(ch)
+            stream.advance()
+
+        collector.add(TokenizeUnterminatedIdentifier(), SourceRange.at(file, start))
+        close()
+        return RawTokenizer._make_token(
+            RawTokenType.STRING_IDENTIFIER, ''.join(raw_parts), start=start, stream=stream, file=file
+        )
 
     @staticmethod
     def _read_path_or_identifier(stream: CharStream, collector: DiagnosticCollector, file: File) -> RawToken:

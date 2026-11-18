@@ -25,6 +25,7 @@ from infinity_data.parser.diagnostics import (
     ParseMissingSeparator,
     ParseNestingTooDeep,
     ParsePostfixOrder,
+    ParseStringIdentifierMisplaced,
     ParseTemplateArgOrder,
     ParseTemplateConfigType,
     ParseTemplateConfigUnknown,
@@ -77,6 +78,7 @@ from infinity_data.tokenizer.keywords import BangKeyword
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType, SourceRange
 from infinity_data.tokenizer.models.tokens import (
     BangKeywordToken,
+    BareIdentifierToken,
     BoolToken,
     CaretToken,
     ColonToken,
@@ -107,6 +109,7 @@ from infinity_data.tokenizer.models.tokens import (
     RparenToken,
     SinglelineStringToken,
     StarToken,
+    StringIdentifierToken,
     StringToken,
     TildeToken,
     Token,
@@ -244,9 +247,28 @@ class Parser:
 
     @staticmethod
     def _peek_keyword(stream: TokenStream, name: str) -> bool:
-        """当前 token 是否为名为 ``name`` 的标识符（import/as 已降级为标识符）。"""
+        """当前 token 是否为名为 ``name`` 的裸标识符（import/as 已降级为标识符）。"""
         tok = stream.peek()
-        return isinstance(tok, IdentifierToken) and tok.name == name
+        return isinstance(tok, BareIdentifierToken) and tok.name == name
+
+    @staticmethod
+    def _expect_bare_identifier(stream: TokenStream, collector: DiagnosticCollector) -> BareIdentifierToken:
+        """期望裸标识符；字符串标识符出现在不允许的位置 → ``parse.string_identifier_misplaced``。"""
+        tok = stream.peek()
+        if isinstance(tok, StringIdentifierToken):
+            collector.add(ParseStringIdentifierMisplaced(name=tok.name), tok.raw.source)
+            stream.advance()
+            return BareIdentifierToken(raw=tok.raw, name=tok.name)
+        return stream.expect(BareIdentifierToken)
+
+    @staticmethod
+    def _expect_field_name(stream: TokenStream) -> IdentifierToken:
+        """字段名位置：裸标识符与字符串标识符都接受（已归一化的冗余引号不会到达）。"""
+        tok = stream.peek()
+        if isinstance(tok, IdentifierToken):
+            stream.advance()
+            return tok
+        return stream.expect(BareIdentifierToken)
 
     @staticmethod
     def _expect_keyword(stream: TokenStream, collector: DiagnosticCollector, name: str) -> None:
@@ -300,7 +322,7 @@ class Parser:
         Parser._expect_keyword(stream, collector, 'import')
         json_path = Parser._parse_json_path(stream, collector)
         Parser._expect_keyword(stream, collector, 'as')
-        alias_tok = stream.expect(IdentifierToken)
+        alias_tok = Parser._expect_bare_identifier(stream, collector)
 
         # 导入语句必须换行/EOF 结尾（同 !env）：否则同一行逗号后的语句会被误吞
         tok = stream.peek()
@@ -333,7 +355,7 @@ class Parser:
             if isinstance(tok, CommaToken):
                 stream.advance()
                 items.append(Parser._parse_env_import_item(stream, collector))
-            elif isinstance(tok, IdentifierToken):
+            elif isinstance(tok, BareIdentifierToken):
                 # 同一行内空格分隔（无逗号/换行）→ 报缺失逗号，容错继续（漏逗号）
                 collector.add(ParseImportMissingComma(), tok.raw.source)
                 items.append(Parser._parse_env_import_item(stream, collector))
@@ -364,12 +386,12 @@ class Parser:
     def _parse_env_import_item(stream: TokenStream, collector: DiagnosticCollector) -> EnvImportItem:
         """解析单个导入项: NAME [as NEW_NAME]。"""
         first = stream.peek()
-        name_tok = stream.expect(IdentifierToken)
+        name_tok = Parser._expect_bare_identifier(stream, collector)
 
         alias = None
         if Parser._peek_keyword(stream, 'as'):
             stream.advance()
-            alias = stream.expect(IdentifierToken).name
+            alias = Parser._expect_bare_identifier(stream, collector).name
 
         return EnvImportItem(
             source=stream.span_from(first),
@@ -410,7 +432,7 @@ class Parser:
         fmt = None
         if Parser._peek_keyword(stream, 'as'):
             stream.advance()
-            fmt = stream.expect(IdentifierToken).name
+            fmt = Parser._expect_bare_identifier(stream, collector).name
 
         Parser._expect_keyword(stream, collector, 'import')
 
@@ -439,7 +461,7 @@ class Parser:
                 items.append(Parser._parse_file_import_item(stream, collector))
             else:
                 # 同一行残留 token（非分隔符/下一导入项）→ 标识符则报缺失逗号（不静默）
-                if isinstance(tok, IdentifierToken):
+                if isinstance(tok, BareIdentifierToken):
                     collector.add(ParseImportMissingComma(), tok.raw.source)
                 break
 
@@ -478,7 +500,7 @@ class Parser:
             )
 
         Parser._expect_keyword(stream, collector, 'as')
-        alias = stream.expect(IdentifierToken).name
+        alias = Parser._expect_bare_identifier(stream, collector).name
 
         # 注意：不在此处跳过换行——由 _parse_file_import 的列表循环统一处理，
         # 以区分「换行后的新语句」与「同一行残留 token」
@@ -514,9 +536,9 @@ class Parser:
             return []
         stream.advance()
 
-        # 第一个段：标识符（非 as）、字符串或下标；`.` 后是 as（别名关键字）→ 整文件导入
+        # 第一个段：裸标识符（非 as）、字符串或下标；`.` 后是 as（别名关键字）→ 整文件导入
         tok = stream.peek()
-        if isinstance(tok, IdentifierToken) and tok.name != 'as':
+        if isinstance(tok, BareIdentifierToken) and tok.name != 'as':
             segments.append(JsonPathKey(source=tok.raw.source, key=tok.name))
             stream.advance()
         elif isinstance(tok, SinglelineStringToken):
@@ -546,7 +568,7 @@ class Parser:
                 case DotToken():
                     stream.advance()
                     match stream.peek():
-                        case IdentifierToken(name=name) as id_tok:
+                        case BareIdentifierToken(name=name) as id_tok:
                             segments.append(JsonPathKey(source=stream.single_span(id_tok), key=name))
                             stream.advance()
                         case SinglelineStringToken(value=value) as str_tok:
@@ -604,7 +626,7 @@ class Parser:
             if isinstance(tok, CommaToken):
                 stream.advance()
                 items.append(Parser._parse_template_import_item(stream, collector))
-            elif isinstance(tok, IdentifierToken):
+            elif isinstance(tok, BareIdentifierToken):
                 # 同一行内空格分隔（无逗号/换行）→ 报缺失逗号，容错继续（漏逗号）
                 collector.add(ParseImportMissingComma(), tok.raw.source)
                 items.append(Parser._parse_template_import_item(stream, collector))
@@ -623,12 +645,12 @@ class Parser:
     def _parse_template_import_item(stream: TokenStream, collector: DiagnosticCollector) -> TemplateImportItem:
         """解析单个导入项: Name [as Alias]。"""
         first = stream.peek()
-        name_tok = stream.expect(IdentifierToken)
+        name_tok = Parser._expect_bare_identifier(stream, collector)
 
         alias = None
         if Parser._peek_keyword(stream, 'as'):
             stream.advance()
-            alias = stream.expect(IdentifierToken).name
+            alias = Parser._expect_bare_identifier(stream, collector).name
 
         return TemplateImportItem(
             source=stream.span_from(first),
@@ -664,7 +686,7 @@ class Parser:
         """~Name [(config...)] { template_fields... }"""
         first = stream.peek()
         stream.expect(TildeToken)
-        name_tok = stream.expect(IdentifierToken)
+        name_tok = Parser._expect_bare_identifier(stream, collector)
 
         # 可选模板配置参数: ~Name(allow_extra=true, ...)
         # 语法层解析为类型化 TemplateConfig（未知键 / 类型错 / 非字面量 → 诊断）
@@ -674,9 +696,9 @@ class Parser:
             stream.skip_newlines()
             missing_sep_reported = [False]
             while not stream.check(RawTokenType.RPAREN) and not stream.eof():
-                key_tok = stream.expect(IdentifierToken)
+                key_tok = Parser._expect_bare_identifier(stream, collector)
                 stream.expect(EqualsToken)
-                # 裸标识符 → 字段名字符串（extra_*_vars = 字段名，§2.9）；其余走通用值
+                # 字段名：裸标识符或字符串标识符（extra_*_vars = 'a-b'，§2.9）；其余走通用值
                 if isinstance(stream.peek(), IdentifierToken):
                     idv = stream.expect(IdentifierToken)
                     value = LiteralValue(
@@ -736,7 +758,7 @@ class Parser:
     def _apply_template_config(
         collector: DiagnosticCollector,
         config: TemplateConfig,
-        key_tok: IdentifierToken,
+        key_tok: BareIdentifierToken,
         value: Value,
     ) -> None:
         """模板头部配置项 → 类型化字段；未知键 / 类型错 / 非字面量 → 语法诊断。
@@ -789,7 +811,7 @@ class Parser:
     def _parse_template_field(stream: TokenStream, collector: DiagnosticCollector) -> TemplateField:
         """解析模板内部字段：必须有类型标注，默认值可选。"""
         first = stream.peek()
-        name_tok = stream.expect(IdentifierToken)
+        name_tok = Parser._expect_field_name(stream)
 
         # 类型标注（模板字段必须）：缺失或为空 → 报错并跳过该字段
         if isinstance(stream.peek(), ColonToken):
@@ -850,7 +872,7 @@ class Parser:
         支持省略等号：name { ... }, name [ ... ], name Template(...)
         """
         first = stream.peek()
-        name_tok = stream.expect(IdentifierToken)
+        name_tok = Parser._expect_field_name(stream)
 
         # 类型标注 name: <...> 或 name: type 或 name: type?
         constraints: Constraints | None = None
@@ -1016,7 +1038,7 @@ class Parser:
                 stream.expect(RangleToken)
                 return Constraints(source=stream.span_from(first), constraints=constraints)
 
-            case IdentifierToken(name=name):
+            case BareIdentifierToken(name=name):
                 stream.advance()
                 base: Constraint = ConstraintIdent(source=stream.single_span(first), name=name)
 
@@ -1028,6 +1050,17 @@ class Parser:
                 return Constraints(
                     source=stream.span_from(first),
                     constraints=[Parser._apply_postfix(base, stream, collector)],
+                )
+
+            case StringIdentifierToken(name=name):
+                # 字符串标识符仅字段名合法；作为约束起始 → 报错并产出错误节点
+                stream.advance()
+                collector.add(ParseStringIdentifierMisplaced(name=name), stream.single_span(first))
+                return Constraints(
+                    source=stream.span_from(first),
+                    constraints=[
+                        ErrorConstraint(source=stream.single_span(first), message=f'字符串标识符不能作为约束: {name}')
+                    ],
                 )
 
             case QuestionToken() | ExclamationToken():
@@ -1116,12 +1149,17 @@ class Parser:
         base: Constraint
 
         match tok:
-            case IdentifierToken() as name_tok:
+            case BareIdentifierToken() as name_tok:
                 stream.advance()
                 if isinstance(stream.peek(), LparenToken):
                     base = Parser._parse_constraint_call(stream, collector, name_tok)
                 else:
                     base = ConstraintIdent(source=stream.single_span(name_tok), name=name_tok.name)
+
+            case StringIdentifierToken(name=name) as sid_tok:
+                stream.advance()
+                collector.add(ParseStringIdentifierMisplaced(name=name), stream.single_span(sid_tok))
+                return ErrorConstraint(source=stream.single_span(sid_tok), message=f'字符串标识符不能作为约束: {name}')
 
             case QuestionToken() | ExclamationToken():
                 stream.advance()
@@ -1147,7 +1185,7 @@ class Parser:
 
     @staticmethod
     def _parse_constraint_call(
-        stream: TokenStream, collector: DiagnosticCollector, name_tok: IdentifierToken
+        stream: TokenStream, collector: DiagnosticCollector, name_tok: BareIdentifierToken
     ) -> ConstraintCall:
         """解析约束函数调用: name(arg, arg, ...)。"""
         stream.expect(LparenToken)
@@ -1225,8 +1263,8 @@ class Parser:
                 return Parser._parse_array(stream, collector)
 
             # ── 标识符 → 模板调用 ──
-            case IdentifierToken():
-                ident = stream.expect(IdentifierToken)
+            case BareIdentifierToken():
+                ident = stream.expect(BareIdentifierToken)
                 # 标识符后接 = / : → 不是模板调用而是新语句的字段定义：
                 # 说明外层数组/对象未闭合。报 parse.value_field 并停止，
                 # 避免把后续行误解析为模板调用（消除 template.undefined 级联）。
@@ -1235,6 +1273,12 @@ class Parser:
                     collector.add(ParseValueField(name=ident.name), stream.single_span(ident))
                     return ErrorValue(source=stream.single_span(ident), message=f'值位置出现字段定义: {ident.name}')
                 return Parser._parse_template_call(stream, collector, ident)
+
+            case StringIdentifierToken(name=name) as sid_tok:
+                # 字符串标识符只能作字段名；出现在值位置 → 报错并消费
+                stream.advance()
+                collector.add(ParseStringIdentifierMisplaced(name=name), stream.single_span(sid_tok))
+                return ErrorValue(source=stream.single_span(sid_tok), message=f'字符串标识符只能作为字段名: {name}')
 
             case EllipsisToken() as el_tok:
                 # ... 只在模板调用参数上下文合法（§2.8 展开轴 / 展开传播）
@@ -1259,13 +1303,13 @@ class Parser:
     def _parse_dollar_value(stream: TokenStream, collector: DiagnosticCollector) -> DollarValue:
         """$name [as type] 导入空间引用。"""
         dollar_tok = stream.expect(DollarToken)
-        name_tok = stream.expect(IdentifierToken)
+        name_tok = Parser._expect_bare_identifier(stream, collector)
 
         type_cast = None
         if Parser._peek_keyword(stream, 'as'):
             stream.advance()
             cast_tok = stream.peek()
-            if isinstance(cast_tok, IdentifierToken):
+            if isinstance(cast_tok, BareIdentifierToken):
                 name = cast_tok.name
                 if name in ('int', 'float', 'bool', 'str', 'path'):
                     type_cast = name
@@ -1349,7 +1393,7 @@ class Parser:
 
     @staticmethod
     def _parse_template_call(
-        stream: TokenStream, collector: DiagnosticCollector, name_tok: IdentifierToken
+        stream: TokenStream, collector: DiagnosticCollector, name_tok: BareIdentifierToken
     ) -> TemplateCallValue:
         """Name(pos_args..., named_arg=value, ...)"""
         stream.expect(LparenToken)
@@ -1384,7 +1428,7 @@ class Parser:
                 val = Parser._parse_value(stream, collector)
                 # *expr 解包项与显式位置参数同槽存放，保持源码顺序（§2.7）
                 positional.append(UnpackValue(source=stream.single_span(tok), value=val, double=False))
-            # 分支 1：标识符 → 可能是命名参数或模板调用（位置参数）
+            # 分支 1：标识符 → 命名参数（两种拼写）或模板调用（仅裸标识符）
             elif isinstance(tok, IdentifierToken):
                 ident: IdentifierToken = stream.expect(IdentifierToken)  # 消费到缓冲区
                 nxt = stream.peek()  # 下一个 token
@@ -1406,11 +1450,20 @@ class Parser:
                     if Parser._consume_ellipsis(stream):
                         axis_named.add(ident.name)  # 命名参数轴
                     saw_named = True
-                else:
+                elif isinstance(ident, BareIdentifierToken):
                     # 不是 = → 模板调用（位置参数），复用已消费的 ident
                     positional.append(Parser._parse_template_call(stream, collector, ident))
                     if Parser._consume_ellipsis(stream):
                         axis_positional.add(len(positional) - 1)
+                else:
+                    # 字符串标识符只能作字段名（= 已被上面的分支覆盖）→ 不能作模板调用
+                    collector.add(ParseStringIdentifierMisplaced(name=ident.name), stream.single_span(ident))
+                    positional.append(
+                        ErrorValue(
+                            source=stream.single_span(ident),
+                            message=f'字符串标识符只能作为字段名: {ident.name}',
+                        )
+                    )
             else:
                 # 分支 2：其他 token → 一定是位置参数
                 if saw_named:

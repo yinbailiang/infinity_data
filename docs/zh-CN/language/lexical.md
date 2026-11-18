@@ -55,3 +55,35 @@ chars → RawTokenizer → FinalTokenizer → Parser
 - 连续点贪婪计数：1 → `DOT`；3 → `ELLIPSIS`；其他数量（2 / ≥4）→
   词法错误（`tokenize.invalid_ellipsis`），按 `DOT` 恢复继续编译（不静默吞点）
 - 这是「`...` 全语言只有一种含义」的词法保障：`..` 与 `....` 不可能被误读为合法符号
+
+## 4.7 标识符
+
+标识符有两种拼写形式：
+
+- **裸标识符**：`[A-Za-z_][A-Za-z0-9_]*`
+- **字符串标识符**：单引号包裹，如 `'a-b@c$d'`；只用于**字段名**
+  （顶层字段、dict 键、模板字段名、模板调用命名参数、`extra_*_vars` 目标）
+
+规则：
+
+- **单引号不是字符串字面量**：值位置仍只接受 `"..."` 字符串
+- 字符串标识符单行；允许除裸换行外的任意字符；转义沿用 JSON
+  （`\\` / `\n` / `\t` / `\uXXXX` 等）并额外支持 `\'`
+- 空标识符 `''` → `tokenize.empty_identifier`；未闭合 / 裸换行 →
+  `tokenize.unterminated_identifier`
+- **可裸写则归一**：`'abc'` 与 `abc` 是同一名字——词法层报
+  `tokenize.redundant_identifier_quotes` 警告并发射裸标识符；因此 `~'abc'` 等价于
+  `~abc`（带警告）
+- 不可裸写的名字只能用字符串标识符；模板名、导入别名、约束名、`$` 名、值位置
+  出现字符串标识符 → `parse.string_identifier_misplaced`
+- 保留字面量（`true` / `false` / `null` / `noexist` / `nan`）必须带引号才能作字段名，
+  canonical 输出也保留引号
+- 输出层不受限：JSON / YAML / TOML 按各自规则引用键
+
+示例:
+
+```infd
+'a-b@c$d' = 1          # 仅字段名可用；输出键为 a-b@c$d
+'abc' = 2              # 冗余引号 → 警告，等价于 abc = 2
+'true' = 3             # 不得裸写（true 是字面量），canonical 保留引号
+```
