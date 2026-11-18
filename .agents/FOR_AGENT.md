@@ -31,7 +31,6 @@
 | `docs/zh-CN/language/` | 语言规范（语法 / 类型 / 约束 / 模板 / 导入 / 词法） |
 | `ENGINEERING.md` | 工程质量标准与指标 |
 | `CONTRIBUTING.md` | 贡献流程与提交规范 |
-| `.agents/MEMORY/project/` | 决策 / 实现取舍 / 历史记忆 |
 
 ## 变更铁律
 

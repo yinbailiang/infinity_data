@@ -17,7 +17,7 @@ uv run pre-commit install
 src/infinity_data/        → 源码（pyright strict，零 # type: ignore）
 tests/                    → 测试（与 src 路径镜像）
 docs/zh-CN/               → 对外文档（语言规范，MkDocs）
-.agents/MEMORY/project/   → 对内记忆（决策 / 实现取舍 / 历史）
+.agents/MEMORY/memorys/   → 对内记忆（决策 / 实现取舍 / 历史，不入库）
 README.md                 → 快速开始与 API / CLI / LSP 入口
 ENGINEERING.md            → 工程质量标准与指标
 ```
@@ -27,7 +27,7 @@ ENGINEERING.md            → 工程质量标准与指标
 1. **改代码** — 修改 `src/infinity_data/` 中的实现
 2. **写测试** — 在 `tests/` 镜像路径下编写测试
 3. **同步文档** — 语言语义变更更新 `docs/zh-CN/language/`；API 变更更新 README
-4. **记录决策** — 涉及设计取舍时更新 `.agents/MEMORY/project/`
+4. **记录决策** — 涉及设计取舍时更新 `.agents/MEMORY/memorys/`
 5. **验证**
 
    ```bash
@@ -42,7 +42,7 @@ ENGINEERING.md            → 工程质量标准与指标
 | - | - |
 | 语言规范（语法/类型/约束/模板/导入/词法） | `docs/zh-CN/language/` |
 | 快速开始、库 API、CLI、LSP 用法 | `README.md` |
-| 设计决策、实现取舍、历史坑位 | `.agents/MEMORY/project/` |
+| 设计决策、实现取舍、历史坑位 | `.agents/MEMORY/memorys/`（不入库） |
 | 临时草稿与调试输出 | `.agents/TEMP_FILES/tmps/`（不提交） |
 
 新增文档页面时同步 `mkdocs.yml` 的 `nav`；语言章节编号沿用完整规范（§x.y）。

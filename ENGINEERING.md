@@ -202,7 +202,7 @@ std_to_python（忠实） / emit（有损投影）
 | - | - |
 | 语言规范（对外） | `docs/zh-CN/language/` |
 | 快速开始与 API/CLI/LSP（对外） | `README.md` |
-| 设计决策与实现取舍（对内） | `.agents/MEMORY/project/` |
+| 设计决策与实现取舍（对内） | `.agents/MEMORY/memorys/`（不入库） |
 | 工程质量与贡献流程 | `ENGINEERING.md` / `CONTRIBUTING.md` |
 | 智能体规则与技能 | `AGENT.md` / `.agents/`（由 `infinity-agent-kit` 生成） |
 

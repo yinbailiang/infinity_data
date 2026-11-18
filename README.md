@@ -35,14 +35,12 @@ else:
 
 ## 文档导航
 
-> **文档分流**：语言规范在 `docs/`；决策与实现取舍在 `.agents/MEMORY/project/`。
+> **文档分流**：语言规范在 `docs/`；决策与实现取舍保存在本地记忆 `.agents/MEMORY/memorys/`（不随仓库分发）。
 
 | 文档 | 内容 |
 |---|---|
 | [docs/zh-CN/](./docs/zh-CN/index.md) | **语言参考**（语法 / 类型 / 约束 / 模板 / 导入 / 词法） |
 | [在线文档](https://yinbailiang.github.io/infinity_data/) | MkDocs 站点（GitHub Pages） |
-| [.agents/MEMORY/project/decisions.md](./.agents/MEMORY/project/decisions.md) | 决策与设计记忆（库 API / CLI / 生态 / 路线图） |
-| [.agents/MEMORY/project/internals.md](./.agents/MEMORY/project/internals.md) | 实现内部记忆（EOF / 错误模型 / 位置 / 沙盒边界） |
 | [ENGINEERING.md](./ENGINEERING.md) | 工程质量标准与指标 |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | 贡献流程与提交规范 |
 | [COMMIT_LOG.md](./COMMIT_LOG.md) | 发布基线与提交历史快照 |
