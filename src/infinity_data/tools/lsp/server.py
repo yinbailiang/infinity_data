@@ -106,6 +106,8 @@ class Server:
             self._reply(msg_id, self._semantic_tokens(params))
         elif method == 'textDocument/documentSymbol':
             self._reply(msg_id, self._document_symbols(params))
+        elif method == 'textDocument/foldingRange':
+            self._reply(msg_id, self._folding_ranges(params))
         elif method == 'textDocument/definition':
             self._reply(msg_id, self._definition(params))
         elif method == '$/cancelRequest':
@@ -121,6 +123,7 @@ class Server:
                 'completionProvider': {'triggerCharacters': [':', '<', '!', '~', '$', '.', '(', ',', "'"]},
                 'hoverProvider': True,
                 'documentSymbolProvider': True,
+                'foldingRangeProvider': True,
                 'definitionProvider': True,
                 'semanticTokensProvider': {
                     'legend': {
@@ -171,9 +174,12 @@ class Server:
         uri = params['textDocument']['uri']
         text = self._docs.get(uri)
         if text is None:
-            return {'isIncomplete': False, 'items': []}
+            return {'isIncomplete': True, 'items': []}
         items = language.completion_items(text, uri_to_path(uri), params['position'])
-        return {'isIncomplete': False, 'items': items}
+        # 补全按文本上下文在服务端过滤（$ 引用 / Bang 前缀 / 约束词），输入变化后
+        # 候选集可能完全不同。返回 true 让客户端每次按键重新请求，否则会继续用
+        # 触发字符时刻的旧列表做本地模糊匹配（如 `$script is st` 仍提示 script）。
+        return {'isIncomplete': True, 'items': items}
 
     def _hover(self, params: dict[str, Any]) -> dict[str, Any] | None:
         uri = params['textDocument']['uri']
@@ -195,6 +201,13 @@ class Server:
         if text is None:
             return []
         return language.document_symbols(text, uri_to_path(uri))
+
+    def _folding_ranges(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        uri = params['textDocument']['uri']
+        text = self._docs.get(uri)
+        if text is None:
+            return []
+        return language.folding_ranges(text, uri_to_path(uri))
 
     def _definition(self, params: dict[str, Any]) -> dict[str, Any] | None:
         uri = params['textDocument']['uri']

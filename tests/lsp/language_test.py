@@ -113,20 +113,29 @@ def _decode_semantic(text: str) -> list[tuple[int, int, int, int]]:
     return spans
 
 
+_OP = language.SEMANTIC_TOKEN_TYPES.index('operator')
+_STR = language.SEMANTIC_TOKEN_TYPES.index('string')
+_NUM = language.SEMANTIC_TOKEN_TYPES.index('number')
+_KEYWORD = language.SEMANTIC_TOKEN_TYPES.index('keyword')
+_COMMENT = language.SEMANTIC_TOKEN_TYPES.index('comment')
+_CLASS = language.SEMANTIC_TOKEN_TYPES.index('class')
+_TYPE = language.SEMANTIC_TOKEN_TYPES.index('type')
+_FUNC = language.SEMANTIC_TOKEN_TYPES.index('function')
+_PARAM = language.SEMANTIC_TOKEN_TYPES.index('parameter')
+_PROP = language.SEMANTIC_TOKEN_TYPES.index('property')
+_VAR = language.SEMANTIC_TOKEN_TYPES.index('variable')
+
+
 def test_semantic_tokens_types() -> None:
     text = 'port: <int, range(1, 100)> = 80  # comment\n'
-    spans = _decode_semantic(text)
-    types = {t for _, _, _, t in spans}
-    # operator / number / keyword / comment / variable
-    assert 0 in types  # operator
-    assert 2 in types  # number
-    assert 5 in types  # comment
+    types = {t for *_, t in _decode_semantic(text)}
+    assert {_OP, _NUM, _COMMENT} <= types
 
 
 def test_semantic_tokens_assert_keywords() -> None:
-    """!assert 与断言中的 is 都应标注为 keyword。"""
+    """!assert 与断言中的 is 都是关键字。"""
     spans = _decode_semantic('!assert [1] is <list>\n')
-    keywords = {(char, length) for _, char, length, token_type in spans if token_type == 3}
+    keywords = {(char, length) for _, char, length, t in spans if t == _KEYWORD}
     assert (0, len('!assert')) in keywords
     assert (12, len('is')) in keywords
 
@@ -135,7 +144,7 @@ def test_semantic_tokens_comment_excluded_inside_string() -> None:
     """字符串内的 # 不应被识别为注释。"""
     text = 'a = "x#y"\n# real comment\n'
     spans = _decode_semantic(text)
-    comment_rows = [s for s in spans if s[3] == 5]
+    comment_rows = [s for s in spans if s[3] == _COMMENT]
     # 只有第 1 行（真注释），第 0 行字符串内 # 不算
     assert [r[0] for r in comment_rows] == [1]
 
@@ -144,9 +153,30 @@ def test_semantic_tokens_utf16_length() -> None:
     """emoji 字符串的 length 按 UTF-16 单元计（含引号：1+2+1=4 单元）。"""
     text = 'a = "😀"\n'
     spans = _decode_semantic(text)
-    str_spans = [s for s in spans if s[3] == 1]
+    str_spans = [s for s in spans if s[3] == _STR]
     assert str_spans, '应有 string 令牌'
     assert str_spans[0][2] == 4  # "😀" = 引号1 + emoji2 + 引号1
+
+
+def test_semantic_tokens_language_concepts() -> None:
+    """模板名 class、字段 property、约束 type、约束调用 function、命名参数 parameter。"""
+    text = '~Server {\n    port: int = 80\n}\ns = Server()\nx: <list, each(str)> = []\nt = Server(port = 1)\n'
+    by_pos = {(line, char): t for line, char, _, t in _decode_semantic(text)}
+    assert by_pos[(0, 1)] == _CLASS  # ~Server
+    assert by_pos[(1, 4)] == _PROP  # port
+    assert by_pos[(1, 10)] == _TYPE  # int
+    assert by_pos[(3, 4)] == _CLASS  # Server()
+    assert by_pos[(4, 4)] == _TYPE  # list
+    assert by_pos[(4, 10)] == _FUNC  # each
+    assert by_pos[(4, 15)] == _TYPE  # str
+    assert by_pos[(5, 11)] == _PARAM  # port = 1
+
+
+def test_semantic_tokens_dollar_variable() -> None:
+    spans = _decode_semantic('!env import HOME\nx = $HOME\n')
+    by_pos = {(line, char): t for line, char, _, t in spans}
+    assert by_pos[(0, 12)] == _PROP  # 导入名
+    assert by_pos[(1, 5)] == _VAR  # $HOME
 
 
 # ═══════════════════════════════════════════════════════════
@@ -165,6 +195,27 @@ def test_completion_bang_prefix_keeps_keyword() -> None:
     """输入 !ass 时不能因词前缀去掉 ! 而过滤掉 !assert。"""
     items = language.completion_items('!ass', 'test.infd', {'line': 0, 'character': 4})
     assert [it['label'] for it in items] == ['!assert']
+
+
+def test_completion_bang_prefix_inserts_bare_keyword() -> None:
+    """! 已在文本中，补全只插入关键字名，避免得到 !!assert。"""
+    items = language.completion_items('!ass', 'test.infd', {'line': 0, 'character': 4})
+    assert items[0]['insertText'] == 'assert'
+    assert items[0]['filterText'] == 'assert'
+    assert items[0]['label'] == '!assert'
+
+
+def test_completion_namespace_only_inside_dollar_reference() -> None:
+    """同一行前面的 $ 不能污染后续位置的补全（$引用结束后应回到约束候选）。"""
+    text = '!file p"x.py" as raw import . as script\n!assert $script is st\n'
+    line = 1
+    inside = language.completion_items(text, 'test.infd', {'line': line, 'character': len('!assert $script')})
+    assert [it['label'] for it in inside] == ['script']
+
+    after = language.completion_items(text, 'test.infd', {'line': line, 'character': len('!assert $script is st')})
+    labels = {it['label'] for it in after}
+    assert 'script' not in labels
+    assert 'str' in labels
 
 
 TEMPLATE_TEXT = """
@@ -485,8 +536,120 @@ def test_document_symbols() -> None:
     server = symbols[0]
     assert server['kind'] == 5  # Class
     assert server['range']['start'] == {'line': 0, 'character': 0}
+    # range 覆盖整个模板体（sticky scroll 在体内持续生效）
+    assert server['range']['end']['line'] == 2
+    # selectionRange 指向名字本身（面包屑 reveal）
+    assert server['selectionRange'] == {
+        'start': {'line': 0, 'character': 1},
+        'end': {'line': 0, 'character': 7},
+    }
+    assert server['detail'] == '~Server { host: str }'
+    assert [c['name'] for c in server['children']] == ['host']
+    assert server['children'][0]['detail'] == 'str'
     field = symbols[1]
     assert field['kind'] == 13  # Property
+    assert field['selectionRange'] == {
+        'start': {'line': 3, 'character': 0},
+        'end': {'line': 3, 'character': 4},
+    }
+
+
+def test_document_symbols_hierarchical_quoted_field() -> None:
+    """模板字段作为 children，引号字段名保留拼写，selectionRange 覆盖含引号名字。"""
+    text = '~T {\n    \'test-1\': object\n    name: str = "x"\n}\n'
+    tpl = language.document_symbols(text, 't.infd')[0]
+    assert tpl['detail'] == "~T { 'test-1': object, name: str }"
+    children = tpl['children']
+    assert [c['name'] for c in children] == ["'test-1'", 'name']
+    assert children[0]['selectionRange'] == {
+        'start': {'line': 1, 'character': 4},
+        'end': {'line': 1, 'character': 12},
+    }
+
+
+def test_document_symbols_nested_call_arguments() -> None:
+    """顶级字段 → 模板调用命名参数 → 嵌套 dict 字段，逐层进入面包屑。"""
+    text = "~T { 'test-1': object }\nt2 = T(\n    'test-1' = {\n        a {\n            x = 1\n        }\n    }\n)\n"
+    symbols = language.document_symbols(text, 't.infd')
+    t2 = next(s for s in symbols if s['name'] == 't2')
+    arg = t2['children'][0]
+    assert arg['name'] == "'test-1'"
+    assert arg['range']['end']['line'] == 6  # 覆盖参数值体
+    a = arg['children'][0]
+    assert a['name'] == 'a'
+    assert a['children'][0]['name'] == 'x'
+
+
+def test_document_symbols_array_elements() -> None:
+    """数组元素生成 ``[i]`` 子符号，并可继续进入元素内部结构。"""
+    text = 'arr = [\n    {\n        a = 1\n    },\n    T(\n        x = 2\n    ),\n]\n'
+    arr = language.document_symbols(text, 't.infd')[0]
+    assert arr['detail'] == '[{ a }, T(…)]'
+    assert [c['name'] for c in arr['children']] == ['[0]', '[1]']
+    assert arr['children'][0]['children'][0]['name'] == 'a'
+    assert arr['children'][1]['children'][0]['name'] == 'x'
+
+
+def test_document_symbols_detail_previews() -> None:
+    """无类型字段 / 命名参数 / 数组元素都用值预览作为 detail，不出现 ``?``。"""
+    text = 't = T(\n    x = [1, 2, 3, 4],\n    y = {\n        a = 1\n    },\n)\n'
+    t = language.document_symbols(text, 't.infd')[0]
+    assert t['detail'] == 'T(…)'
+    x, y = t['children']
+    assert x['detail'] == '[1, 2, 3, …]'
+    assert y['detail'] == '{ a }'
+    assert [c['detail'] for c in x['children']] == ['1', '2', '3', '4']
+
+
+def test_document_symbols_positional_arguments() -> None:
+    """位置参数同样生成 ``[i]`` 子符号。"""
+    text = 'p = T(\n    {\n        a = 1\n    },\n)\n'
+    p = language.document_symbols(text, 't.infd')[0]
+    assert [c['name'] for c in p['children']] == ['[0]']
+    assert p['children'][0]['children'][0]['name'] == 'a'
+
+
+def test_document_symbols_unpack_range_symbol() -> None:
+    """解包项生成 ``[i..]`` 区间符号；下标是源码序号，展开宽度看 detail。"""
+    arr = language.document_symbols('arr = [*$base, 1]\n', 't.infd')[0]
+    assert [c['name'] for c in arr['children']] == ['[0..]', '[1]']
+    assert arr['children'][0]['detail'] == '*$base'
+
+    literal = language.document_symbols('arr = [*[1, 2], 3]\n', 't.infd')[0]
+    assert [c['name'] for c in literal['children']] == ['[0..]', '[1]']
+    assert literal['children'][0]['detail'] == '*[1, 2]'
+
+
+def test_document_symbols_positional_unpack_range_symbol() -> None:
+    """模板位置参数解包同样生成区间符号。"""
+    p = language.document_symbols('p = T(*$list, 1)\n', 't.infd')[0]
+    assert [c['name'] for c in p['children']] == ['[0..]', '[1]']
+
+
+def test_folding_ranges_structure() -> None:
+    """折叠来自 AST 结构（模板 / dict / 数组），不依赖缩进。"""
+    text = '~T {\n    a: int = 1\n    d: dict = {\n        x = 1\n    }\n    arr: list = [\n        1\n    ]\n}\n'
+    ranges = language.folding_ranges(text, 't.infd')
+    assert {'startLine': 0, 'endLine': 8, 'kind': 'region'} in ranges
+    assert {'startLine': 2, 'endLine': 4, 'kind': 'region'} in ranges
+    assert {'startLine': 5, 'endLine': 7, 'kind': 'region'} in ranges
+
+
+def test_folding_ranges_multiline_call() -> None:
+    text = '~T { a: int = 1 }\nt = T(\n    a = 1,\n)\n'
+    ranges = language.folding_ranges(text, 't.infd')
+    assert {'startLine': 1, 'endLine': 3, 'kind': 'region'} in ranges
+
+
+def test_folding_ranges_block_comment() -> None:
+    text = '#+ 说明\n第二行\n#- \na = 1\n'
+    ranges = language.folding_ranges(text, 't.infd')
+    assert {'startLine': 0, 'endLine': 2, 'kind': 'comment'} in ranges
+
+
+def test_folding_ranges_hash_inside_string_ignored() -> None:
+    text = 'a = "#+"\nb = 1\n#-\n'
+    assert language.folding_ranges(text, 't.infd') == []
 
 
 # ═══════════════════════════════════════════════════════════
@@ -524,11 +687,11 @@ def test_definition_from_import(tmp_path: Any) -> None:
 
 
 def test_semantic_tokens_string_identifier() -> None:
-    """字符串标识符按 variable 高亮，且其中的 # 不算注释。"""
+    """字符串标识符按 property 高亮，且其中的 # 不算注释。"""
     spans = _decode_semantic("'a#b' = 1\n")
-    variables = {(char, length) for _, char, length, token_type in spans if token_type == 4}
+    variables = {(char, length) for _, char, length, token_type in spans if token_type == _PROP}
     assert (0, len("'a#b'")) in variables
-    assert not [s for s in spans if s[3] == 5]
+    assert not [s for s in spans if s[3] == _COMMENT]
 
 
 def test_document_symbols_placeholder_for_empty_name() -> None:

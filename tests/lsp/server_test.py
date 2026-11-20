@@ -162,6 +162,7 @@ def test_initialize_capabilities() -> None:
     assert caps['hoverProvider'] is True
     assert caps['definitionProvider'] is True
     assert caps['documentSymbolProvider'] is True
+    assert caps['foldingRangeProvider'] is True
     assert 'semanticTokensProvider' in caps
     assert caps['completionProvider']['triggerCharacters'] == [':', '<', '!', '~', '$', '.', '(', ',', "'"]
     assert resp['result']['serverInfo']['name'] == 'infinity-data-lsp'
@@ -253,6 +254,8 @@ def test_completion_request() -> None:
     resp = _pick(msgs, 2)
     labels = {it['label'] for it in resp['result']['items']}
     assert 'int' in labels
+    # 上下文敏感过滤：必须让客户端持续重查，避免旧列表残留
+    assert resp['result']['isIncomplete'] is True
 
 
 def test_completion_request_quoted_field_scenario() -> None:
@@ -320,7 +323,24 @@ def test_document_symbols_request() -> None:
         },
     )
     resp = _pick(msgs, 5)
-    assert [s['name'] for s in resp['result']] == ['~Server', 'name']
+    result = resp['result']
+    assert [s['name'] for s in result] == ['~Server', 'name']
+    assert [c['name'] for c in result[0]['children']] == ['port']
+    assert result[0]['detail'] == '~Server { port: int }'
+
+
+def test_folding_range_request() -> None:
+    h = _ServerHarness()
+    msgs = h.run(
+        _open_doc('file:///t/fold.infd', '~T {\n  a: int = 1\n}\n'),
+        {
+            'jsonrpc': '2.0',
+            'id': 6,
+            'method': 'textDocument/foldingRange',
+            'params': {'textDocument': {'uri': 'file:///t/fold.infd'}},
+        },
+    )
+    assert _pick(msgs, 6)['result'] == [{'startLine': 0, 'endLine': 2, 'kind': 'region'}]
 
 
 def test_definition_request() -> None:

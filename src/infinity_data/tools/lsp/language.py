@@ -38,6 +38,7 @@ from infinity_data.parser import (
     ConstraintCall,
     ConstraintIdent,
     ConstraintLiteral,
+    Constraints,
     DictValue,
     DollarValue,
     EnvImportStmt,
@@ -52,6 +53,7 @@ from infinity_data.parser import (
     TemplateField,
     UnpackValue,
     VarStmt,
+    walk,
 )
 from infinity_data.sandbox import Sandbox
 from infinity_data.semantic import AstBuilder, ImportResolver, TemplateGraphResolver
@@ -64,7 +66,7 @@ from infinity_data.semantic.std import (
     StdValue,
 )
 from infinity_data.tokenizer.identifiers import decode_string_identifier, render_identifier
-from infinity_data.tokenizer.keywords import BANG_KEYWORDS, CONTEXTUAL_KEYWORDS, CONTEXTUAL_NAMES
+from infinity_data.tokenizer.keywords import BANG_KEYWORDS, CONTEXTUAL_KEYWORDS, CONTEXTUAL_NAMES, BangKeyword
 from infinity_data.tokenizer.models.raw_tokens import RawTokenType
 from infinity_data.tokenizer.models.tokens import NoexistToken, NullToken
 from infinity_data.tokenizer.tokenizer import RawTokenizer
@@ -76,6 +78,7 @@ __all__ = [
     'completion_items',
     'hover',
     'document_symbols',
+    'folding_ranges',
     'definition',
     'semantic_tokens',
 ]
@@ -126,95 +129,200 @@ def virtual_env(text: str) -> dict[str, str]:
     return {n: v for n, v in collect_env_declarations(text).items() if n not in os.environ}
 
 
-# ── 语义令牌（分词器 → LSP semantic tokens）────────────────
-# 全部用 VS Code 内置标准令牌类型（无需额外主题配置）：
-#   operator / string / number / keyword / variable / comment
-SEMANTIC_TOKEN_TYPES: list[str] = ['operator', 'string', 'number', 'keyword', 'variable', 'comment']
+# ── 语义令牌（分词器 + 语法上下文 → LSP semantic tokens）────────────────
+# 使用 VS Code 内置标准类型（主题无需额外配置）：
+#   class / type / function / parameter / variable / property /
+#   keyword / string / number / operator / comment / decorator
+SEMANTIC_TOKEN_TYPES: list[str] = [
+    'class',
+    'type',
+    'function',
+    'parameter',
+    'variable',
+    'property',
+    'keyword',
+    'string',
+    'number',
+    'operator',
+    'comment',
+    'decorator',
+]
+
+_TOKEN_INDEX: dict[str, int] = {name: i for i, name in enumerate(SEMANTIC_TOKEN_TYPES)}
 
 _RAW = RawTokenType
-_TOKEN_MAP: dict[RawTokenType, int] = {
-    # 结构定界符 / 运算符 → operator
-    _RAW.LBRACE: 0,
-    _RAW.RBRACE: 0,
-    _RAW.LBRACKET: 0,
-    _RAW.RBRACKET: 0,
-    _RAW.LPAREN: 0,
-    _RAW.RPAREN: 0,
-    _RAW.LANGLE: 0,
-    _RAW.RANGLE: 0,
-    _RAW.EQUALS: 0,
-    _RAW.COLON: 0,
-    _RAW.COMMA: 0,
-    _RAW.TILDE: 0,
-    _RAW.EXCLAMATION: 0,
-    _RAW.QUESTION: 0,
-    _RAW.DOLLAR: 0,
-    _RAW.DOT: 0,
-    # 解包 / 模板展开 / 笛卡尔积标记 → operator
-    _RAW.STAR: 0,
-    _RAW.DOUBLE_STAR: 0,
-    _RAW.ELLIPSIS: 0,
-    _RAW.CARET: 0,
-    # 字符串 / 路径字面量 → string
-    _RAW.STRING: 1,
-    _RAW.MULTILINE_STRING: 1,
-    _RAW.PATH: 1,
-    # 字符串标识符（字段名）→ variable
-    _RAW.STRING_IDENTIFIER: 4,
-    # 数字 → number
-    _RAW.INTEGER: 2,
-    _RAW.FLOAT: 2,
-    # 字面量关键字 + 导入关键字 → keyword
-    _RAW.BOOL: 3,
-    _RAW.NULL: 3,
-    _RAW.NOEXIST: 3,
-    _RAW.BANG_KEYWORD: 3,
+
+# 与语法上下文无关的 token → 语义类型
+_FIXED_SEMANTIC: dict[RawTokenType, str] = {
+    # 结构定界符 / 运算符
+    _RAW.LBRACE: 'operator',
+    _RAW.RBRACE: 'operator',
+    _RAW.LBRACKET: 'operator',
+    _RAW.RBRACKET: 'operator',
+    _RAW.LPAREN: 'operator',
+    _RAW.RPAREN: 'operator',
+    _RAW.LANGLE: 'operator',
+    _RAW.RANGLE: 'operator',
+    # 赋值 / 类型标注冒号按 keyword 着色（结构分隔符，与普通标点区分开）
+    _RAW.EQUALS: 'keyword',
+    _RAW.COLON: 'keyword',
+    _RAW.COMMA: 'operator',
+    _RAW.DOLLAR: 'operator',
+    _RAW.DOT: 'operator',
+    _RAW.STAR: 'operator',
+    _RAW.DOUBLE_STAR: 'operator',
+    _RAW.ELLIPSIS: 'operator',
+    _RAW.CARET: 'operator',
+    # 约束标记 / 字面量关键字
+    _RAW.QUESTION: 'keyword',
+    _RAW.EXCLAMATION: 'keyword',
+    _RAW.BOOL: 'keyword',
+    _RAW.NULL: 'keyword',
+    _RAW.NOEXIST: 'keyword',
+    # 字面量
+    _RAW.STRING: 'string',
+    _RAW.MULTILINE_STRING: 'string',
+    _RAW.PATH: 'string',
+    _RAW.INTEGER: 'number',
+    _RAW.FLOAT: 'number',
+    # Bang 指令 / 模板定义标记
+    _RAW.BANG_KEYWORD: 'keyword',
+    _RAW.TILDE: 'decorator',
 }
 
 # 上下文关键字（词法层为普通标识符，语法层才识别）
 _CONTEXTUAL_KEYWORDS = CONTEXTUAL_NAMES
 
+_REGISTRY_NAMES: frozenset[str] = frozenset(_REGISTRY.names)
+_CAST_TYPE_NAMES: frozenset[str] = frozenset({'int', 'float', 'bool', 'str', 'path'})
+
+
+def _classify_identifier(
+    tok: Any,
+    prev: Any,
+    nxt: Any,
+    stack: list[str],
+    constraint_depth: int,
+    bang: BangKeyword | None,
+) -> str:
+    """标识符 → 语义类型（模板名 / 约束类型 / 函数 / 参数 / 属性 / 变量 / 关键字）。"""
+    raw = tok.raw
+    prev_type = prev.type if prev is not None else None
+    nxt_type = nxt.type if nxt is not None else None
+    top = stack[-1] if stack else None
+
+    # 约束位置：<> 内 / 类型标注后 / is 后
+    in_constraint = constraint_depth > 0 or prev_type is _RAW.COLON or (prev is not None and prev.raw == 'is')
+    # 调用名优先于约束位置：each(str) 的 each 是函数，参数 str 才是类型
+    if nxt_type is _RAW.LPAREN:
+        return 'function' if raw in _REGISTRY_NAMES else 'class'
+    if in_constraint:
+        return 'type' if raw in _REGISTRY_NAMES else 'class'
+    # 字段名 / 命名参数：后接 = 或 :
+    if nxt_type in (_RAW.EQUALS, _RAW.COLON):
+        return 'parameter' if top in ('call', 'config') else 'property'
+    # 上下文关键字（import / as / is）
+    if raw in _CONTEXTUAL_KEYWORDS:
+        return 'keyword'
+    # $ 引用
+    if prev_type is _RAW.DOLLAR:
+        return 'variable'
+    # 模板定义名（~Name）
+    if prev_type is _RAW.TILDE:
+        return 'class'
+    # $x as type / 导入别名
+    if prev is not None and prev.raw == 'as':
+        if raw in _CAST_TYPE_NAMES:
+            return 'type'
+        return 'class' if bang == BangKeyword.FROM else 'variable'
+    # JSON path 键
+    if prev_type is _RAW.DOT:
+        return 'property'
+    # 导入列表中的名字（!from → 模板类；!env / !file → 键名）
+    if prev is not None and prev.raw == 'import':
+        return 'class' if bang == BangKeyword.FROM else 'property'
+    return 'variable'
+
 
 def semantic_tokens(text: str, file_path: str) -> list[int]:
-    """用 RawTokenizer 分词 + 注释扫描，输出 LSP semanticTokens 扁平数组。
+    """用 RawTokenizer 分词 + 语法上下文分类，输出 LSP semanticTokens 扁平数组。
 
     编码规则（LSP）：每 5 个数为 1 个令牌，位置为相对上一个令牌的增量：
     [deltaLine, deltaStartChar, length, tokenType, tokenModifiers]。
     位置与 length 均按 **UTF-16 单元**；跨行 token（多行字符串/多行注释）按行拆分。
 
+    分类覆盖语言概念（模板 class / 约束 type / 约束调用 function / 命名参数 parameter /
+    字段 property / $ 引用 variable / Bang 指令 keyword / ~ decorator），比只分
+    variable/keyword 更接近 Python 的语义高亮。
+
     注释（`#` 单行、`#+...#-` 多行）被词法器跳过、不产生 token，这里单独扫描：
     排除字符串字面量内的 `#`，映射为 VS Code 标准 `comment` 类型（默认主题上灰色）。
     """
     file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
-    tokens = RawTokenizer(file=file, error_collector=DiagnosticCollector())
+    raw_tokens = [
+        tok
+        for tok in RawTokenizer(file=file, error_collector=DiagnosticCollector())
+        if tok.type not in (_RAW.NEWLINE, _RAW.EOF)
+    ]
     lines = text.splitlines()
 
     spans: list[tuple[int, int, int, int]] = []  # (line, char_u16, length, type_idx)
     string_ranges: list[tuple[int, int, int]] = []  # (line, cp_start, cp_end) 排除注释识别
-    for tok in tokens:
-        if tok.type in (_RAW.NEWLINE, _RAW.EOF):
+    stack: list[str] = []  # 容器上下文：dict / array / call / config / constraint
+    constraint_depth = 0
+    bang: BangKeyword | None = None
+
+    for i, tok in enumerate(raw_tokens):
+        prev = raw_tokens[i - 1] if i > 0 else None
+        nxt = raw_tokens[i + 1] if i + 1 < len(raw_tokens) else None
+
+        # 关闭符号先出栈（分类不受影响：定界符固定为 operator）
+        if tok.type in (_RAW.RBRACE, _RAW.RBRACKET, _RAW.RPAREN, _RAW.RANGLE):
+            if tok.type is _RAW.RANGLE and constraint_depth > 0:
+                constraint_depth -= 1
+            if stack:
+                stack.pop()
+
+        type_name = _FIXED_SEMANTIC.get(tok.type)
+        if tok.type is _RAW.IDENTIFIER:
+            type_name = _classify_identifier(tok, prev, nxt, stack, constraint_depth, bang)
+        elif tok.type is _RAW.STRING_IDENTIFIER:
+            # 字符串标识符只能是字段名 / 命名参数
+            type_name = 'parameter' if (stack and stack[-1] in ('call', 'config')) else 'property'
+        if type_name is None:
             continue
-        type_idx = _TOKEN_MAP.get(tok.type)
-        if type_idx is None:
-            # 标识符：上下文关键字（import / as / is）→ keyword，其余 → variable
-            if tok.type is _RAW.IDENTIFIER:
-                type_idx = 3 if tok.raw in _CONTEXTUAL_KEYWORDS else 4
-            else:
-                continue
+        type_idx = _TOKEN_INDEX[type_name]
+
         start = tok.source.start
         raw = tok.raw
         # 跨行 token（多行字符串）：按行拆分为多个令牌，每个令牌限定单行
         parts = raw.split('\n')
-        for i, part in enumerate(parts):
+        for part_index, part in enumerate(parts):
             if not part:
                 continue  # 空片段（空行）无内容可高亮
-            line = start.line - 1 + i
+            line = start.line - 1 + part_index
             line_text = lines[line] if 0 <= line < len(lines) else ''
-            char = (start.col - 1) if i == 0 else 0
+            char = (start.col - 1) if part_index == 0 else 0
             char_u16 = utf16_prefix(line_text, char)
             spans.append((line, char_u16, utf16_len(part), type_idx))
             if tok.type in (_RAW.STRING, _RAW.MULTILINE_STRING, _RAW.PATH, _RAW.STRING_IDENTIFIER):
                 string_ranges.append((line, char, char + len(part)))
+
+        # 入栈（分类使用父容器，故放在分类之后）
+        if tok.type is _RAW.LBRACE:
+            stack.append('dict')
+        elif tok.type is _RAW.LBRACKET:
+            stack.append('array')
+        elif tok.type is _RAW.LPAREN:
+            is_config = (
+                prev is not None and prev.type is _RAW.IDENTIFIER and i >= 2 and raw_tokens[i - 2].type is _RAW.TILDE
+            )
+            stack.append('config' if is_config else 'call')
+        elif tok.type is _RAW.LANGLE:
+            stack.append('constraint')
+            constraint_depth += 1
+        elif tok.type is _RAW.BANG_KEYWORD:
+            bang = BangKeyword(tok.raw.removeprefix('!'))
 
     spans.extend(_comment_spans(lines, string_ranges))
 
@@ -233,7 +341,7 @@ def semantic_tokens(text: str, file_path: str) -> list[int]:
     return data
 
 
-_COMMENT_IDX = 5  # SEMANTIC_TOKEN_TYPES 中 comment 的位置
+_COMMENT_IDX = _TOKEN_INDEX['comment']
 
 
 def _comment_spans(lines: list[str], string_ranges: list[tuple[int, int, int]]) -> list[tuple[int, int, int, int]]:
@@ -467,6 +575,28 @@ def _bang_prefix_at(text: str, position: dict[str, Any]) -> str | None:
     return None
 
 
+def _dollar_prefix_at(text: str, position: dict[str, Any]) -> str | None:
+    """光标处形如 ``$scr`` 的命名空间引用前缀；不在 ``$`` 名内则 None。
+
+    只认 **紧贴光标标识符** 的 ``$``：同一行前面出现过 ``$`` 不代表光标仍
+    在引用里。否则 ``!assert $script is st`` 的 ``st`` 也会被当成命名空间
+    前缀，约束补全全被吞掉。
+    """
+    line_no = int(position.get('line', 0))
+    char = int(position.get('character', 0))
+    lines = text.splitlines()
+    if line_no < 0 or line_no >= len(lines):
+        return None
+    line = lines[line_no]
+    cp = min(utf16_to_cp(line, char), len(line))
+    start = cp
+    while start > 0 and (line[start - 1].isalnum() or line[start - 1] == '_'):
+        start -= 1
+    if start > 0 and line[start - 1] == '$':
+        return line[start:cp]
+    return None
+
+
 def _namespace_names(text: str, file_path: str) -> set[str]:
     """收集 !env / !file / !var 导入的可见名（$ 引用补全候选）。"""
     file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
@@ -584,7 +714,7 @@ def _template_field_items(tpl: TemplateDef) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for f in tpl.fields:
         required = '必填' if f.default_value is None else '可选'
-        type_text = ', '.join(_constraint_text(c) for c in f.constraints.constraints) or '?'
+        type_text = _constraint_list_text(f.constraints)
         spelling = render_identifier(f.name)
         doc_lines = [f'**`{spelling}`** — 模板字段（{required}）', '', f'- 类型: `{type_text}`']
         if f.default_value is not None:
@@ -606,18 +736,15 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
     """返回补全项：命名空间（$ 触发）/ 内置约束 / 模板 / 关键字。"""
     lines = text.splitlines()
     line_no = int(position.get('line', 0))
-    char = int(position.get('character', 0))
     line_text = lines[line_no] if 0 <= line_no < len(lines) else ''
-    prefix = line_text[:char].rstrip()
 
-    # 光标前是 `$`（或 `$` 后已输入部分名字）→ 命名空间引用补全
-    dollar_at = prefix.rfind('$')
-    if dollar_at >= 0 and not prefix[dollar_at + 1 :].isspace():
-        partial = prefix[dollar_at + 1 :]
+    # 光标前紧贴 `$`（或 `$` 后已输入部分名字）→ 命名空间引用补全
+    dollar_prefix = _dollar_prefix_at(text, position)
+    if dollar_prefix is not None:
         return [
             {'label': name, 'kind': 6, 'detail': '命名空间引用（$）', 'insertText': name}
             for name in sorted(_namespace_names(text, file_path))
-            if name.startswith(partial)
+            if name.startswith(dollar_prefix)
         ]
 
     word, word_start, word_end = _word_span(text, position)
@@ -677,13 +804,293 @@ def completion_items(text: str, file_path: str, position: dict[str, Any]) -> lis
 
     if bang_prefix is not None:
         items = [it for it in items if it['label'].startswith(bang_prefix)]
+        # ``!`` 已由用户输入（且是触发字符）：只插入关键字名，匹配文本也用裸名。
+        # 否则接受 ``!assert`` 会在已有的 ``!`` 后面拼成 ``!!assert``
+        items = [{**it, 'filterText': it['label'][1:], 'insertText': it['label'][1:]} for it in items]
     elif word:
         items = [it for it in items if it['label'].startswith(word)]
     return items
 
 
+def _constraint_list_text(constraints: Constraints | None) -> str:
+    """约束列表 → 展示文本（``?`` 表示无约束）。"""
+    if constraints is None or not constraints.constraints:
+        return '?'
+    return ', '.join(_constraint_text(c) for c in constraints.constraints)
+
+
+def _statement_name_range(source: SourceRange, lines: list[str], *, after_tilde: bool) -> dict[str, Any]:
+    """语句名字的 LSP range（``selectionRange``）：跳过 ``~``/空白，支持引号标识符。"""
+    line_no = source.start.line - 1
+    line = lines[line_no] if 0 <= line_no < len(lines) else ''
+    i = max(source.start.col - 1, 0)
+    if after_tilde and i < len(line) and line[i] == '~':
+        i += 1
+    while i < len(line) and line[i] in ' \t':
+        i += 1
+    if i < len(line) and line[i] == "'":
+        span = _quoted_identifier_span(line, i)
+        end = span[2] if span is not None else min(i + 1, len(line))
+    else:
+        end = i
+        while end < len(line) and (line[end].isalnum() or line[end] == '_'):
+            end += 1
+    return _lsp_range_at(line_no, i, end, line)
+
+
+def _template_signature(tpl: TemplateDef) -> str:
+    """模板签名（面包屑 / Outline 的 detail）：``~Name(config) { field: type, ... }``。"""
+    fields = ', '.join(f'{render_identifier(f.name)}: {_constraint_list_text(f.constraints)}' for f in tpl.fields)
+    head = f'~{tpl.name}{tpl.config.canonical()}'
+    return f'{head} {{ {fields} }}' if fields else f'{head} {{}}'
+
+
+def _preview_inline(value: Any, depth: int = 0) -> str:
+    """值 → 单行预览（Outline / 面包屑 detail，不追求完整恢复）。"""
+    if isinstance(value, LiteralValue):
+        return value.canonical()
+    if isinstance(value, DollarValue):
+        return value.canonical()
+    if isinstance(value, TemplateCallValue):
+        return f'{value.template_name}(…)'
+    if isinstance(value, UnpackValue):
+        return ('**' if value.double else '*') + _preview_inline(value.value, depth + 1)
+    if isinstance(value, DictValue):
+        if depth >= 2:
+            return '{…}'
+        fields = [item for item in value.items if isinstance(item, Field)]
+        names = [render_identifier(f.name) for f in fields[:3]]
+        if not names:
+            return '{ }'
+        return '{ ' + ', '.join(names) + (', …' if len(fields) > 3 else '') + ' }'
+    if isinstance(value, ArrayValue):
+        if depth >= 2:
+            return '[…]'
+        parts = [_preview_inline(e, depth + 1) for e in value.elements[:3]]
+        more = ', …' if len(value.elements) > 3 else ''
+        return '[' + ', '.join(parts) + more + ']'
+    if isinstance(value, ErrorValue):
+        return '<错误>'
+    return '?'
+
+
+def _value_preview_text(value: Any, limit: int = 32) -> str:
+    """值预览（超长截断），作为无类型字段 / 无名元素的 detail。"""
+    text = _preview_inline(value)
+    return text if len(text) <= limit else text[: limit - 1] + '…'
+
+
+def _field_symbol(
+    name: str,
+    constraints: Constraints | None,
+    source: SourceRange,
+    lines: list[str],
+    value: Any | None = None,
+) -> dict[str, Any] | None:
+    """字段 → DocumentSymbol（Property）；位置无法转换时返回 None。
+
+    detail：有类型约束显示类型，否则显示值预览（避免出现无意义的 ``?``）。
+    """
+    rng = to_lsp_range(source, lines)
+    if rng is None:
+        return None
+    if constraints is not None and constraints.constraints:
+        detail = _constraint_list_text(constraints)
+    else:
+        detail = _value_preview_text(value) if value is not None else ''
+    return {
+        'name': render_identifier(name) if name else _EMPTY_SYMBOL_NAME,
+        'kind': 13,
+        'detail': detail,
+        'range': rng,
+        'selectionRange': _statement_name_range(source, lines, after_tilde=False),
+    }
+
+
+_MAX_SYMBOL_DEPTH = 20
+"""值树递归生成子符号的深度上限（防御病态嵌套）。"""
+
+
+def _merged_span(start: SourceRange, end: SourceRange) -> SourceRange:
+    """两个范围合并（命名参数符号：从名字到值末尾）。"""
+    return SourceRange(file=start.file, start=start.start, end=end.end)
+
+
+def _named_arg_symbol(arg: NamedArg, lines: list[str], depth: int) -> dict[str, Any] | None:
+    """模板调用命名参数 → DocumentSymbol（面包屑可进入参数值的嵌套结构）。"""
+    rng = to_lsp_range(_merged_span(arg.source, arg.value.source), lines)
+    if rng is None:
+        return None
+    symbol: dict[str, Any] = {
+        'name': render_identifier(arg.name) if arg.name else _EMPTY_SYMBOL_NAME,
+        'kind': 13,
+        'detail': _value_preview_text(arg.value),
+        'range': rng,
+        'selectionRange': _statement_name_range(arg.source, lines, after_tilde=False),
+    }
+    children = _value_children(arg.value, lines, depth + 1)
+    if children:
+        symbol['children'] = children
+    return symbol
+
+
+def _index_symbol(index: int, value: Any, lines: list[str], depth: int) -> dict[str, Any] | None:
+    """数组元素 / 位置参数 → DocumentSymbol（``[i]``，无名位置的面包屑锚点）。"""
+    rng = to_lsp_range(value.source, lines)
+    if rng is None:
+        return None
+    symbol: dict[str, Any] = {
+        'name': f'[{index}]',
+        'kind': 13,
+        'detail': _value_preview_text(value),
+        'range': rng,
+        'selectionRange': rng,
+    }
+    children = _value_children(value, lines, depth + 1)
+    if children:
+        symbol['children'] = children
+    return symbol
+
+
+def _unpack_symbol(index: int, unpack: UnpackValue, lines: list[str]) -> dict[str, Any] | None:
+    """解包项 → 区间符号 ``[i..]``（源码序号起点；展开宽度不可静态确定）。"""
+    rng = to_lsp_range(unpack.source, lines)
+    if rng is None:
+        return None
+    return {
+        'name': f'[{index}..]',
+        'kind': 13,
+        'detail': ('**' if unpack.double else '*') + _value_preview_text(unpack.value),
+        'range': rng,
+        'selectionRange': rng,
+    }
+
+
+def _value_children(value: Any, lines: list[str], depth: int) -> list[dict[str, Any]]:
+    """值的嵌套子符号：dict 字段 / 数组元素 / 模板调用参数（递归）。"""
+    if depth > _MAX_SYMBOL_DEPTH:
+        return []
+    children: list[dict[str, Any]] = []
+    if isinstance(value, DictValue):
+        for item in value.items:
+            if not isinstance(item, Field):
+                continue
+            symbol = _field_symbol(item.name, item.constraints, item.source, lines, item.value)
+            if symbol is None:
+                continue
+            nested = _value_children(item.value, lines, depth + 1)
+            if nested:
+                symbol['children'] = nested
+            children.append(symbol)
+    elif isinstance(value, ArrayValue):
+        for index, element in enumerate(value.elements):
+            if isinstance(element, UnpackValue):
+                symbol = _unpack_symbol(index, element, lines)
+            else:
+                symbol = _index_symbol(index, element, lines, depth)
+            if symbol is not None:
+                children.append(symbol)
+    elif isinstance(value, TemplateCallValue):
+        for index, arg in enumerate(value.positional_args):
+            if isinstance(arg, UnpackValue):
+                symbol = _unpack_symbol(index, arg, lines)
+            else:
+                symbol = _index_symbol(index, arg, lines, depth)
+            if symbol is not None:
+                children.append(symbol)
+        for arg in value.named_args:
+            if not isinstance(arg, NamedArg):
+                continue
+            symbol = _named_arg_symbol(arg, lines, depth)
+            if symbol is not None:
+                children.append(symbol)
+    return children
+
+
+def _string_ranges(text: str, file_path: str) -> list[tuple[int, int, int]]:
+    """字符串类 token 的行内码点区间（块注释扫描时排除其中的 ``#``）。"""
+    file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
+    tokens = RawTokenizer(file=file, error_collector=DiagnosticCollector())
+    ranges: list[tuple[int, int, int]] = []
+    for tok in tokens:
+        if tok.type not in (_RAW.STRING, _RAW.MULTILINE_STRING, _RAW.PATH, _RAW.STRING_IDENTIFIER):
+            continue
+        start = tok.source.start
+        for i, part in enumerate(tok.raw.split('\n')):
+            if not part:
+                continue
+            char = (start.col - 1) if i == 0 else 0
+            ranges.append((start.line - 1 + i, char, char + len(part)))
+    return ranges
+
+
+def _block_comment_folds(lines: list[str], string_ranges: list[tuple[int, int, int]]) -> list[tuple[int, int]]:
+    """多行块注释 ``#+ ... #-`` 的 (起行, 止行)，排除字符串内的 ``#``。"""
+    per_line: dict[int, list[tuple[int, int]]] = {}
+    for line, cs, ce in string_ranges:
+        per_line.setdefault(line, []).append((cs, ce))
+
+    def first_hash(line_no: int) -> int:
+        line = lines[line_no]
+        ranges = sorted(per_line.get(line_no, []))
+        col = 0
+        while col < len(line):
+            if any(cs <= col < ce for cs, ce in ranges):
+                col = next(ce for cs, ce in ranges if cs <= col < ce)
+                continue
+            if line[col] == '#':
+                return col
+            col += 1
+        return -1
+
+    folds: list[tuple[int, int]] = []
+    start: int | None = None
+    for line_no, line in enumerate(lines):
+        col = first_hash(line_no)
+        if col == -1:
+            continue
+        if start is None and line.startswith('#+', col):
+            if line.find('#-', col + 2) == -1:
+                start = line_no
+        elif start is not None and line.startswith('#-', col):
+            if line_no > start:
+                folds.append((start, line_no))
+            start = None
+    return folds
+
+
+def folding_ranges(text: str, file_path: str) -> list[dict[str, Any]]:
+    """LSP foldingRange：AST 结构区域 + 多行块注释。
+
+    结构区域来自模板定义 / dict / 数组 / 多行模板调用，不依赖缩进——不提供
+    provider 时客户端会按缩进猜，花括号语言的折叠边界会与语法结构不一致。
+    """
+    file = MemFile(name=file_path, root_path=Path(file_path).parent, content=text)
+    doc, _ = parse_source(file)
+    lines = text.splitlines()
+    ranges: list[dict[str, Any]] = []
+
+    def add(start_line: int, end_line: int, kind: str) -> None:
+        if 0 <= start_line < end_line < len(lines):
+            ranges.append({'startLine': start_line, 'endLine': end_line, 'kind': kind})
+
+    for stmt in doc.statements:
+        for node in walk(stmt):
+            if isinstance(node, (TemplateDef, DictValue, ArrayValue, TemplateCallValue)):
+                add(node.source.start.line - 1, node.source.end.line - 1, 'region')
+
+    for start_line, end_line in _block_comment_folds(lines, _string_ranges(text, file_path)):
+        add(start_line, end_line, 'comment')
+
+    ranges.sort(key=lambda r: (r['startLine'], r['endLine']))
+    return ranges
+
+
 def document_symbols(text: str, file_path: str) -> list[dict[str, Any]]:
-    """文档大纲：模板定义（Class）+ 顶层字段（Property）。
+    """文档大纲：模板定义（Class，含字段 children）+ 顶层字段（Property）。
+
+    层级化供面包屑 / sticky scroll 使用：模板 ``range`` 覆盖整个定义体，
+    ``selectionRange`` 指向名字；``detail`` 为完整签名。
 
     LSP 客户端要求 ``DocumentSymbol.name`` 非空；错误恢复产生的空名字（如空标识符
     ``'' = 1``）用 ``<empty>`` 占位——保留大纲条目与位置，避免静默丢失。
@@ -693,29 +1100,32 @@ def document_symbols(text: str, file_path: str) -> list[dict[str, Any]]:
     lines = text.splitlines()
     symbols: list[dict[str, Any]] = []
     for stmt in doc.statements:
-        rng = to_lsp_range(stmt.source, lines)
-        if rng is None:
-            continue
         if isinstance(stmt, TemplateDef):
+            rng = to_lsp_range(stmt.source, lines)
+            if rng is None:
+                continue
+            children: list[dict[str, Any]] = []
+            for tf in stmt.fields:
+                child = _field_symbol(tf.name, tf.constraints, tf.source, lines, tf.default_value)
+                if child is not None:
+                    children.append(child)
             symbols.append(
                 {
                     'name': f'~{stmt.name or _EMPTY_SYMBOL_NAME}',
-                    'kind': 5,
-                    'detail': '模板',
+                    'detail': _template_signature(stmt),
+                    'kind': 5,  # Class
                     'range': rng,
-                    'selectionRange': rng,
+                    'selectionRange': _statement_name_range(stmt.source, lines, after_tilde=True),
+                    'children': children,
                 }
             )
         elif isinstance(stmt, Field):
-            symbols.append(
-                {
-                    'name': stmt.name or _EMPTY_SYMBOL_NAME,
-                    'kind': 13,
-                    'detail': '字段',
-                    'range': rng,
-                    'selectionRange': rng,
-                }
-            )
+            symbol = _field_symbol(stmt.name, stmt.constraints, stmt.source, lines, stmt.value)
+            if symbol is not None:
+                children = _value_children(stmt.value, lines, 0)
+                if children:
+                    symbol['children'] = children
+                symbols.append(symbol)
     return symbols
 
 
@@ -1032,7 +1442,7 @@ def _hover_impl(text: str, file_path: str, position: dict[str, Any]) -> dict[str
     # 3. ~模板定义内字段（类型 + 默认值）
     _def_tpl, tf = _template_field_at(ast, cursor)
     if tf is not None:
-        type_text = ', '.join(_constraint_text(c) for c in tf.constraints.constraints) or '?'
+        type_text = _constraint_list_text(tf.constraints)
         required = '必填' if tf.default_value is None else '可选'
         md = [f'**`{tf.name}`** — 模板字段（{required}）', '', f'- 类型: `{type_text}`']
         if tf.default_value is not None:
