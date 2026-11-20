@@ -849,6 +849,21 @@ def test_assert_can_use_var_values() -> None:
     assert not result.has_errors, [d.render() for d in result.diagnostics]
 
 
+def test_assert_failure_marks_assert_line_and_value_origin() -> None:
+    """断言失败：主错误在 !assert 行，原始数据行另发 INFO 来源提示。"""
+    result = compile_source('!var 3 import . as v\n!assert $v is eq(2)\n')
+    failure = next(d for d in result.diagnostics if d.code == 'constraint.eq_mismatch')
+    origin = next(d for d in result.diagnostics if d.code == 'assert.value_origin')
+    failure_src = failure.source
+    origin_src = origin.source
+    assert failure_src is not None and failure_src.start.line == 2
+    assert origin_src is not None and origin_src.start.line == 1
+
+    inline = compile_source('!assert 3 is eq(2)\n')
+    assert any(d.code == 'constraint.eq_mismatch' for d in inline.diagnostics)
+    assert not any(d.code == 'assert.value_origin' for d in inline.diagnostics)
+
+
 def test_assert_in_imported_template_file(tmp_path: Path) -> None:
     """.inft 内的 !assert 按该文件 scope 求值，且不会触发 inft.not_allowed。"""
     (tmp_path / 'rules.inft').write_text(

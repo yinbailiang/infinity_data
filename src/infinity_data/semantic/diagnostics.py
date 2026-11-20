@@ -54,6 +54,7 @@ __all__ = [
     'DollarConvertFailed',
     'DollarConvertUnsupported',
     'InftNotAllowed',
+    'AssertValueOrigin',
     'ConstraintInvalid',
     'ConstraintUnknown',
     'ConstraintArgCount',
@@ -683,6 +684,25 @@ class InftNotAllowed(DiagnosticDeclaration):
         'zh-CN': '{path_prefix}.inft 文件只允许模板定义，发现其他语句',
         'en-US': '{path_prefix}.inft files may only contain template definitions',
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# 断言
+# ═══════════════════════════════════════════════════════════
+
+
+@registry.register
+@dataclass(frozen=True)
+class AssertValueOrigin(DiagnosticDeclaration):
+    """断言失败值的来源（辅助定位，与 !assert 主诊断成对出现）。"""
+
+    code: ClassVar[str] = 'assert.value_origin'
+    severity: ClassVar[Severity] = Severity.WARNING
+    templates: ClassVar[Mapping[str, str]] = {
+        'zh-CN': '{path_prefix}断言失败值来源于此（{value}）',
+        'en-US': '{path_prefix}value under assertion originates here ({value})',
+    }
+    value: str
 
 
 # ═══════════════════════════════════════════════════════════

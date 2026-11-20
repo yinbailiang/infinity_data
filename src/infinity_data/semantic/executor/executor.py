@@ -45,6 +45,7 @@ from infinity_data.semantic.builder.models import (
 )
 from infinity_data.semantic.constraints import resolve_constraint_list, resolve_constraints
 from infinity_data.semantic.diagnostics import (
+    AssertValueOrigin,
     ConstraintArgCount,
     ConstraintInvalid,
     ConstraintUnknown,
@@ -66,6 +67,11 @@ from infinity_data.semantic.resolver.models import Scope, TemplateKey
 from infinity_data.tokenizer.models.raw_tokens import SourceRange
 
 _INVALID_CONSTRAINT = '@invalid'
+
+
+def _same_line(a: SourceRange, b: SourceRange) -> bool:
+    """两个位置是否在同一文件同一行（同行不必重复标来源提示）。"""
+    return a.file.name == b.file.name and a.start.line == b.start.line
 
 
 class ConstraintExecutor:
@@ -204,16 +210,22 @@ class ConstraintExecutor:
     def validate_assertions(self, assertions: list[Assertion], collector: DiagnosticCollector) -> None:
         """执行 ``!assert`` 编译期断言（值已由 Phase 2a 求值，约束在此解析后执行）。
 
-        断言失败沿用具体 ``constraint.*`` 诊断，位置指向断言值；不产生独立汇总码。
+        断言失败沿用具体 ``constraint.*`` 诊断，**主诊断指向 !assert 语句**
+        （期望值写在这里）；值来源另发 ``assert.value_origin`` WARNING 诊断标在
+        原始数据行，避免错误只出现在远端、看起来与断言无关。同一行时不重复。
         值自身的内部约束同样递归执行（与 ``!var`` 一致），再执行断言约束。
         """
         for assertion in assertions:
             self.validate(assertion.value, collector, '')
-            source = assertion.value.source or assertion.source
+            failed = False
             for spec in assertion.constraints:
-                result = self._exec(spec, assertion.value, source, '')
+                result = self._exec(spec, assertion.value, assertion.source, '')
                 if not result.ok:
                     collector.extend(result.diagnostics)
+                    failed = True
+            origin = assertion.value.source
+            if failed and origin is not None and not _same_line(origin, assertion.source):
+                collector.add(AssertValueOrigin(value=describe(assertion.value)), origin)
 
     def _validate_field(self, field: StdField, collector: DiagnosticCollector, path: str) -> None:
         """字段：先递归值（内部结构约束），再执行字段注解约束（链式短路）。"""

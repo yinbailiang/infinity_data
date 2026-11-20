@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from infinity_data.infra.diagnostics import DiagnosticCollector
-from infinity_data.infra.location import SourceRange
+from infinity_data.infra.diagnostics import DiagnosticCollector, Severity
+from infinity_data.infra.file import MemFile
+from infinity_data.infra.location import SourceInfo, SourceRange
 from infinity_data.parser import (
     Constraint,
     ConstraintCall,
@@ -26,6 +29,12 @@ from infinity_data.semantic.registry import ConstraintRegistry
 from infinity_data.semantic.resolver import Scope, TemplateKey
 
 _SRC = SourceRange.empty()
+
+
+def _range(line: int) -> SourceRange:
+    """构造指定行的零宽位置（同一文件）。"""
+    file = MemFile(name='t.infd', root_path=Path('.'), content='')
+    return SourceRange.at(file, SourceInfo(line=line, col=1, index=0))
 
 
 def _executor(templates: dict[TemplateKey, TemplateDef] | None = None) -> ConstraintExecutor:
@@ -70,17 +79,22 @@ def test_diagnostic_source_is_checked_value_not_constraint() -> None:
 
 
 def test_validate_assertions_reports_constraint_failure() -> None:
-    value_source = SourceRange.empty()
+    """断言失败：主诊断指向 !assert 行，值来源另发 INFO 提示。"""
+    value_source = _range(1)
+    assert_source = _range(9)
     assertion = Assertion(
         value=StdLiteral(kind='int', value=3, source=value_source),
         constraints=[ResolvedConstraint(name='str')],
-        source=SourceRange.empty(),
+        source=assert_source,
     )
     collector = DiagnosticCollector()
     _executor().validate_assertions([assertion], collector)
-    diag = next(d for d in collector)
-    assert diag.code == 'constraint.type_mismatch'
-    assert diag.source is value_source
+    diags = list(collector)
+    primary = next(d for d in diags if d.code == 'constraint.type_mismatch')
+    origin = next(d for d in diags if d.code == 'assert.value_origin')
+    assert primary.source is assert_source
+    assert origin.source is value_source
+    assert origin.severity is Severity.WARNING
 
 
 def test_validate_assertions_accepts_matching_value() -> None:
